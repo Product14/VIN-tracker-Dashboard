@@ -55,7 +55,7 @@ function Badge({ label, color }) {
     gray: { bg: "#f3f4f6", text: "#374151", border: "#e5e7eb" },
   };
   const c = colors[color] || colors.gray;
-  return <span style={{ display: "inline-block", padding: "2px 10px", borderRadius: 999, fontSize: 12, fontWeight: 600, background: c.bg, color: c.text, border: `1px solid ${c.border}` }}>{label}</span>;
+  return <span style={{ display: "inline-block", padding: "2px 10px", borderRadius: 999, fontSize: 12, fontWeight: 600, background: c.bg, color: c.text, border: `1px solid ${c.border}` }}>{typeof label === "number" ? label.toLocaleString() : label}</span>;
 }
 
 
@@ -87,7 +87,7 @@ function ClickableNum({ value, color, onClick, title = "" }) {
   return (
     <span onClick={onClick} title={title || "Click to view in Raw tab"} style={{ color, fontWeight: 700, cursor: "pointer", textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 3, transition: "opacity 0.15s" }}
       onMouseEnter={e => e.target.style.opacity = 0.7} onMouseLeave={e => e.target.style.opacity = 1}>
-      {value}
+      {typeof value === "number" ? value.toLocaleString() : value}
     </span>
   );
 }
@@ -100,7 +100,7 @@ function StatCard({ label, value, sub, color = "#6366f1", onClick }) {
       onMouseLeave={e => { if (interactive) { e.currentTarget.style.boxShadow = "0 1px 3px rgba(0,0,0,0.08)"; e.currentTarget.style.transform = "translateY(0)"; } }}>
       <div style={{ fontSize: 13, color: "#6b7280", fontWeight: 500, marginBottom: 4 }}>{label}</div>
       <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
-        <div style={{ fontSize: 28, fontWeight: 700, color }}>{value}</div>
+        <div style={{ fontSize: 28, fontWeight: 700, color }}>{typeof value === "number" ? value.toLocaleString() : value}</div>
         {sub && <div style={{ fontSize: 13, color: "#9ca3af", fontWeight: 500 }}>({sub})</div>}
       </div>
       {interactive && <div style={{ fontSize: 11, color: "#a5b4fc", marginTop: 6 }}>Click to view details →</div>}
@@ -554,7 +554,7 @@ function OverviewTab({ totals, byType, byCSM, onDrillDown, onRooftopDrillDown })
                           {r.label}
                         </span>
                       </td>
-                      <td style={{ ...td, textAlign: "center", color: "#6b7280" }}>{r.rooftopCount}</td>
+                      <td style={{ ...td, textAlign: "center", color: "#6b7280" }}>{r.rooftopCount?.toLocaleString()}</td>
                       <td style={{ ...td, textAlign: "center" }}><ClickableNum value={r.total} color="#4f46e5" onClick={() => onDrillDown(base)} /></td>
                       <td style={{ ...td, textAlign: "center" }}><ClickableNum value={r.processed} color="#166534" onClick={() => onDrillDown({ ...base, status: "Delivered" })} /></td>
                       <td style={{ ...td, textAlign: "center" }}>
@@ -583,7 +583,7 @@ function OverviewTab({ totals, byType, byCSM, onDrillDown, onRooftopDrillDown })
               <tfoot>
                 <tr>
                   <td style={{ ...totTd }}>Total</td>
-                  <td style={{ ...totTd, textAlign: "center", color: "#6b7280" }}>{totRow.rooftopCount}</td>
+                  <td style={{ ...totTd, textAlign: "center", color: "#6b7280" }}>{totRow.rooftopCount?.toLocaleString()}</td>
                   <td style={{ ...totTd, textAlign: "center" }}><ClickableNum value={totRow.total} color="#4f46e5" onClick={() => onDrillDown({})} /></td>
                   <td style={{ ...totTd, textAlign: "center" }}><ClickableNum value={totRow.processed} color="#166534" onClick={() => onDrillDown({ status: "Delivered" })} /></td>
                   <td style={{ ...totTd, textAlign: "center" }}>{totRow.processedAfter24 > 0 ? <Badge label={totRow.processedAfter24} color="amber" /> : "0"}</td>
