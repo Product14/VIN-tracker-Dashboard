@@ -706,12 +706,16 @@ export default function Dashboard() {
   const [fetchError, setFetchError] = useState<string | null>(null);
   const tabs = ["Overview", "Enterprise View", "Rooftop View", "CSM View", "VIN Data"];
 
-  useEffect(() => {
+  const fetchData = useCallback(() => {
+    setLoading(true);
+    setFetchError(null);
     fetch(METABASE_URL)
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
       .then((rows: any[]) => { setLiveData(rows.map(mapMetabaseRow)); setLoading(false); })
       .catch(err => { setFetchError(err.message); setLoading(false); });
   }, []);
+
+  useEffect(() => { fetchData(); }, []);
 
   const data = liveData ?? SAMPLE_DATA;
 
@@ -732,10 +736,16 @@ export default function Dashboard() {
           <h1 style={{ fontSize: 22, fontWeight: 800, color: "#111827", margin: 0 }}>VIN Inventory Dashboard</h1>
           <p style={{ fontSize: 13, color: "#6b7280", margin: "4px 0 0" }}>Tracking VIN processing across rooftops and CSMs — click any number to drill down</p>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, paddingTop: 4 }}>
-          {loading && <span style={{ fontSize: 12, color: "#6b7280" }}>⟳ Loading live data…</span>}
+        <div style={{ display: "flex", alignItems: "center", gap: 10, paddingTop: 4 }}>
+          {loading && <span style={{ fontSize: 12, color: "#6b7280" }}>⟳ Loading…</span>}
           {!loading && fetchError && <span style={{ fontSize: 12, color: "#dc2626" }} title={fetchError}>⚠ Live data unavailable — showing sample data</span>}
           {!loading && liveData && <span style={{ fontSize: 12, color: "#16a34a" }}>● Live · {liveData.length} records</span>}
+          <button onClick={fetchData} disabled={loading}
+            style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 12px", borderRadius: 8, border: "1px solid #d1d5db", background: loading ? "#f3f4f6" : "#fff", fontSize: 12, fontWeight: 600, cursor: loading ? "not-allowed" : "pointer", color: loading ? "#9ca3af" : "#374151", transition: "all 0.15s" }}
+            onMouseEnter={e => { if (!loading) e.currentTarget.style.borderColor = "#9ca3af"; }}
+            onMouseLeave={e => { e.currentTarget.style.borderColor = "#d1d5db"; }}>
+            <span style={{ display: "inline-block", transition: "transform 0.4s", transform: loading ? "rotate(360deg)" : "none" }}>↻</span> Refresh
+          </button>
         </div>
       </div>
 
