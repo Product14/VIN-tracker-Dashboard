@@ -1,31 +1,31 @@
 import { useState, useMemo, useCallback } from "react";
 
 const SAMPLE_DATA = [
-  { vin: "1HGCM82633A004352", rooftop: "Downtown Auto", rooftopType: "Franchise", csm: "Sarah Miller", status: "Processed", processedAt: "2026-04-06T10:30:00", receivedAt: "2026-04-06T08:00:00" },
-  { vin: "2T1BURHE0JC123456", rooftop: "Downtown Auto", rooftopType: "Franchise", csm: "Sarah Miller", status: "Processed", processedAt: "2026-04-05T14:00:00", receivedAt: "2026-04-04T09:00:00" },
-  { vin: "3VWDX7AJ5DM654321", rooftop: "Westside Motors", rooftopType: "Independent", csm: "James Cooper", status: "Not Processed", processedAt: null, receivedAt: "2026-04-06T11:00:00" },
-  { vin: "5YFBURHE4JP789012", rooftop: "Westside Motors", rooftopType: "Independent", csm: "James Cooper", status: "Processed", processedAt: "2026-04-06T16:00:00", receivedAt: "2026-04-06T07:00:00" },
-  { vin: "1G1YY22G965109876", rooftop: "Westside Motors", rooftopType: "Independent", csm: "James Cooper", status: "Not Processed", processedAt: null, receivedAt: "2026-04-05T06:00:00" },
-  { vin: "JH4KA8260MC543210", rooftop: "Northgate Dealers", rooftopType: "Franchise", csm: "Sarah Miller", status: "Processed", processedAt: "2026-04-07T02:00:00", receivedAt: "2026-04-06T01:00:00" },
-  { vin: "WVWZZZ3CZWE112233", rooftop: "Northgate Dealers", rooftopType: "Franchise", csm: "Sarah Miller", status: "Not Processed", processedAt: null, receivedAt: "2026-04-07T08:00:00" },
-  { vin: "1FTFW1ET5DFA44556", rooftop: "Southpark Auto", rooftopType: "Independent", csm: "Lisa Chang", status: "Processed", processedAt: "2026-04-06T20:00:00", receivedAt: "2026-04-06T09:00:00" },
-  { vin: "2GCEC19T441778899", rooftop: "Southpark Auto", rooftopType: "Independent", csm: "Lisa Chang", status: "Not Processed", processedAt: null, receivedAt: "2026-04-05T14:00:00" },
-  { vin: "3N1AB7AP4GY990011", rooftop: "Southpark Auto", rooftopType: "Independent", csm: "Lisa Chang", status: "Processed", processedAt: "2026-04-07T06:00:00", receivedAt: "2026-04-07T04:00:00" },
-  { vin: "KNDJP3A56H7223344", rooftop: "Eastend Cars", rooftopType: "Franchise", csm: "Lisa Chang", status: "Not Processed", processedAt: null, receivedAt: "2026-04-06T05:00:00" },
-  { vin: "4T1BF1FK5CU556677", rooftop: "Eastend Cars", rooftopType: "Franchise", csm: "Lisa Chang", status: "Processed", processedAt: "2026-04-06T12:00:00", receivedAt: "2026-04-06T06:00:00" },
-  { vin: "1N4AL3AP8DC889900", rooftop: "Central Auto Group", rooftopType: "Franchise", csm: "James Cooper", status: "Processed", processedAt: "2026-04-05T22:00:00", receivedAt: "2026-04-05T08:00:00" },
-  { vin: "5XYZUDLA1DG112244", rooftop: "Central Auto Group", rooftopType: "Franchise", csm: "James Cooper", status: "Not Processed", processedAt: null, receivedAt: "2026-04-04T10:00:00" },
-  { vin: "JM1BK32F781335566", rooftop: "Central Auto Group", rooftopType: "Franchise", csm: "James Cooper", status: "Processed", processedAt: "2026-04-06T09:00:00", receivedAt: "2026-04-06T07:30:00" },
-  { vin: "WBAPH5C55BA778899", rooftop: "Valley Rides", rooftopType: "Independent", csm: "Sarah Miller", status: "Not Processed", processedAt: null, receivedAt: "2026-04-07T07:00:00" },
-  { vin: "1ZVBP8AM7D5990011", rooftop: "Valley Rides", rooftopType: "Independent", csm: "Sarah Miller", status: "Processed", processedAt: "2026-04-06T18:00:00", receivedAt: "2026-04-05T10:00:00" },
-  { vin: "2C3CDXCT1EH223344", rooftop: "Valley Rides", rooftopType: "Independent", csm: "Sarah Miller", status: "Processed", processedAt: "2026-04-07T01:00:00", receivedAt: "2026-04-06T22:00:00" },
+  { vin: "1HGCM82633A004352", enterpriseId: "ENT-001", enterprise: "Metro Auto Group", rooftopId: "RT-001", rooftop: "Downtown Auto", rooftopType: "Franchise", csm: "Sarah Miller", status: "Delivered", processedAt: "2026-04-06T10:30:00", receivedAt: "2026-04-06T08:00:00" },
+  { vin: "2T1BURHE0JC123456", enterpriseId: "ENT-001", enterprise: "Metro Auto Group", rooftopId: "RT-001", rooftop: "Downtown Auto", rooftopType: "Franchise", csm: "Sarah Miller", status: "Delivered", processedAt: "2026-04-05T14:00:00", receivedAt: "2026-04-04T09:00:00" },
+  { vin: "3VWDX7AJ5DM654321", enterpriseId: "ENT-002", enterprise: "Westside Holdings", rooftopId: "RT-002", rooftop: "Westside Motors", rooftopType: "Independent", csm: "James Cooper", status: "Not Delivered", processedAt: null, receivedAt: "2026-04-06T11:00:00" },
+  { vin: "5YFBURHE4JP789012", enterpriseId: "ENT-002", enterprise: "Westside Holdings", rooftopId: "RT-002", rooftop: "Westside Motors", rooftopType: "Independent", csm: "James Cooper", status: "Delivered", processedAt: "2026-04-06T16:00:00", receivedAt: "2026-04-06T07:00:00" },
+  { vin: "1G1YY22G965109876", enterpriseId: "ENT-002", enterprise: "Westside Holdings", rooftopId: "RT-002", rooftop: "Westside Motors", rooftopType: "Independent", csm: "James Cooper", status: "Not Delivered", processedAt: null, receivedAt: "2026-04-05T06:00:00" },
+  { vin: "JH4KA8260MC543210", enterpriseId: "ENT-001", enterprise: "Metro Auto Group", rooftopId: "RT-003", rooftop: "Northgate Dealers", rooftopType: "Franchise", csm: "Sarah Miller", status: "Delivered", processedAt: "2026-04-07T02:00:00", receivedAt: "2026-04-06T01:00:00" },
+  { vin: "WVWZZZ3CZWE112233", enterpriseId: "ENT-001", enterprise: "Metro Auto Group", rooftopId: "RT-003", rooftop: "Northgate Dealers", rooftopType: "Franchise", csm: "Sarah Miller", status: "Not Delivered", processedAt: null, receivedAt: "2026-04-07T08:00:00" },
+  { vin: "1FTFW1ET5DFA44556", enterpriseId: "ENT-003", enterprise: "Southpark Automotive LLC", rooftopId: "RT-004", rooftop: "Southpark Auto", rooftopType: "Independent", csm: "Lisa Chang", status: "Delivered", processedAt: "2026-04-06T20:00:00", receivedAt: "2026-04-06T09:00:00" },
+  { vin: "2GCEC19T441778899", enterpriseId: "ENT-003", enterprise: "Southpark Automotive LLC", rooftopId: "RT-004", rooftop: "Southpark Auto", rooftopType: "Independent", csm: "Lisa Chang", status: "Not Delivered", processedAt: null, receivedAt: "2026-04-05T14:00:00" },
+  { vin: "3N1AB7AP4GY990011", enterpriseId: "ENT-003", enterprise: "Southpark Automotive LLC", rooftopId: "RT-004", rooftop: "Southpark Auto", rooftopType: "Independent", csm: "Lisa Chang", status: "Delivered", processedAt: "2026-04-07T06:00:00", receivedAt: "2026-04-07T04:00:00" },
+  { vin: "KNDJP3A56H7223344", enterpriseId: "ENT-004", enterprise: "Eastend Motor Corp", rooftopId: "RT-005", rooftop: "Eastend Cars", rooftopType: "Franchise", csm: "Lisa Chang", status: "Not Delivered", processedAt: null, receivedAt: "2026-04-06T05:00:00" },
+  { vin: "4T1BF1FK5CU556677", enterpriseId: "ENT-004", enterprise: "Eastend Motor Corp", rooftopId: "RT-005", rooftop: "Eastend Cars", rooftopType: "Franchise", csm: "Lisa Chang", status: "Delivered", processedAt: "2026-04-06T12:00:00", receivedAt: "2026-04-06T06:00:00" },
+  { vin: "1N4AL3AP8DC889900", enterpriseId: "ENT-005", enterprise: "Central Auto Group", rooftopId: "RT-006", rooftop: "Central Auto Group", rooftopType: "Franchise", csm: "James Cooper", status: "Delivered", processedAt: "2026-04-05T22:00:00", receivedAt: "2026-04-05T08:00:00" },
+  { vin: "5XYZUDLA1DG112244", enterpriseId: "ENT-005", enterprise: "Central Auto Group", rooftopId: "RT-006", rooftop: "Central Auto Group", rooftopType: "Franchise", csm: "James Cooper", status: "Not Delivered", processedAt: null, receivedAt: "2026-04-04T10:00:00" },
+  { vin: "JM1BK32F781335566", enterpriseId: "ENT-005", enterprise: "Central Auto Group", rooftopId: "RT-006", rooftop: "Central Auto Group", rooftopType: "Franchise", csm: "James Cooper", status: "Delivered", processedAt: "2026-04-06T09:00:00", receivedAt: "2026-04-06T07:30:00" },
+  { vin: "WBAPH5C55BA778899", enterpriseId: "ENT-002", enterprise: "Westside Holdings", rooftopId: "RT-007", rooftop: "Valley Rides", rooftopType: "Independent", csm: "Sarah Miller", status: "Not Delivered", processedAt: null, receivedAt: "2026-04-07T07:00:00" },
+  { vin: "1ZVBP8AM7D5990011", enterpriseId: "ENT-002", enterprise: "Westside Holdings", rooftopId: "RT-007", rooftop: "Valley Rides", rooftopType: "Independent", csm: "Sarah Miller", status: "Delivered", processedAt: "2026-04-06T18:00:00", receivedAt: "2026-04-05T10:00:00" },
+  { vin: "2C3CDXCT1EH223344", enterpriseId: "ENT-002", enterprise: "Westside Holdings", rooftopId: "RT-007", rooftop: "Valley Rides", rooftopType: "Independent", csm: "Sarah Miller", status: "Delivered", processedAt: "2026-04-07T01:00:00", receivedAt: "2026-04-06T22:00:00" },
 ];
 
 const NOW = new Date("2026-04-07T12:00:00");
 const H24 = 24 * 60 * 60 * 1000;
 
 function isAfter24h(item) {
-  if (item.status === "Processed") return (new Date(item.processedAt) - new Date(item.receivedAt)) > H24;
+  if (item.status === "Delivered") return (new Date(item.processedAt) - new Date(item.receivedAt)) > H24;
   return (NOW - new Date(item.receivedAt)) > H24;
 }
 
@@ -108,8 +108,8 @@ function FilterBar({ filters, setFilters, data }) {
         </select>
         <select value={filters.status || ""} onChange={e => setFilters(f => ({ ...f, status: e.target.value || null }))} style={activeSel(filters.status)}>
           <option value="">All Statuses</option>
-          <option value="Processed">Processed</option>
-          <option value="Not Processed">Not Processed</option>
+          <option value="Delivered">Delivered</option>
+          <option value="Not Delivered">Not Delivered</option>
         </select>
         <select value={filters.after24h === null ? "" : filters.after24h ? "yes" : "no"} onChange={e => { const v = e.target.value; setFilters(f => ({ ...f, after24h: v === "" ? null : v === "yes" })); }} style={activeSel(filters.after24h !== null)}>
           <option value="">24h: Any</option>
@@ -128,7 +128,7 @@ function FilterBar({ filters, setFilters, data }) {
           {filters.rooftop && <Badge label={`Rooftop: ${filters.rooftop}`} color="blue" />}
           {filters.rooftopType && <Badge label={`Type: ${filters.rooftopType}`} color="blue" />}
           {filters.csm && <Badge label={`CSM: ${filters.csm}`} color="blue" />}
-          {filters.status && <Badge label={`Status: ${filters.status}`} color={filters.status === "Processed" ? "green" : "red"} />}
+          {filters.status && <Badge label={`Status: ${filters.status}`} color={filters.status === "Delivered" ? "green" : "red"} />}
           {filters.after24h !== null && <Badge label={filters.after24h ? "After 24h" : "Within 24h"} color="amber" />}
         </div>
       )}
@@ -159,9 +159,10 @@ function RawTab({ data, filters, setFilters }) {
   };
 
   const cols = [
-    { key: "vin", label: "VIN" }, { key: "rooftop", label: "Rooftop" }, { key: "rooftopType", label: "Type" },
+    { key: "vin", label: "VIN" }, { key: "enterpriseId", label: "Enterprise ID" }, { key: "enterprise", label: "Enterprise" },
+    { key: "rooftopId", label: "Rooftop ID" }, { key: "rooftop", label: "Rooftop" }, { key: "rooftopType", label: "Type" },
     { key: "csm", label: "CSM" }, { key: "status", label: "Status" }, { key: "after24h", label: "After 24h?" },
-    { key: "receivedAt", label: "Received" }, { key: "processedAt", label: "Processed" }
+    { key: "receivedAt", label: "Received" }, { key: "processedAt", label: "Delivered" }
   ];
 
   return (
@@ -180,15 +181,18 @@ function RawTab({ data, filters, setFilters }) {
           </thead>
           <tbody>
             {sorted.length === 0 && (
-              <tr><td colSpan={8} style={{ padding: 40, textAlign: "center", color: "#9ca3af", fontSize: 14 }}>No records match the current filters.</td></tr>
+              <tr><td colSpan={11} style={{ padding: 40, textAlign: "center", color: "#9ca3af", fontSize: 14 }}>No records match the current filters.</td></tr>
             )}
             {sorted.map((d, i) => (
               <tr key={d.vin} style={{ background: i % 2 === 0 ? "#fff" : "#f9fafb" }}>
                 <td style={{ padding: "10px 14px", fontFamily: "monospace", fontSize: 12, borderBottom: "1px solid #f3f4f6" }}>{d.vin}</td>
+                <td style={{ padding: "10px 14px", fontFamily: "monospace", fontSize: 12, borderBottom: "1px solid #f3f4f6", color: "#0ea5e9", fontWeight: 600 }}>{d.enterpriseId}</td>
+                <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}>{d.enterprise}</td>
+                <td style={{ padding: "10px 14px", fontFamily: "monospace", fontSize: 12, borderBottom: "1px solid #f3f4f6", color: "#6366f1", fontWeight: 600 }}>{d.rooftopId}</td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}>{d.rooftop}</td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}><Badge label={d.rooftopType} color={d.rooftopType === "Franchise" ? "blue" : "gray"} /></td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}>{d.csm}</td>
-                <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}><Badge label={d.status} color={d.status === "Processed" ? "green" : "red"} /></td>
+                <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}><Badge label={d.status} color={d.status === "Delivered" ? "green" : "red"} /></td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}>{isAfter24h(d) ? <Badge label="Yes" color="amber" /> : <Badge label="No" color="green" />}</td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6", whiteSpace: "nowrap", fontSize: 12 }}>{new Date(d.receivedAt).toLocaleString()}</td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6", whiteSpace: "nowrap", fontSize: 12 }}>{d.processedAt ? new Date(d.processedAt).toLocaleString() : "—"}</td>
@@ -208,7 +212,7 @@ function RooftopTab({ data, onDrillDown }) {
     data.forEach(d => {
       if (!map[d.rooftop]) map[d.rooftop] = { name: d.rooftop, type: d.rooftopType, csm: d.csm, total: 0, processed: 0, processedAfter24: 0, notProcessed: 0, notProcessedAfter24: 0 };
       const r = map[d.rooftop]; r.total++;
-      if (d.status === "Processed") { r.processed++; if (isAfter24h(d)) r.processedAfter24++; }
+      if (d.status === "Delivered") { r.processed++; if (isAfter24h(d)) r.processedAfter24++; }
       else { r.notProcessed++; if (isAfter24h(d)) r.notProcessedAfter24++; }
     });
     return Object.values(map);
@@ -219,7 +223,7 @@ function RooftopTab({ data, onDrillDown }) {
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
         <thead>
           <tr style={{ background: "#f9fafb" }}>
-            {["Rooftop Name", "Type", "CSM", "Total Inventory", "VIN Processed", "Processed >24h", "VIN Not Processed", "Not Processed >24h"].map(h => (
+            {["Rooftop Name", "Type", "CSM", "Total Inventory", "VIN Delivered", "Delivered >24h", "VIN Not Delivered", "Not Delivered >24h"].map(h => (
               <th key={h} style={{ padding: "10px 14px", textAlign: "left", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "nowrap" }}>{h}</th>
             ))}
           </tr>
@@ -234,19 +238,19 @@ function RooftopTab({ data, onDrillDown }) {
                 <ClickableNum value={r.total} color="#4f46e5" onClick={() => onDrillDown({ rooftop: r.name })} />
               </td>
               <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}>
-                <ClickableNum value={r.processed} color="#166534" onClick={() => onDrillDown({ rooftop: r.name, status: "Processed" })} />
+                <ClickableNum value={r.processed} color="#166534" onClick={() => onDrillDown({ rooftop: r.name, status: "Delivered" })} />
               </td>
               <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}>
                 {r.processedAfter24 > 0
-                  ? <span onClick={() => onDrillDown({ rooftop: r.name, status: "Processed", after24h: true })} style={{ cursor: "pointer" }}><Badge label={r.processedAfter24} color="amber" /></span>
+                  ? <span onClick={() => onDrillDown({ rooftop: r.name, status: "Delivered", after24h: true })} style={{ cursor: "pointer" }}><Badge label={r.processedAfter24} color="amber" /></span>
                   : <span style={{ color: "#9ca3af" }}>0</span>}
               </td>
               <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}>
-                <ClickableNum value={r.notProcessed} color="#991b1b" onClick={() => onDrillDown({ rooftop: r.name, status: "Not Processed" })} />
+                <ClickableNum value={r.notProcessed} color="#991b1b" onClick={() => onDrillDown({ rooftop: r.name, status: "Not Delivered" })} />
               </td>
               <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}>
                 {r.notProcessedAfter24 > 0
-                  ? <span onClick={() => onDrillDown({ rooftop: r.name, status: "Not Processed", after24h: true })} style={{ cursor: "pointer" }}><Badge label={r.notProcessedAfter24} color="red" /></span>
+                  ? <span onClick={() => onDrillDown({ rooftop: r.name, status: "Not Delivered", after24h: true })} style={{ cursor: "pointer" }}><Badge label={r.notProcessedAfter24} color="red" /></span>
                   : <span style={{ color: "#9ca3af" }}>0</span>}
               </td>
             </tr>
@@ -263,7 +267,7 @@ function OverviewTab({ data, onDrillDown }) {
     data.forEach(d => {
       if (!map[d.rooftopType]) map[d.rooftopType] = { label: d.rooftopType, total: 0, processed: 0, processedAfter24: 0, notProcessed: 0, notProcessedAfter24: 0 };
       const r = map[d.rooftopType]; r.total++;
-      if (d.status === "Processed") { r.processed++; if (isAfter24h(d)) r.processedAfter24++; }
+      if (d.status === "Delivered") { r.processed++; if (isAfter24h(d)) r.processedAfter24++; }
       else { r.notProcessed++; if (isAfter24h(d)) r.notProcessedAfter24++; }
     });
     return Object.values(map);
@@ -274,7 +278,7 @@ function OverviewTab({ data, onDrillDown }) {
     data.forEach(d => {
       if (!map[d.csm]) map[d.csm] = { label: d.csm, total: 0, processed: 0, processedAfter24: 0, notProcessed: 0, notProcessedAfter24: 0 };
       const r = map[d.csm]; r.total++;
-      if (d.status === "Processed") { r.processed++; if (isAfter24h(d)) r.processedAfter24++; }
+      if (d.status === "Delivered") { r.processed++; if (isAfter24h(d)) r.processedAfter24++; }
       else { r.notProcessed++; if (isAfter24h(d)) r.notProcessedAfter24++; }
     });
     return Object.values(map);
@@ -284,7 +288,7 @@ function OverviewTab({ data, onDrillDown }) {
     let t = { total: 0, processed: 0, notProcessed: 0, processedAfter24: 0, notProcessedAfter24: 0 };
     data.forEach(d => {
       t.total++;
-      if (d.status === "Processed") { t.processed++; if (isAfter24h(d)) t.processedAfter24++; }
+      if (d.status === "Delivered") { t.processed++; if (isAfter24h(d)) t.processedAfter24++; }
       else { t.notProcessed++; if (isAfter24h(d)) t.notProcessedAfter24++; }
     });
     return t;
@@ -301,7 +305,7 @@ function OverviewTab({ data, onDrillDown }) {
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
             <thead>
               <tr style={{ background: "#f9fafb" }}>
-                {[filterKey === "rooftopType" ? "Rooftop Type" : "CSM Name", "Total", "Processed", "Processed >24h", "Not Processed", "Not Processed >24h", "Processing Rate"].map(h => (
+                {[filterKey === "rooftopType" ? "Rooftop Type" : "CSM Name", "Total", "Delivered", "Delivered >24h", "Not Delivered", "Not Delivered >24h", "Delivery Rate"].map(h => (
                   <th key={h} style={{ padding: "10px 14px", textAlign: "left", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "nowrap" }}>{h}</th>
                 ))}
               </tr>
@@ -317,19 +321,19 @@ function OverviewTab({ data, onDrillDown }) {
                       <ClickableNum value={r.total} color="#4f46e5" onClick={() => onDrillDown(base)} />
                     </td>
                     <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}>
-                      <ClickableNum value={r.processed} color="#166534" onClick={() => onDrillDown({ ...base, status: "Processed" })} />
+                      <ClickableNum value={r.processed} color="#166534" onClick={() => onDrillDown({ ...base, status: "Delivered" })} />
                     </td>
                     <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}>
                       {r.processedAfter24 > 0
-                        ? <span onClick={() => onDrillDown({ ...base, status: "Processed", after24h: true })} style={{ cursor: "pointer" }}><Badge label={r.processedAfter24} color="amber" /></span>
+                        ? <span onClick={() => onDrillDown({ ...base, status: "Delivered", after24h: true })} style={{ cursor: "pointer" }}><Badge label={r.processedAfter24} color="amber" /></span>
                         : "0"}
                     </td>
                     <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}>
-                      <ClickableNum value={r.notProcessed} color="#991b1b" onClick={() => onDrillDown({ ...base, status: "Not Processed" })} />
+                      <ClickableNum value={r.notProcessed} color="#991b1b" onClick={() => onDrillDown({ ...base, status: "Not Delivered" })} />
                     </td>
                     <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}>
                       {r.notProcessedAfter24 > 0
-                        ? <span onClick={() => onDrillDown({ ...base, status: "Not Processed", after24h: true })} style={{ cursor: "pointer" }}><Badge label={r.notProcessedAfter24} color="red" /></span>
+                        ? <span onClick={() => onDrillDown({ ...base, status: "Not Delivered", after24h: true })} style={{ cursor: "pointer" }}><Badge label={r.notProcessedAfter24} color="red" /></span>
                         : "0"}
                     </td>
                     <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}>
@@ -354,9 +358,9 @@ function OverviewTab({ data, onDrillDown }) {
     <div>
       <div style={{ display: "flex", gap: 14, marginBottom: 28, flexWrap: "wrap" }}>
         <StatCard label="Total Inventory" value={totals.total} color="#6366f1" onClick={() => onDrillDown({})} />
-        <StatCard label="VIN Processed" value={totals.processed} sub={`${((totals.processed / totals.total) * 100).toFixed(0)}% of total`} color="#22c55e" onClick={() => onDrillDown({ status: "Processed" })} />
-        <StatCard label="VIN Not Processed" value={totals.notProcessed} sub={`${totals.notProcessedAfter24} over 24h`} color="#ef4444" onClick={() => onDrillDown({ status: "Not Processed" })} />
-        <StatCard label="Processed >24h" value={totals.processedAfter24} color="#f59e0b" onClick={() => onDrillDown({ status: "Processed", after24h: true })} />
+        <StatCard label="VIN Delivered" value={totals.processed} sub={`${((totals.processed / totals.total) * 100).toFixed(0)}% of total`} color="#22c55e" onClick={() => onDrillDown({ status: "Delivered" })} />
+        <StatCard label="VIN Not Delivered" value={totals.notProcessed} sub={`${totals.notProcessedAfter24} over 24h`} color="#ef4444" onClick={() => onDrillDown({ status: "Not Delivered" })} />
+        <StatCard label="Delivered >24h" value={totals.processedAfter24} color="#f59e0b" onClick={() => onDrillDown({ status: "Delivered", after24h: true })} />
       </div>
       <SummaryTable title="By Rooftop Type" rows={byType} colorHeader="#6366f1" filterKey="rooftopType" />
       <SummaryTable title="By CSM" rows={byCSM} colorHeader="#0ea5e9" filterKey="csm" />
