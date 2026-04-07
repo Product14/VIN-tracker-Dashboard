@@ -63,6 +63,14 @@ app.post("/api/sync", async (_req, res) => {
         synced_at     = excluded.synced_at
     `);
 
+    const EPOCH = "1970-01-01T00:00:00Z";
+    const cleanDate = (v) => (!v || v === EPOCH) ? null : v;
+    const cleanAfter24 = (v) => {
+      if (v === null || v === undefined) return null;
+      if (typeof v === "string") return v.toLowerCase() === "yes" ? 1 : 0;
+      return v ? 1 : 0;
+    };
+
     db.transaction(() => {
       for (const row of metaRows) {
         upsert.run({
@@ -74,9 +82,9 @@ app.post("/api/sync", async (_req, res) => {
           rooftopType: row.type ?? "",
           csm:         row.email_id ?? "",
           status:      row.status ?? "",
-          after24h:    row.after_24hrs != null ? (row.after_24hrs ? 1 : 0) : null,
-          receivedAt:  row.receivedAt ?? null,
-          processedAt: row.sentAt ?? null,
+          after24h:    cleanAfter24(row.after_24_hrs ?? row.after_24hrs ?? null),
+          receivedAt:  cleanDate(row.receivedAt),
+          processedAt: cleanDate(row.sentAt),
           syncedAt,
         });
       }
