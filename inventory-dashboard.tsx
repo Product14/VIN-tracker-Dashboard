@@ -650,7 +650,7 @@ export default function Dashboard() {
   const [rawTotal, setRawTotal] = useState(0);
   const [rawLoading, setRawLoading] = useState(false);
 
-  const tabs = ["Overview", "Enterprise View", "Rooftop View", "CSM View", "VIN Data"];
+  const tabs = ["Overview", "Rooftop View", "VIN Data"];
 
   // Fetch summary data from DB views
   const loadSummary = useCallback(() => {
@@ -771,9 +771,7 @@ export default function Dashboard() {
       </div>
 
       {tab === "Overview" && <OverviewTab totals={s.totals} byType={s.byType} byCSM={s.byCSM} onDrillDown={handleDrillDown} onRooftopDrillDown={handleRooftopDrillDown} />}
-      {tab === "Enterprise View" && <EnterpriseTab enterprises={s.byEnterprise} onDrillDown={handleDrillDown} />}
       {tab === "Rooftop View" && <RooftopTab allRooftops={s.byRooftop} onDrillDown={handleDrillDown} filters={rooftopFilters} setFilters={setRooftopFilters} />}
-      {tab === "CSM View" && <CSMTab csms={s.byCSM} onDrillDown={handleDrillDown} />}
       {tab === "VIN Data" && (
         <RawTab
           data={rawData}
