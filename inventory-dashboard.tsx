@@ -206,9 +206,12 @@ function RawTab({ data, filters, setFilters }) {
   );
 }
 
-function RooftopTab({ data, onDrillDown }) {
-  const rooftops = useMemo(() => {
-    const map = {};
+function RooftopTab({ data, onDrillDown, filters, setFilters }) {
+  const [sortCol, setSortCol] = useState(null);
+  const [sortDir, setSortDir] = useState("asc");
+
+  const allRooftops = useMemo(() => {
+    const map: Record<string, any> = {};
     data.forEach(d => {
       if (!map[d.rooftop]) map[d.rooftop] = { name: d.rooftop, type: d.rooftopType, csm: d.csm, total: 0, processed: 0, processedAfter24: 0, notProcessed: 0, notProcessedAfter24: 0 };
       const r = map[d.rooftop]; r.total++;
@@ -218,70 +221,267 @@ function RooftopTab({ data, onDrillDown }) {
     return Object.values(map);
   }, [data]);
 
+  const types = [...new Set(allRooftops.map(r => r.type))].sort();
+  const csms = [...new Set(allRooftops.map(r => r.csm))].sort();
+
+  const filtered = useMemo(() => allRooftops.filter(r => {
+    if (filters.rooftopType && r.type !== filters.rooftopType) return false;
+    if (filters.csm && r.csm !== filters.csm) return false;
+    if (filters.search) {
+      const s = filters.search.toLowerCase();
+      if (!r.name.toLowerCase().includes(s) && !r.csm.toLowerCase().includes(s)) return false;
+    }
+    return true;
+  }), [allRooftops, filters]);
+
+  const sorted = useMemo(() => {
+    if (!sortCol) return filtered;
+    return [...filtered].sort((a, b) => {
+      const va = a[sortCol], vb = b[sortCol];
+      if (va === null || va === undefined) return 1;
+      if (vb === null || vb === undefined) return -1;
+      if (typeof va === "string") return sortDir === "asc" ? va.localeCompare(vb) : vb.localeCompare(va);
+      return sortDir === "asc" ? (va > vb ? 1 : -1) : (va < vb ? 1 : -1);
+    });
+  }, [filtered, sortCol, sortDir]);
+
+  const handleSort = col => {
+    if (sortCol === col) setSortDir(d => d === "asc" ? "desc" : "asc");
+    else { setSortCol(col); setSortDir("asc"); }
+  };
+
+  const activeCount = [filters.rooftopType, filters.csm].filter(Boolean).length;
+  const sel = { padding: "7px 12px", borderRadius: 8, border: "1px solid #d1d5db", fontSize: 13, background: "#fff", minWidth: 130, outline: "none" };
+  const activeSel = v => v ? { ...sel, borderColor: "#818cf8", background: "#eef2ff" } : sel;
+
+  const cols = [
+    { key: "name", label: "Rooftop Name" }, { key: "type", label: "Type" }, { key: "csm", label: "CSM" },
+    { key: "total", label: "Total Inventory" }, { key: "processed", label: "VIN Delivered" },
+    { key: "processedAfter24", label: "Delivered >24h" }, { key: "notProcessed", label: "VIN Not Delivered" },
+    { key: "notProcessedAfter24", label: "Not Delivered >24h" },
+  ];
+
+  const tdStyle = { padding: "10px 14px", borderBottom: "1px solid #f3f4f6" };
+
   return (
-    <div style={{ overflowX: "auto", borderRadius: 10, border: "1px solid #e5e7eb" }}>
-      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-        <thead>
-          <tr style={{ background: "#f9fafb" }}>
-            {["Rooftop Name", "Type", "CSM", "Total Inventory", "VIN Delivered", "Delivered >24h", "VIN Not Delivered", "Not Delivered >24h"].map(h => (
-              <th key={h} style={{ padding: "10px 14px", textAlign: "left", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "nowrap" }}>{h}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rooftops.map((r, i) => (
-            <tr key={r.name} style={{ background: i % 2 === 0 ? "#fff" : "#f9fafb" }}>
-              <td style={{ padding: "10px 14px", fontWeight: 600, borderBottom: "1px solid #f3f4f6" }}>{r.name}</td>
-              <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}><Badge label={r.type} color={r.type === "Franchise" ? "blue" : "gray"} /></td>
-              <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}>{r.csm}</td>
-              <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}>
-                <ClickableNum value={r.total} color="#4f46e5" onClick={() => onDrillDown({ rooftop: r.name })} />
-              </td>
-              <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}>
-                <ClickableNum value={r.processed} color="#166534" onClick={() => onDrillDown({ rooftop: r.name, status: "Delivered" })} />
-              </td>
-              <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}>
-                {r.processedAfter24 > 0
-                  ? <span onClick={() => onDrillDown({ rooftop: r.name, status: "Delivered", after24h: true })} style={{ cursor: "pointer" }}><Badge label={r.processedAfter24} color="amber" /></span>
-                  : <span style={{ color: "#9ca3af" }}>0</span>}
-              </td>
-              <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}>
-                <ClickableNum value={r.notProcessed} color="#991b1b" onClick={() => onDrillDown({ rooftop: r.name, status: "Not Delivered" })} />
-              </td>
-              <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}>
-                {r.notProcessedAfter24 > 0
-                  ? <span onClick={() => onDrillDown({ rooftop: r.name, status: "Not Delivered", after24h: true })} style={{ cursor: "pointer" }}><Badge label={r.notProcessedAfter24} color="red" /></span>
-                  : <span style={{ color: "#9ca3af" }}>0</span>}
-              </td>
+    <div>
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <input placeholder="Search Rooftop, CSM..." value={filters.search || ""} onChange={e => setFilters(f => ({ ...f, search: e.target.value }))}
+            style={{ flex: 1, minWidth: 200, padding: "7px 14px", borderRadius: 8, border: "1px solid #d1d5db", fontSize: 13, outline: "none" }} />
+          <select value={filters.rooftopType || ""} onChange={e => setFilters(f => ({ ...f, rooftopType: e.target.value || null }))} style={activeSel(filters.rooftopType)}>
+            <option value="">All Types</option>
+            {types.map(t => <option key={t} value={t}>{t}</option>)}
+          </select>
+          <select value={filters.csm || ""} onChange={e => setFilters(f => ({ ...f, csm: e.target.value || null }))} style={activeSel(filters.csm)}>
+            <option value="">All CSMs</option>
+            {csms.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+          {activeCount > 0 && (
+            <button onClick={() => setFilters({ search: "", rooftopType: null, csm: null })}
+              style={{ padding: "7px 14px", borderRadius: 8, border: "1px solid #fca5a5", background: "#fef2f2", color: "#dc2626", fontSize: 13, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>
+              Clear {activeCount} filter{activeCount > 1 ? "s" : ""}
+            </button>
+          )}
+        </div>
+        {activeCount > 0 && (
+          <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+            {filters.rooftopType && <Badge label={`Type: ${filters.rooftopType}`} color="blue" />}
+            {filters.csm && <Badge label={`CSM: ${filters.csm}`} color="blue" />}
+          </div>
+        )}
+      </div>
+      <div style={{ overflowX: "auto", borderRadius: 10, border: "1px solid #e5e7eb" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+          <thead>
+            <tr style={{ background: "#f9fafb" }}>
+              {cols.map(c => (
+                <th key={c.key} onClick={() => handleSort(c.key)} style={{ padding: "10px 14px", textAlign: "left", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "nowrap", cursor: "pointer", userSelect: "none" }}>
+                  {c.label} {sortCol === c.key ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
+                </th>
+              ))}
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {sorted.length === 0 && (
+              <tr><td colSpan={8} style={{ padding: 40, textAlign: "center", color: "#9ca3af", fontSize: 14 }}>No records match the current filters.</td></tr>
+            )}
+            {sorted.map((r, i) => (
+              <tr key={r.name} style={{ background: i % 2 === 0 ? "#fff" : "#f9fafb" }}>
+                <td style={{ ...tdStyle, fontWeight: 600 }}>{r.name}</td>
+                <td style={tdStyle}><Badge label={r.type} color={r.type === "Franchise" ? "blue" : "gray"} /></td>
+                <td style={tdStyle}>{r.csm}</td>
+                <td style={tdStyle}><ClickableNum value={r.total} color="#4f46e5" onClick={() => onDrillDown({ rooftop: r.name })} /></td>
+                <td style={tdStyle}><ClickableNum value={r.processed} color="#166534" onClick={() => onDrillDown({ rooftop: r.name, status: "Delivered" })} /></td>
+                <td style={tdStyle}>
+                  {r.processedAfter24 > 0
+                    ? <span onClick={() => onDrillDown({ rooftop: r.name, status: "Delivered", after24h: true })} style={{ cursor: "pointer" }}><Badge label={r.processedAfter24} color="amber" /></span>
+                    : <span style={{ color: "#9ca3af" }}>0</span>}
+                </td>
+                <td style={tdStyle}><ClickableNum value={r.notProcessed} color="#991b1b" onClick={() => onDrillDown({ rooftop: r.name, status: "Not Delivered" })} /></td>
+                <td style={tdStyle}>
+                  {r.notProcessedAfter24 > 0
+                    ? <span onClick={() => onDrillDown({ rooftop: r.name, status: "Not Delivered", after24h: true })} style={{ cursor: "pointer" }}><Badge label={r.notProcessedAfter24} color="red" /></span>
+                    : <span style={{ color: "#9ca3af" }}>0</span>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div style={{ marginTop: 10, fontSize: 12, color: "#9ca3af" }}>Showing {sorted.length} of {allRooftops.length} rooftops</div>
     </div>
   );
 }
 
-function OverviewTab({ data, onDrillDown }) {
-  const byType = useMemo(() => {
-    const map = {};
+function EnterpriseTab({ data, onDrillDown }) {
+  const enterprises = useMemo(() => {
+    const map: Record<string, any> = {};
     data.forEach(d => {
-      if (!map[d.rooftopType]) map[d.rooftopType] = { label: d.rooftopType, total: 0, processed: 0, processedAfter24: 0, notProcessed: 0, notProcessedAfter24: 0 };
-      const r = map[d.rooftopType]; r.total++;
+      if (!map[d.enterpriseId]) map[d.enterpriseId] = { id: d.enterpriseId, name: d.enterprise, total: 0, processed: 0, processedAfter24: 0, notProcessed: 0, notProcessedAfter24: 0 };
+      const r = map[d.enterpriseId]; r.total++;
       if (d.status === "Delivered") { r.processed++; if (isAfter24h(d)) r.processedAfter24++; }
       else { r.notProcessed++; if (isAfter24h(d)) r.notProcessedAfter24++; }
     });
     return Object.values(map);
   }, [data]);
 
-  const byCSM = useMemo(() => {
-    const map = {};
+  const tdStyle = { padding: "10px 14px", borderBottom: "1px solid #f3f4f6" };
+
+  return (
+    <div style={{ overflowX: "auto", borderRadius: 10, border: "1px solid #e5e7eb" }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+        <thead>
+          <tr style={{ background: "#f9fafb" }}>
+            {["Enterprise ID", "Enterprise Name", "Total Inventory", "VIN Delivered", "Delivered >24h", "VIN Not Delivered", "Not Delivered >24h", "Delivery Rate"].map(h => (
+              <th key={h} style={{ padding: "10px 14px", textAlign: "left", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "nowrap" }}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {enterprises.map((r, i) => {
+            const rate = r.total === 0 ? 0 : (r.processed / r.total) * 100;
+            return (
+              <tr key={r.id} style={{ background: i % 2 === 0 ? "#fff" : "#f9fafb" }}>
+                <td style={{ ...tdStyle, fontFamily: "monospace", fontSize: 12, color: "#0ea5e9", fontWeight: 600 }}>{r.id}</td>
+                <td style={{ ...tdStyle, fontWeight: 600 }}>{r.name}</td>
+                <td style={tdStyle}><ClickableNum value={r.total} color="#4f46e5" onClick={() => onDrillDown({ enterprise: r.name })} /></td>
+                <td style={tdStyle}><ClickableNum value={r.processed} color="#166534" onClick={() => onDrillDown({ enterprise: r.name, status: "Delivered" })} /></td>
+                <td style={tdStyle}>
+                  {r.processedAfter24 > 0
+                    ? <span onClick={() => onDrillDown({ enterprise: r.name, status: "Delivered", after24h: true })} style={{ cursor: "pointer" }}><Badge label={r.processedAfter24} color="amber" /></span>
+                    : <span style={{ color: "#9ca3af" }}>0</span>}
+                </td>
+                <td style={tdStyle}><ClickableNum value={r.notProcessed} color="#991b1b" onClick={() => onDrillDown({ enterprise: r.name, status: "Not Delivered" })} /></td>
+                <td style={tdStyle}>
+                  {r.notProcessedAfter24 > 0
+                    ? <span onClick={() => onDrillDown({ enterprise: r.name, status: "Not Delivered", after24h: true })} style={{ cursor: "pointer" }}><Badge label={r.notProcessedAfter24} color="red" /></span>
+                    : <span style={{ color: "#9ca3af" }}>0</span>}
+                </td>
+                <td style={tdStyle}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <div style={{ width: 80, height: 8, background: "#e5e7eb", borderRadius: 4, overflow: "hidden" }}>
+                      <div style={{ width: `${rate}%`, height: "100%", background: rate >= 70 ? "#22c55e" : rate >= 50 ? "#eab308" : "#ef4444", borderRadius: 4 }} />
+                    </div>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: "#374151" }}>{rate.toFixed(0)}%</span>
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function CSMTab({ data, onDrillDown }) {
+  const csms = useMemo(() => {
+    const map: Record<string, any> = {};
     data.forEach(d => {
-      if (!map[d.csm]) map[d.csm] = { label: d.csm, total: 0, processed: 0, processedAfter24: 0, notProcessed: 0, notProcessedAfter24: 0 };
+      if (!map[d.csm]) map[d.csm] = { name: d.csm, total: 0, processed: 0, processedAfter24: 0, notProcessed: 0, notProcessedAfter24: 0 };
       const r = map[d.csm]; r.total++;
       if (d.status === "Delivered") { r.processed++; if (isAfter24h(d)) r.processedAfter24++; }
       else { r.notProcessed++; if (isAfter24h(d)) r.notProcessedAfter24++; }
     });
     return Object.values(map);
+  }, [data]);
+
+  const tdStyle = { padding: "10px 14px", borderBottom: "1px solid #f3f4f6" };
+
+  return (
+    <div style={{ overflowX: "auto", borderRadius: 10, border: "1px solid #e5e7eb" }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+        <thead>
+          <tr style={{ background: "#f9fafb" }}>
+            {["CSM Name", "Total Inventory", "VIN Delivered", "Delivered >24h", "VIN Not Delivered", "Not Delivered >24h", "Delivery Rate"].map(h => (
+              <th key={h} style={{ padding: "10px 14px", textAlign: "left", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "nowrap" }}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {csms.map((r, i) => {
+            const rate = r.total === 0 ? 0 : (r.processed / r.total) * 100;
+            return (
+              <tr key={r.name} style={{ background: i % 2 === 0 ? "#fff" : "#f9fafb" }}>
+                <td style={{ ...tdStyle, fontWeight: 600 }}>{r.name}</td>
+                <td style={tdStyle}><ClickableNum value={r.total} color="#4f46e5" onClick={() => onDrillDown({ csm: r.name })} /></td>
+                <td style={tdStyle}><ClickableNum value={r.processed} color="#166534" onClick={() => onDrillDown({ csm: r.name, status: "Delivered" })} /></td>
+                <td style={tdStyle}>
+                  {r.processedAfter24 > 0
+                    ? <span onClick={() => onDrillDown({ csm: r.name, status: "Delivered", after24h: true })} style={{ cursor: "pointer" }}><Badge label={r.processedAfter24} color="amber" /></span>
+                    : <span style={{ color: "#9ca3af" }}>0</span>}
+                </td>
+                <td style={tdStyle}><ClickableNum value={r.notProcessed} color="#991b1b" onClick={() => onDrillDown({ csm: r.name, status: "Not Delivered" })} /></td>
+                <td style={tdStyle}>
+                  {r.notProcessedAfter24 > 0
+                    ? <span onClick={() => onDrillDown({ csm: r.name, status: "Not Delivered", after24h: true })} style={{ cursor: "pointer" }}><Badge label={r.notProcessedAfter24} color="red" /></span>
+                    : <span style={{ color: "#9ca3af" }}>0</span>}
+                </td>
+                <td style={tdStyle}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <div style={{ width: 80, height: 8, background: "#e5e7eb", borderRadius: 4, overflow: "hidden" }}>
+                      <div style={{ width: `${rate}%`, height: "100%", background: rate >= 70 ? "#22c55e" : rate >= 50 ? "#eab308" : "#ef4444", borderRadius: 4 }} />
+                    </div>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: "#374151" }}>{rate.toFixed(0)}%</span>
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function OverviewTab({ data, onDrillDown, onRooftopDrillDown }) {
+  const byType = useMemo(() => {
+    const map: Record<string, any> = {};
+    const rooftopMap: Record<string, Set<string>> = {};
+    data.forEach(d => {
+      if (!map[d.rooftopType]) { map[d.rooftopType] = { label: d.rooftopType, rooftopCount: 0, total: 0, processed: 0, processedAfter24: 0, notProcessed: 0, notProcessedAfter24: 0 }; rooftopMap[d.rooftopType] = new Set(); }
+      rooftopMap[d.rooftopType].add(d.rooftop);
+      const r = map[d.rooftopType]; r.total++;
+      if (d.status === "Delivered") { r.processed++; if (isAfter24h(d)) r.processedAfter24++; }
+      else { r.notProcessed++; if (isAfter24h(d)) r.notProcessedAfter24++; }
+    });
+    Object.keys(map).forEach(k => { map[k].rooftopCount = rooftopMap[k].size; });
+    return Object.values(map);
+  }, [data]);
+
+  const byCSM = useMemo(() => {
+    const map: Record<string, any> = {};
+    const rooftopMap: Record<string, Set<string>> = {};
+    data.forEach(d => {
+      if (!map[d.csm]) { map[d.csm] = { label: d.csm, rooftopCount: 0, total: 0, processed: 0, processedAfter24: 0, notProcessed: 0, notProcessedAfter24: 0 }; rooftopMap[d.csm] = new Set(); }
+      rooftopMap[d.csm].add(d.rooftop);
+      const r = map[d.csm]; r.total++;
+      if (d.status === "Delivered") { r.processed++; if (isAfter24h(d)) r.processedAfter24++; }
+      else { r.notProcessed++; if (isAfter24h(d)) r.notProcessedAfter24++; }
+    });
+    Object.keys(map).forEach(k => { map[k].rooftopCount = rooftopMap[k].size; });
+    return Object.values(map).sort((a, b) => a.label.localeCompare(b.label));
   }, [data]);
 
   const totals = useMemo(() => {
@@ -294,61 +494,92 @@ function OverviewTab({ data, onDrillDown }) {
     return t;
   }, [data]);
 
-  function SummaryTable({ title, rows, colorHeader, filterKey }) {
+  function SummaryTable({ title, rows, colorHeader, filterKey, onRooftopDrillDown, scrollable = false }) {
+    const totRow = rows.reduce((t, r) => ({
+      total: t.total + r.total, processed: t.processed + r.processed, processedAfter24: t.processedAfter24 + r.processedAfter24,
+      notProcessed: t.notProcessed + r.notProcessed, notProcessedAfter24: t.notProcessedAfter24 + r.notProcessedAfter24,
+      rooftopCount: t.rooftopCount + r.rooftopCount,
+    }), { total: 0, processed: 0, processedAfter24: 0, notProcessed: 0, notProcessedAfter24: 0, rooftopCount: 0 });
+    const totRate = totRow.total === 0 ? 0 : (totRow.processed / totRow.total) * 100;
+    const nameCol = filterKey === "rooftopType" ? "Rooftop Type" : "CSM Name";
+    const td = { padding: "10px 14px", borderBottom: "1px solid #f3f4f6" };
+    const totTd = { padding: "10px 14px", background: "#f9fafb", fontWeight: 700, borderTop: "2px solid #e5e7eb" };
     return (
       <div style={{ marginBottom: 28 }}>
         <h3 style={{ fontSize: 16, fontWeight: 700, color: "#1f2937", marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
           <span style={{ width: 4, height: 20, borderRadius: 2, background: colorHeader, display: "inline-block" }} />
           {title}
         </h3>
-        <div style={{ overflowX: "auto", borderRadius: 10, border: "1px solid #e5e7eb" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-            <thead>
-              <tr style={{ background: "#f9fafb" }}>
-                {[filterKey === "rooftopType" ? "Rooftop Type" : "CSM Name", "Total", "Delivered", "Delivered >24h", "Not Delivered", "Not Delivered >24h", "Delivery Rate"].map(h => (
-                  <th key={h} style={{ padding: "10px 14px", textAlign: "left", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "nowrap" }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r, i) => {
-                const rate = r.total === 0 ? 0 : (r.processed / r.total) * 100;
-                const base = { [filterKey]: r.label };
-                return (
-                  <tr key={r.label} style={{ background: i % 2 === 0 ? "#fff" : "#f9fafb" }}>
-                    <td style={{ padding: "10px 14px", fontWeight: 600, borderBottom: "1px solid #f3f4f6" }}>{r.label}</td>
-                    <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}>
-                      <ClickableNum value={r.total} color="#4f46e5" onClick={() => onDrillDown(base)} />
-                    </td>
-                    <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}>
-                      <ClickableNum value={r.processed} color="#166534" onClick={() => onDrillDown({ ...base, status: "Delivered" })} />
-                    </td>
-                    <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}>
-                      {r.processedAfter24 > 0
-                        ? <span onClick={() => onDrillDown({ ...base, status: "Delivered", after24h: true })} style={{ cursor: "pointer" }}><Badge label={r.processedAfter24} color="amber" /></span>
-                        : "0"}
-                    </td>
-                    <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}>
-                      <ClickableNum value={r.notProcessed} color="#991b1b" onClick={() => onDrillDown({ ...base, status: "Not Delivered" })} />
-                    </td>
-                    <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}>
-                      {r.notProcessedAfter24 > 0
-                        ? <span onClick={() => onDrillDown({ ...base, status: "Not Delivered", after24h: true })} style={{ cursor: "pointer" }}><Badge label={r.notProcessedAfter24} color="red" /></span>
-                        : "0"}
-                    </td>
-                    <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <div style={{ width: 80, height: 8, background: "#e5e7eb", borderRadius: 4, overflow: "hidden" }}>
-                          <div style={{ width: `${rate}%`, height: "100%", background: rate >= 70 ? "#22c55e" : rate >= 50 ? "#eab308" : "#ef4444", borderRadius: 4 }} />
+        <div style={{ borderRadius: 10, border: "1px solid #e5e7eb", overflow: "hidden" }}>
+          <div style={{ overflowX: "auto", ...(scrollable ? { maxHeight: 260, overflowY: "auto" } : {}) }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <thead style={{ position: scrollable ? "sticky" : "static", top: 0, zIndex: 1 }}>
+                <tr style={{ background: "#f9fafb" }}>
+                  {[nameCol, "Rooftops", "Total", "Delivered", "Delivered >24h", "Not Delivered", "Not Delivered >24h", "Delivery Rate"].map(h => (
+                    <th key={h} style={{ padding: "10px 14px", textAlign: "left", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "nowrap", background: "#f9fafb" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r, i) => {
+                  const rate = r.total === 0 ? 0 : (r.processed / r.total) * 100;
+                  const base = { [filterKey]: r.label };
+                  return (
+                    <tr key={r.label} style={{ background: i % 2 === 0 ? "#fff" : "#f9fafb" }}>
+                      <td style={{ ...td, fontWeight: 600 }}>
+                        <span onClick={() => onRooftopDrillDown({ [filterKey]: r.label })} title="Click to view in Rooftop View"
+                          style={{ cursor: "pointer", color: "#111827", textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 3 }}
+                          onMouseEnter={e => (e.currentTarget.style.color = "#4f46e5")} onMouseLeave={e => (e.currentTarget.style.color = "#111827")}>
+                          {r.label}
+                        </span>
+                      </td>
+                      <td style={{ ...td, color: "#6b7280" }}>{r.rooftopCount}</td>
+                      <td style={td}><ClickableNum value={r.total} color="#4f46e5" onClick={() => onDrillDown(base)} /></td>
+                      <td style={td}><ClickableNum value={r.processed} color="#166534" onClick={() => onDrillDown({ ...base, status: "Delivered" })} /></td>
+                      <td style={td}>
+                        {r.processedAfter24 > 0
+                          ? <span onClick={() => onDrillDown({ ...base, status: "Delivered", after24h: true })} style={{ cursor: "pointer" }}><Badge label={r.processedAfter24} color="amber" /></span>
+                          : "0"}
+                      </td>
+                      <td style={td}><ClickableNum value={r.notProcessed} color="#991b1b" onClick={() => onDrillDown({ ...base, status: "Not Delivered" })} /></td>
+                      <td style={td}>
+                        {r.notProcessedAfter24 > 0
+                          ? <span onClick={() => onDrillDown({ ...base, status: "Not Delivered", after24h: true })} style={{ cursor: "pointer" }}><Badge label={r.notProcessedAfter24} color="red" /></span>
+                          : "0"}
+                      </td>
+                      <td style={td}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <div style={{ width: 80, height: 8, background: "#e5e7eb", borderRadius: 4, overflow: "hidden" }}>
+                            <div style={{ width: `${rate}%`, height: "100%", background: rate >= 70 ? "#22c55e" : rate >= 50 ? "#eab308" : "#ef4444", borderRadius: 4 }} />
+                          </div>
+                          <span style={{ fontSize: 12, fontWeight: 600, color: "#374151" }}>{rate.toFixed(0)}%</span>
                         </div>
-                        <span style={{ fontSize: 12, fontWeight: 600, color: "#374151" }}>{rate.toFixed(0)}%</span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+              <tfoot>
+                <tr>
+                  <td style={{ ...totTd }}>Total</td>
+                  <td style={{ ...totTd, color: "#6b7280" }}>{totRow.rooftopCount}</td>
+                  <td style={totTd}><ClickableNum value={totRow.total} color="#4f46e5" onClick={() => onDrillDown({})} /></td>
+                  <td style={totTd}><ClickableNum value={totRow.processed} color="#166534" onClick={() => onDrillDown({ status: "Delivered" })} /></td>
+                  <td style={totTd}>{totRow.processedAfter24 > 0 ? <Badge label={totRow.processedAfter24} color="amber" /> : "0"}</td>
+                  <td style={totTd}><ClickableNum value={totRow.notProcessed} color="#991b1b" onClick={() => onDrillDown({ status: "Not Delivered" })} /></td>
+                  <td style={totTd}>{totRow.notProcessedAfter24 > 0 ? <Badge label={totRow.notProcessedAfter24} color="red" /> : "0"}</td>
+                  <td style={totTd}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <div style={{ width: 80, height: 8, background: "#e5e7eb", borderRadius: 4, overflow: "hidden" }}>
+                        <div style={{ width: `${totRate}%`, height: "100%", background: totRate >= 70 ? "#22c55e" : totRate >= 50 ? "#eab308" : "#ef4444", borderRadius: 4 }} />
                       </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                      <span style={{ fontSize: 12, fontWeight: 700, color: "#374151" }}>{totRate.toFixed(0)}%</span>
+                    </div>
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
         </div>
       </div>
     );
@@ -362,26 +593,33 @@ function OverviewTab({ data, onDrillDown }) {
         <StatCard label="VIN Not Delivered" value={totals.notProcessed} sub={`${totals.notProcessedAfter24} over 24h`} color="#ef4444" onClick={() => onDrillDown({ status: "Not Delivered" })} />
         <StatCard label="Delivered >24h" value={totals.processedAfter24} color="#f59e0b" onClick={() => onDrillDown({ status: "Delivered", after24h: true })} />
       </div>
-      <SummaryTable title="By Rooftop Type" rows={byType} colorHeader="#6366f1" filterKey="rooftopType" />
-      <SummaryTable title="By CSM" rows={byCSM} colorHeader="#0ea5e9" filterKey="csm" />
+      <SummaryTable title="By Rooftop Type" rows={byType} colorHeader="#6366f1" filterKey="rooftopType" onRooftopDrillDown={onRooftopDrillDown} />
+      <SummaryTable title="By CSM" rows={byCSM} colorHeader="#0ea5e9" filterKey="csm" onRooftopDrillDown={onRooftopDrillDown} scrollable={true} />
     </div>
   );
 }
 
 const DEFAULT_FILTERS = { search: "", rooftop: null, rooftopType: null, csm: null, status: null, after24h: null };
+const DEFAULT_ROOFTOP_FILTERS = { search: "", rooftopType: null, csm: null };
 
 export default function Dashboard() {
   const [tab, setTab] = useState("Overview");
   const [rawFilters, setRawFilters] = useState(DEFAULT_FILTERS);
-  const tabs = ["Overview", "Rooftop", "Raw"];
+  const [rooftopFilters, setRooftopFilters] = useState(DEFAULT_ROOFTOP_FILTERS);
+  const tabs = ["Overview", "Enterprise View", "Rooftop View", "CSM View", "VIN Data"];
 
   const handleDrillDown = useCallback((filters) => {
     setRawFilters({ ...DEFAULT_FILTERS, ...filters });
-    setTab("Raw");
+    setTab("VIN Data");
+  }, []);
+
+  const handleRooftopDrillDown = useCallback((filters) => {
+    setRooftopFilters({ ...DEFAULT_ROOFTOP_FILTERS, ...filters });
+    setTab("Rooftop View");
   }, []);
 
   return (
-    <div style={{ fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif", maxWidth: 1100, margin: "0 auto", padding: 20 }}>
+    <div style={{ fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif", maxWidth: 1200, margin: "0 auto", padding: 20 }}>
       <div style={{ marginBottom: 24 }}>
         <h1 style={{ fontSize: 22, fontWeight: 800, color: "#111827", margin: 0 }}>VIN Inventory Dashboard</h1>
         <p style={{ fontSize: 13, color: "#6b7280", margin: "4px 0 0" }}>Tracking VIN processing across rooftops and CSMs — click any number to drill down</p>
@@ -389,7 +627,7 @@ export default function Dashboard() {
 
       <div style={{ display: "flex", gap: 4, marginBottom: 24, background: "#f3f4f6", borderRadius: 10, padding: 4, width: "fit-content" }}>
         {tabs.map(t => (
-          <button key={t} onClick={() => { setTab(t); if (t !== "Raw") setRawFilters(DEFAULT_FILTERS); }} style={{
+          <button key={t} onClick={() => { setTab(t); if (t !== "VIN Data") setRawFilters(DEFAULT_FILTERS); if (t !== "Rooftop View") setRooftopFilters(DEFAULT_ROOFTOP_FILTERS); }} style={{
             padding: "8px 20px", borderRadius: 8, border: "none", cursor: "pointer", fontSize: 14, fontWeight: 600,
             background: tab === t ? "#fff" : "transparent", color: tab === t ? "#111827" : "#6b7280",
             boxShadow: tab === t ? "0 1px 3px rgba(0,0,0,0.1)" : "none", transition: "all 0.15s"
@@ -399,9 +637,11 @@ export default function Dashboard() {
         ))}
       </div>
 
-      {tab === "Overview" && <OverviewTab data={SAMPLE_DATA} onDrillDown={handleDrillDown} />}
-      {tab === "Rooftop" && <RooftopTab data={SAMPLE_DATA} onDrillDown={handleDrillDown} />}
-      {tab === "Raw" && <RawTab data={SAMPLE_DATA} filters={rawFilters} setFilters={setRawFilters} />}
+      {tab === "Overview" && <OverviewTab data={SAMPLE_DATA} onDrillDown={handleDrillDown} onRooftopDrillDown={handleRooftopDrillDown} />}
+      {tab === "Enterprise View" && <EnterpriseTab data={SAMPLE_DATA} onDrillDown={handleDrillDown} />}
+      {tab === "Rooftop View" && <RooftopTab data={SAMPLE_DATA} onDrillDown={handleDrillDown} filters={rooftopFilters} setFilters={setRooftopFilters} />}
+      {tab === "CSM View" && <CSMTab data={SAMPLE_DATA} onDrillDown={handleDrillDown} />}
+      {tab === "VIN Data" && <RawTab data={SAMPLE_DATA} filters={rawFilters} setFilters={setRawFilters} />}
     </div>
   );
 }
