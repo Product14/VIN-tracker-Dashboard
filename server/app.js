@@ -121,24 +121,88 @@ app.post("/api/sync", async (_req, res) => {
   }
 });
 
+// ─── Summary serialisers (snake_case DB → camelCase API) ─────────────────────
+
+function toTotals(r) {
+  return {
+    total:                r.total,
+    processed:            r.processed,
+    processedAfter24:     r.processed_after_24h,
+    notProcessed:         r.not_processed,
+    notProcessedAfter24:  r.not_processed_after_24h,
+  };
+}
+
+function toRooftopRow(r) {
+  return {
+    name:                 r.name,
+    type:                 r.type,
+    csm:                  r.csm,
+    enterpriseId:         r.enterprise_id,
+    enterprise:           r.enterprise,
+    total:                r.total,
+    processed:            r.processed,
+    processedAfter24:     r.processed_after_24h,
+    notProcessed:         r.not_processed,
+    notProcessedAfter24:  r.not_processed_after_24h,
+  };
+}
+
+function toEnterpriseRow(r) {
+  return {
+    id:                   r.id,
+    name:                 r.name,
+    total:                r.total,
+    processed:            r.processed,
+    processedAfter24:     r.processed_after_24h,
+    notProcessed:         r.not_processed,
+    notProcessedAfter24:  r.not_processed_after_24h,
+  };
+}
+
+function toCsmRow(r) {
+  return {
+    name:                 r.name,
+    label:                r.name,   // OverviewTab uses `label` for this field
+    rooftopCount:         r.rooftop_count,
+    total:                r.total,
+    processed:            r.processed,
+    processedAfter24:     r.processed_after_24h,
+    notProcessed:         r.not_processed,
+    notProcessedAfter24:  r.not_processed_after_24h,
+  };
+}
+
+function toTypeRow(r) {
+  return {
+    label:                r.label,
+    rooftopCount:         r.rooftop_count,
+    total:                r.total,
+    processed:            r.processed,
+    processedAfter24:     r.processed_after_24h,
+    notProcessed:         r.not_processed,
+    notProcessedAfter24:  r.not_processed_after_24h,
+  };
+}
+
 // ─── GET /api/summary ────────────────────────────────────────────────────────
 
 app.get("/api/summary", async (_req, res) => {
   await ensureData();
   const meta         = db.prepare("SELECT MAX(synced_at) AS last_sync, COUNT(*) AS total_rows FROM vins").get();
-  const totals       = db.prepare("SELECT * FROM v_totals").get();
-  const byRooftop    = db.prepare("SELECT * FROM v_by_rooftop").all();
-  const byEnterprise = db.prepare("SELECT * FROM v_by_enterprise").all();
-  const byCSM        = db.prepare("SELECT * FROM v_by_csm").all();
-  const byType       = db.prepare("SELECT * FROM v_by_type").all();
+  const totals       = toTotals(db.prepare("SELECT * FROM v_totals").get());
+  const byRooftop    = db.prepare("SELECT * FROM v_by_rooftop").all().map(toRooftopRow);
+  const byEnterprise = db.prepare("SELECT * FROM v_by_enterprise").all().map(toEnterpriseRow);
+  const byCSM        = db.prepare("SELECT * FROM v_by_csm").all().map(toCsmRow);
+  const byType       = db.prepare("SELECT * FROM v_by_type").all().map(toTypeRow);
   res.json({ lastSync: meta?.last_sync ?? null, totalRows: meta?.total_rows ?? 0, totals, byRooftop, byEnterprise, byCSM, byType });
 });
 
-app.get("/api/summary/totals",        async (_req, res) => { await ensureData(); res.json(db.prepare("SELECT * FROM v_totals").get()); });
-app.get("/api/summary/by-rooftop",    async (_req, res) => { await ensureData(); res.json(db.prepare("SELECT * FROM v_by_rooftop").all()); });
-app.get("/api/summary/by-enterprise", async (_req, res) => { await ensureData(); res.json(db.prepare("SELECT * FROM v_by_enterprise").all()); });
-app.get("/api/summary/by-csm",        async (_req, res) => { await ensureData(); res.json(db.prepare("SELECT * FROM v_by_csm").all()); });
-app.get("/api/summary/by-type",       async (_req, res) => { await ensureData(); res.json(db.prepare("SELECT * FROM v_by_type").all()); });
+app.get("/api/summary/totals",        async (_req, res) => { await ensureData(); res.json(toTotals(db.prepare("SELECT * FROM v_totals").get())); });
+app.get("/api/summary/by-rooftop",    async (_req, res) => { await ensureData(); res.json(db.prepare("SELECT * FROM v_by_rooftop").all().map(toRooftopRow)); });
+app.get("/api/summary/by-enterprise", async (_req, res) => { await ensureData(); res.json(db.prepare("SELECT * FROM v_by_enterprise").all().map(toEnterpriseRow)); });
+app.get("/api/summary/by-csm",        async (_req, res) => { await ensureData(); res.json(db.prepare("SELECT * FROM v_by_csm").all().map(toCsmRow)); });
+app.get("/api/summary/by-type",       async (_req, res) => { await ensureData(); res.json(db.prepare("SELECT * FROM v_by_type").all().map(toTypeRow)); });
 
 // ─── GET /api/vins ───────────────────────────────────────────────────────────
 

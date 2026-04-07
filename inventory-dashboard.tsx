@@ -108,10 +108,10 @@ function StatCard({ label, value, sub, color = "#6366f1", onClick }) {
   );
 }
 
-function FilterBar({ filters, setFilters, data }) {
-  const rooftops = [...new Set(data.map(d => d.rooftop))].sort();
-  const types = [...new Set(data.map(d => d.rooftopType))].sort();
-  const csms = [...new Set(data.map(d => d.csm))].sort();
+function FilterBar({ filters, setFilters, rooftopOptions = [], typeOptions = [], csmOptions = [] }) {
+  const rooftops = rooftopOptions;
+  const types = typeOptions;
+  const csms = csmOptions;
   const activeCount = [filters.rooftop, filters.rooftopType, filters.csm, filters.status, filters.after24h !== null ? "x" : null].filter(Boolean).length;
 
   const sel = { padding: "7px 12px", borderRadius: 8, border: "1px solid #d1d5db", fontSize: 13, background: "#fff", minWidth: 130, outline: "none" };
@@ -164,14 +164,13 @@ function FilterBar({ filters, setFilters, data }) {
   );
 }
 
-function RawTab({ data, filters, setFilters }) {
+function RawTab({ data, filters, setFilters, total, page, pageCount, onPageChange, rooftopOptions, typeOptions, csmOptions }) {
   const [sortCol, setSortCol] = useState(null);
   const [sortDir, setSortDir] = useState("asc");
-  const filtered = applyRawFilters(data, filters);
 
   const sorted = useMemo(() => {
-    if (!sortCol) return filtered;
-    return [...filtered].sort((a, b) => {
+    if (!sortCol) return data;
+    return [...data].sort((a, b) => {
       let va = a[sortCol], vb = b[sortCol];
       if (sortCol === "after24h") { va = isAfter24h(a); vb = isAfter24h(b); }
       if (va === null || va === undefined) return 1;
@@ -179,7 +178,7 @@ function RawTab({ data, filters, setFilters }) {
       if (typeof va === "string") return sortDir === "asc" ? va.localeCompare(vb) : vb.localeCompare(va);
       return sortDir === "asc" ? (va > vb ? 1 : -1) : (va < vb ? 1 : -1);
     });
-  }, [filtered, sortCol, sortDir]);
+  }, [data, sortCol, sortDir]);
 
   const handleSort = (col) => {
     if (sortCol === col) setSortDir(d => d === "asc" ? "desc" : "asc");
@@ -205,7 +204,7 @@ function RawTab({ data, filters, setFilters }) {
       <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
         <DownloadButton onClick={handleDownload} />
       </div>
-      <FilterBar filters={filters} setFilters={setFilters} data={data} />
+      <FilterBar filters={filters} setFilters={setFilters} rooftopOptions={rooftopOptions} typeOptions={typeOptions} csmOptions={csmOptions} />
       <div style={{ overflowX: "auto", borderRadius: 10, border: "1px solid #e5e7eb" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
           <thead>
@@ -239,25 +238,27 @@ function RawTab({ data, filters, setFilters }) {
           </tbody>
         </table>
       </div>
-      <div style={{ marginTop: 10, fontSize: 12, color: "#9ca3af" }}>Showing {sorted.length} of {data.length} records</div>
+      <div style={{ marginTop: 10, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+        <span style={{ fontSize: 12, color: "#9ca3af" }}>Showing {data.length} of {total.toLocaleString()} records</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <button onClick={() => onPageChange(page - 1)} disabled={page <= 1}
+            style={{ padding: "5px 12px", borderRadius: 7, border: "1px solid #d1d5db", background: page <= 1 ? "#f3f4f6" : "#fff", fontSize: 13, fontWeight: 600, cursor: page <= 1 ? "not-allowed" : "pointer", color: page <= 1 ? "#9ca3af" : "#374151" }}>
+            ← Prev
+          </button>
+          <span style={{ fontSize: 12, color: "#6b7280" }}>Page {page} of {pageCount}</span>
+          <button onClick={() => onPageChange(page + 1)} disabled={page >= pageCount}
+            style={{ padding: "5px 12px", borderRadius: 7, border: "1px solid #d1d5db", background: page >= pageCount ? "#f3f4f6" : "#fff", fontSize: 13, fontWeight: 600, cursor: page >= pageCount ? "not-allowed" : "pointer", color: page >= pageCount ? "#9ca3af" : "#374151" }}>
+            Next →
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
 
-function RooftopTab({ data, onDrillDown, filters, setFilters }) {
+function RooftopTab({ allRooftops, onDrillDown, filters, setFilters }) {
   const [sortCol, setSortCol] = useState(null);
   const [sortDir, setSortDir] = useState("asc");
-
-  const allRooftops = useMemo(() => {
-    const map: Record<string, any> = {};
-    data.forEach(d => {
-      if (!map[d.rooftop]) map[d.rooftop] = { name: d.rooftop, type: d.rooftopType, csm: d.csm, total: 0, processed: 0, processedAfter24: 0, notProcessed: 0, notProcessedAfter24: 0 };
-      const r = map[d.rooftop]; r.total++;
-      if (d.status === "Delivered") { r.processed++; if (isAfter24h(d)) r.processedAfter24++; }
-      else { r.notProcessed++; if (isAfter24h(d)) r.notProcessedAfter24++; }
-    });
-    return Object.values(map);
-  }, [data]);
 
   const types = [...new Set(allRooftops.map(r => r.type))].sort();
   const csms = [...new Set(allRooftops.map(r => r.csm))].sort();
@@ -381,17 +382,7 @@ function RooftopTab({ data, onDrillDown, filters, setFilters }) {
   );
 }
 
-function EnterpriseTab({ data, onDrillDown }) {
-  const enterprises = useMemo(() => {
-    const map: Record<string, any> = {};
-    data.forEach(d => {
-      if (!map[d.enterpriseId]) map[d.enterpriseId] = { id: d.enterpriseId, name: d.enterprise, total: 0, processed: 0, processedAfter24: 0, notProcessed: 0, notProcessedAfter24: 0 };
-      const r = map[d.enterpriseId]; r.total++;
-      if (d.status === "Delivered") { r.processed++; if (isAfter24h(d)) r.processedAfter24++; }
-      else { r.notProcessed++; if (isAfter24h(d)) r.notProcessedAfter24++; }
-    });
-    return Object.values(map);
-  }, [data]);
+function EnterpriseTab({ enterprises, onDrillDown }) {
 
   const tdStyle = { padding: "10px 14px", borderBottom: "1px solid #f3f4f6" };
 
@@ -453,17 +444,7 @@ function EnterpriseTab({ data, onDrillDown }) {
   );
 }
 
-function CSMTab({ data, onDrillDown }) {
-  const csms = useMemo(() => {
-    const map: Record<string, any> = {};
-    data.forEach(d => {
-      if (!map[d.csm]) map[d.csm] = { name: d.csm, total: 0, processed: 0, processedAfter24: 0, notProcessed: 0, notProcessedAfter24: 0 };
-      const r = map[d.csm]; r.total++;
-      if (d.status === "Delivered") { r.processed++; if (isAfter24h(d)) r.processedAfter24++; }
-      else { r.notProcessed++; if (isAfter24h(d)) r.notProcessedAfter24++; }
-    });
-    return Object.values(map);
-  }, [data]);
+function CSMTab({ csms, onDrillDown }) {
 
   const tdStyle = { padding: "10px 14px", borderBottom: "1px solid #f3f4f6" };
 
@@ -524,44 +505,7 @@ function CSMTab({ data, onDrillDown }) {
   );
 }
 
-function OverviewTab({ data, onDrillDown, onRooftopDrillDown }) {
-  const byType = useMemo(() => {
-    const map: Record<string, any> = {};
-    const rooftopMap: Record<string, Set<string>> = {};
-    data.forEach(d => {
-      if (!map[d.rooftopType]) { map[d.rooftopType] = { label: d.rooftopType, rooftopCount: 0, total: 0, processed: 0, processedAfter24: 0, notProcessed: 0, notProcessedAfter24: 0 }; rooftopMap[d.rooftopType] = new Set(); }
-      rooftopMap[d.rooftopType].add(d.rooftop);
-      const r = map[d.rooftopType]; r.total++;
-      if (d.status === "Delivered") { r.processed++; if (isAfter24h(d)) r.processedAfter24++; }
-      else { r.notProcessed++; if (isAfter24h(d)) r.notProcessedAfter24++; }
-    });
-    Object.keys(map).forEach(k => { map[k].rooftopCount = rooftopMap[k].size; });
-    return Object.values(map);
-  }, [data]);
-
-  const byCSM = useMemo(() => {
-    const map: Record<string, any> = {};
-    const rooftopMap: Record<string, Set<string>> = {};
-    data.forEach(d => {
-      if (!map[d.csm]) { map[d.csm] = { label: d.csm, rooftopCount: 0, total: 0, processed: 0, processedAfter24: 0, notProcessed: 0, notProcessedAfter24: 0 }; rooftopMap[d.csm] = new Set(); }
-      rooftopMap[d.csm].add(d.rooftop);
-      const r = map[d.csm]; r.total++;
-      if (d.status === "Delivered") { r.processed++; if (isAfter24h(d)) r.processedAfter24++; }
-      else { r.notProcessed++; if (isAfter24h(d)) r.notProcessedAfter24++; }
-    });
-    Object.keys(map).forEach(k => { map[k].rooftopCount = rooftopMap[k].size; });
-    return Object.values(map).sort((a, b) => a.label.localeCompare(b.label));
-  }, [data]);
-
-  const totals = useMemo(() => {
-    let t = { total: 0, processed: 0, notProcessed: 0, processedAfter24: 0, notProcessedAfter24: 0 };
-    data.forEach(d => {
-      t.total++;
-      if (d.status === "Delivered") { t.processed++; if (isAfter24h(d)) t.processedAfter24++; }
-      else { t.notProcessed++; if (isAfter24h(d)) t.notProcessedAfter24++; }
-    });
-    return t;
-  }, [data]);
+function OverviewTab({ totals, byType, byCSM, onDrillDown, onRooftopDrillDown }) {
 
   function SummaryTable({ title, rows, colorHeader, filterKey, onRooftopDrillDown, scrollable = false }) {
     const totRow = rows.reduce((t, r) => ({
@@ -679,54 +623,108 @@ function OverviewTab({ data, onDrillDown, onRooftopDrillDown }) {
 const DEFAULT_FILTERS = { search: "", rooftop: null, rooftopType: null, csm: null, status: null, after24h: null };
 const DEFAULT_ROOFTOP_FILTERS = { search: "", rooftopType: null, csm: null };
 
+const EMPTY_SUMMARY = {
+  totals:       { total: 0, processed: 0, notProcessed: 0, processedAfter24: 0, notProcessedAfter24: 0 },
+  byRooftop:    [],
+  byEnterprise: [],
+  byCSM:        [],
+  byType:       [],
+};
+
 export default function Dashboard() {
   const [tab, setTab] = useState("Overview");
   const [rawFilters, setRawFilters] = useState(DEFAULT_FILTERS);
   const [rooftopFilters, setRooftopFilters] = useState(DEFAULT_ROOFTOP_FILTERS);
-  const [liveData, setLiveData] = useState<any[] | null>(null);
+
+  // Summary data — sourced from /api/summary (DB views, full dataset)
+  const [summary, setSummary] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [lastSync, setLastSync] = useState<string | null>(null);
+
+  // Raw paginated data — sourced from /api/vins, only used in VIN Data tab
+  const [rawData, setRawData] = useState<any[]>([]);
+  const [rawPage, setRawPage] = useState(1);
+  const [rawPageCount, setRawPageCount] = useState(1);
+  const [rawTotal, setRawTotal] = useState(0);
+  const [rawLoading, setRawLoading] = useState(false);
+
   const tabs = ["Overview", "Enterprise View", "Rooftop View", "CSM View", "VIN Data"];
 
-  // Load from DB on mount; auto-sync if DB is empty
-  useEffect(() => {
-    fetch("/api/vins")
+  // Fetch summary data from DB views
+  const loadSummary = useCallback(() => {
+    return fetch("/api/summary")
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
-      .then(({ data, lastSync: ls }: { data: any[]; lastSync: string | null }) => {
-        if (data.length === 0) {
-          // DB empty — trigger first sync automatically
-          syncNow();
-        } else {
-          setLiveData(data);
-          setLastSync(ls);
-          setLoading(false);
-        }
+      .then(json => {
+        if (json.totalRows === 0) return null; // DB empty
+        setSummary(json);
+        setLastSync(json.lastSync);
+        return json;
+      });
+  }, []);
+
+  // Fetch paginated raw VIN rows
+  const loadRawPage = useCallback((page: number, filters: any) => {
+    setRawLoading(true);
+    const params = new URLSearchParams({ page: String(page), pageSize: "50" });
+    if (filters.search)     params.set("search",      filters.search);
+    if (filters.rooftop)    params.set("rooftop",     filters.rooftop);
+    if (filters.rooftopType)params.set("rooftopType", filters.rooftopType);
+    if (filters.csm)        params.set("csm",         filters.csm);
+    if (filters.status)     params.set("status",      filters.status);
+    if (filters.after24h !== null) params.set("after24h", filters.after24h ? "true" : "false");
+
+    fetch(`/api/vins?${params}`)
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+      .then(({ data, total, pageCount }) => {
+        setRawData(data);
+        setRawTotal(total);
+        setRawPageCount(pageCount);
+        setRawLoading(false);
+      })
+      .catch(err => { setFetchError(err.message); setRawLoading(false); });
+  }, []);
+
+  // On mount: load summary; auto-sync if DB is empty
+  useEffect(() => {
+    loadSummary()
+      .then(json => {
+        if (!json) syncNow(); else setLoading(false);
       })
       .catch(err => { setFetchError(err.message); setLoading(false); });
   }, []);
 
-  // Fetch from Metabase → save to DB → update dashboard
+  // Load raw page when switching to VIN Data tab or when filters/page change
+  useEffect(() => {
+    if (tab === "VIN Data") loadRawPage(rawPage, rawFilters);
+  }, [tab, rawPage, rawFilters]);
+
+  // Sync from Metabase → refresh summary
   const syncNow = useCallback(() => {
     setSyncing(true);
     setFetchError(null);
     fetch("/api/sync", { method: "POST" })
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
-      .then(({ data, syncedAt, error }: { data: any[]; syncedAt: string; error?: string }) => {
+      .then(({ error, syncedAt }) => {
         if (error) throw new Error(error);
-        setLiveData(data);
         setLastSync(syncedAt);
-        setSyncing(false);
-        setLoading(false);
+        return loadSummary();
       })
+      .then(() => { setSyncing(false); setLoading(false); })
       .catch(err => { setFetchError(err.message); setSyncing(false); setLoading(false); });
-  }, []);
+  }, [loadSummary]);
 
-  const data = liveData ?? SAMPLE_DATA;
+  const s = summary ?? EMPTY_SUMMARY;
+
+  // Derive filter dropdown options from summary data (full dataset)
+  const rooftopOptions = useMemo(() => [...new Set((s.byRooftop ?? []).map((r: any) => r.name))].sort() as string[], [s.byRooftop]);
+  const typeOptions    = useMemo(() => [...new Set((s.byRooftop ?? []).map((r: any) => r.type))].sort() as string[], [s.byRooftop]);
+  const csmOptions     = useMemo(() => [...new Set((s.byCSM    ?? []).map((r: any) => r.name))].sort() as string[], [s.byCSM]);
 
   const handleDrillDown = useCallback((filters) => {
     setRawFilters({ ...DEFAULT_FILTERS, ...filters });
+    setRawPage(1);
     setTab("VIN Data");
   }, []);
 
@@ -745,9 +743,9 @@ export default function Dashboard() {
         <div style={{ display: "flex", alignItems: "center", gap: 10, paddingTop: 4 }}>
           {(loading || syncing) && <span style={{ fontSize: 12, color: "#6b7280" }}>⟳ {loading ? "Loading…" : "Syncing from Metabase…"}</span>}
           {!loading && !syncing && fetchError && <span style={{ fontSize: 12, color: "#dc2626" }} title={fetchError}>⚠ {fetchError}</span>}
-          {!loading && !syncing && liveData && (
+          {!loading && !syncing && summary && (
             <span style={{ fontSize: 12, color: "#16a34a" }}>
-              ● {liveData.length} records
+              ● {(summary?.totalRows ?? 0).toLocaleString()} records
               {lastSync && <span style={{ color: "#9ca3af" }}> · synced {new Date(lastSync).toLocaleTimeString()}</span>}
             </span>
           )}
@@ -772,11 +770,24 @@ export default function Dashboard() {
         ))}
       </div>
 
-      {tab === "Overview" && <OverviewTab data={data} onDrillDown={handleDrillDown} onRooftopDrillDown={handleRooftopDrillDown} />}
-      {tab === "Enterprise View" && <EnterpriseTab data={data} onDrillDown={handleDrillDown} />}
-      {tab === "Rooftop View" && <RooftopTab data={data} onDrillDown={handleDrillDown} filters={rooftopFilters} setFilters={setRooftopFilters} />}
-      {tab === "CSM View" && <CSMTab data={data} onDrillDown={handleDrillDown} />}
-      {tab === "VIN Data" && <RawTab data={data} filters={rawFilters} setFilters={setRawFilters} />}
+      {tab === "Overview" && <OverviewTab totals={s.totals} byType={s.byType} byCSM={s.byCSM} onDrillDown={handleDrillDown} onRooftopDrillDown={handleRooftopDrillDown} />}
+      {tab === "Enterprise View" && <EnterpriseTab enterprises={s.byEnterprise} onDrillDown={handleDrillDown} />}
+      {tab === "Rooftop View" && <RooftopTab allRooftops={s.byRooftop} onDrillDown={handleDrillDown} filters={rooftopFilters} setFilters={setRooftopFilters} />}
+      {tab === "CSM View" && <CSMTab csms={s.byCSM} onDrillDown={handleDrillDown} />}
+      {tab === "VIN Data" && (
+        <RawTab
+          data={rawData}
+          filters={rawFilters}
+          setFilters={(f) => { setRawFilters(f); setRawPage(1); }}
+          total={rawTotal}
+          page={rawPage}
+          pageCount={rawPageCount}
+          onPageChange={(p) => setRawPage(Math.max(1, Math.min(p, rawPageCount)))}
+          rooftopOptions={rooftopOptions}
+          typeOptions={typeOptions}
+          csmOptions={csmOptions}
+        />
+      )}
     </div>
   );
 }
