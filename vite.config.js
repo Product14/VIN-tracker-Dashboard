@@ -10,6 +10,10 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/metabase-api/, ""),
       },
+      "/api": {
+        target: "http://localhost:3001",
+        changeOrigin: true,
+      },
     },
   },
 });

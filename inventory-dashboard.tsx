@@ -679,43 +679,49 @@ function OverviewTab({ data, onDrillDown, onRooftopDrillDown }) {
 const DEFAULT_FILTERS = { search: "", rooftop: null, rooftopType: null, csm: null, status: null, after24h: null };
 const DEFAULT_ROOFTOP_FILTERS = { search: "", rooftopType: null, csm: null };
 
-const METABASE_URL = "/metabase-api/api/public/card/15e908e4-fe21-4982-9d8c-4aff07f2c948/query/json";
-
-function mapMetabaseRow(row: any) {
-  return {
-    vin: row.vinName ?? "",
-    enterpriseId: row["m.enterpriseId"] ?? "",
-    enterprise: row.name ?? "",
-    rooftopId: String(row["m.teamId"] ?? ""),
-    rooftop: row.rooftop_name ?? "",
-    rooftopType: row.type ?? "",
-    csm: row.email_id ?? "",
-    status: row.status ?? "",
-    after24h: row.after_24hrs !== null && row.after_24hrs !== undefined ? Boolean(row.after_24hrs) : null,
-    receivedAt: row.receivedAt ?? null,
-    processedAt: row.sentAt ?? null,
-  };
-}
-
 export default function Dashboard() {
   const [tab, setTab] = useState("Overview");
   const [rawFilters, setRawFilters] = useState(DEFAULT_FILTERS);
   const [rooftopFilters, setRooftopFilters] = useState(DEFAULT_ROOFTOP_FILTERS);
   const [liveData, setLiveData] = useState<any[] | null>(null);
   const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  const [lastSync, setLastSync] = useState<string | null>(null);
   const tabs = ["Overview", "Enterprise View", "Rooftop View", "CSM View", "VIN Data"];
 
-  const fetchData = useCallback(() => {
-    setLoading(true);
-    setFetchError(null);
-    fetch(METABASE_URL)
+  // Load from DB on mount; auto-sync if DB is empty
+  useEffect(() => {
+    fetch("/api/vins")
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
-      .then((rows: any[]) => { setLiveData(rows.map(mapMetabaseRow)); setLoading(false); })
+      .then(({ data, lastSync: ls }: { data: any[]; lastSync: string | null }) => {
+        if (data.length === 0) {
+          // DB empty — trigger first sync automatically
+          syncNow();
+        } else {
+          setLiveData(data);
+          setLastSync(ls);
+          setLoading(false);
+        }
+      })
       .catch(err => { setFetchError(err.message); setLoading(false); });
   }, []);
 
-  useEffect(() => { fetchData(); }, []);
+  // Fetch from Metabase → save to DB → update dashboard
+  const syncNow = useCallback(() => {
+    setSyncing(true);
+    setFetchError(null);
+    fetch("/api/sync", { method: "POST" })
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+      .then(({ data, syncedAt, error }: { data: any[]; syncedAt: string; error?: string }) => {
+        if (error) throw new Error(error);
+        setLiveData(data);
+        setLastSync(syncedAt);
+        setSyncing(false);
+        setLoading(false);
+      })
+      .catch(err => { setFetchError(err.message); setSyncing(false); setLoading(false); });
+  }, []);
 
   const data = liveData ?? SAMPLE_DATA;
 
@@ -737,14 +743,19 @@ export default function Dashboard() {
           <p style={{ fontSize: 13, color: "#6b7280", margin: "4px 0 0" }}>Tracking VIN processing across rooftops and CSMs — click any number to drill down</p>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10, paddingTop: 4 }}>
-          {loading && <span style={{ fontSize: 12, color: "#6b7280" }}>⟳ Loading…</span>}
-          {!loading && fetchError && <span style={{ fontSize: 12, color: "#dc2626" }} title={fetchError}>⚠ Live data unavailable — showing sample data</span>}
-          {!loading && liveData && <span style={{ fontSize: 12, color: "#16a34a" }}>● Live · {liveData.length} records</span>}
-          <button onClick={fetchData} disabled={loading}
-            style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 12px", borderRadius: 8, border: "1px solid #d1d5db", background: loading ? "#f3f4f6" : "#fff", fontSize: 12, fontWeight: 600, cursor: loading ? "not-allowed" : "pointer", color: loading ? "#9ca3af" : "#374151", transition: "all 0.15s" }}
-            onMouseEnter={e => { if (!loading) e.currentTarget.style.borderColor = "#9ca3af"; }}
+          {(loading || syncing) && <span style={{ fontSize: 12, color: "#6b7280" }}>⟳ {loading ? "Loading…" : "Syncing from Metabase…"}</span>}
+          {!loading && !syncing && fetchError && <span style={{ fontSize: 12, color: "#dc2626" }} title={fetchError}>⚠ {fetchError}</span>}
+          {!loading && !syncing && liveData && (
+            <span style={{ fontSize: 12, color: "#16a34a" }}>
+              ● {liveData.length} records
+              {lastSync && <span style={{ color: "#9ca3af" }}> · synced {new Date(lastSync).toLocaleTimeString()}</span>}
+            </span>
+          )}
+          <button onClick={syncNow} disabled={loading || syncing}
+            style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 12px", borderRadius: 8, border: "1px solid #d1d5db", background: (loading || syncing) ? "#f3f4f6" : "#fff", fontSize: 12, fontWeight: 600, cursor: (loading || syncing) ? "not-allowed" : "pointer", color: (loading || syncing) ? "#9ca3af" : "#374151", transition: "all 0.15s" }}
+            onMouseEnter={e => { if (!loading && !syncing) e.currentTarget.style.borderColor = "#9ca3af"; }}
             onMouseLeave={e => { e.currentTarget.style.borderColor = "#d1d5db"; }}>
-            <span style={{ display: "inline-block", transition: "transform 0.4s", transform: loading ? "rotate(360deg)" : "none" }}>↻</span> Refresh
+            ↻ Refresh
           </button>
         </div>
       </div>
