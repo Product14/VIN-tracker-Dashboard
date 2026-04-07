@@ -98,8 +98,10 @@ function StatCard({ label, value, sub, color = "#6366f1", onClick }) {
       onMouseEnter={e => { if (interactive) { e.currentTarget.style.boxShadow = "0 4px 12px rgba(0,0,0,0.12)"; e.currentTarget.style.transform = "translateY(-2px)"; } }}
       onMouseLeave={e => { if (interactive) { e.currentTarget.style.boxShadow = "0 1px 3px rgba(0,0,0,0.08)"; e.currentTarget.style.transform = "translateY(0)"; } }}>
       <div style={{ fontSize: 13, color: "#6b7280", fontWeight: 500, marginBottom: 4 }}>{label}</div>
-      <div style={{ fontSize: 28, fontWeight: 700, color }}>{value}</div>
-      {sub && <div style={{ fontSize: 12, color: "#9ca3af", marginTop: 2 }}>{sub}</div>}
+      <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+        <div style={{ fontSize: 28, fontWeight: 700, color }}>{value}</div>
+        {sub && <div style={{ fontSize: 13, color: "#9ca3af", fontWeight: 500 }}>({sub})</div>}
+      </div>
       {interactive && <div style={{ fontSize: 11, color: "#a5b4fc", marginTop: 6 }}>Click to view details →</div>}
     </div>
   );
@@ -207,7 +209,7 @@ function RawTab({ data, filters, setFilters }) {
           <thead>
             <tr style={{ background: "#f9fafb" }}>
               {cols.map(c => (
-                <th key={c.key} onClick={() => handleSort(c.key)} style={{ padding: "10px 14px", textAlign: "left", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "nowrap", cursor: "pointer", userSelect: "none" }}>
+                <th key={c.key} onClick={() => handleSort(c.key)} style={{ padding: "10px 14px", textAlign: "left", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "pointer", userSelect: "none" }}>
                   {c.label} {sortCol === c.key ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
                 </th>
               ))}
@@ -291,14 +293,14 @@ function RooftopTab({ data, onDrillDown, filters, setFilters }) {
   const cols = [
     { key: "name", label: "Rooftop Name" }, { key: "type", label: "Type" }, { key: "csm", label: "CSM" },
     { key: "total", label: "Total Inventory" }, { key: "processed", label: "VIN Delivered" },
-    { key: "processedAfter24", label: "Delivered >24h" }, { key: "notProcessed", label: "VIN Not Delivered" },
-    { key: "notProcessedAfter24", label: "Not Delivered >24h" },
+    { key: "processedAfter24", label: "Delivered VINs >24h" }, { key: "notProcessed", label: "Pending VINs" },
+    { key: "notProcessedAfter24", label: "Pending VINs >24h" },
   ];
 
   const tdStyle = { padding: "10px 14px", borderBottom: "1px solid #f3f4f6" };
 
   const handleDownload = () => {
-    const headers = ["Rooftop Name", "Type", "CSM", "Total Inventory", "VIN Delivered", "Delivered >24h", "VIN Not Delivered", "Not Delivered >24h"];
+    const headers = ["Rooftop Name", "Type", "CSM", "Total Inventory", "VIN Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h"];
     const rows = sorted.map(r => [r.name, r.type, r.csm, r.total, r.processed, r.processedAfter24, r.notProcessed, r.notProcessedAfter24]);
     downloadCSV("rooftop-view.csv", headers, rows);
   };
@@ -339,7 +341,7 @@ function RooftopTab({ data, onDrillDown, filters, setFilters }) {
           <thead>
             <tr style={{ background: "#f9fafb" }}>
               {cols.map(c => (
-                <th key={c.key} onClick={() => handleSort(c.key)} style={{ padding: "10px 14px", textAlign: "left", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "nowrap", cursor: "pointer", userSelect: "none" }}>
+                <th key={c.key} onClick={() => handleSort(c.key)} style={{ padding: "10px 14px", textAlign: "left", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "pointer", userSelect: "none" }}>
                   {c.label} {sortCol === c.key ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
                 </th>
               ))}
@@ -392,8 +394,8 @@ function EnterpriseTab({ data, onDrillDown }) {
   const tdStyle = { padding: "10px 14px", borderBottom: "1px solid #f3f4f6" };
 
   const handleDownload = () => {
-    const headers = ["Enterprise ID", "Enterprise Name", "Total Inventory", "VIN Delivered", "Delivered >24h", "VIN Not Delivered", "Not Delivered >24h", "Delivery Rate %"];
-    const rows = enterprises.map(r => [r.id, r.name, r.total, r.processed, r.processedAfter24, r.notProcessed, r.notProcessedAfter24, r.total === 0 ? 0 : ((r.processed / r.total) * 100).toFixed(0)]);
+    const headers = ["Enterprise ID", "Enterprise Name", "Total Inventory", "VIN Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h", "Pending VINs >24h %"];
+    const rows = enterprises.map(r => [r.id, r.name, r.total, r.processed, r.processedAfter24, r.notProcessed, r.notProcessedAfter24, r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0)]);
     downloadCSV("enterprise-view.csv", headers, rows);
   };
 
@@ -406,14 +408,14 @@ function EnterpriseTab({ data, onDrillDown }) {
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
         <thead>
           <tr style={{ background: "#f9fafb" }}>
-            {["Enterprise ID", "Enterprise Name", "Total Inventory", "VIN Delivered", "Delivered >24h", "VIN Not Delivered", "Not Delivered >24h", "Delivery Rate"].map(h => (
-              <th key={h} style={{ padding: "10px 14px", textAlign: "left", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "nowrap" }}>{h}</th>
+            {["Enterprise ID", "Enterprise Name", "Total Inventory", "VIN Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h", "Pending VINs >24h %"].map(h => (
+              <th key={h} style={{ padding: "10px 14px", textAlign: "left", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal" }}>{h}</th>
             ))}
           </tr>
         </thead>
         <tbody>
           {enterprises.map((r, i) => {
-            const rate = r.total === 0 ? 0 : (r.processed / r.total) * 100;
+            const rate = r.total === 0 ? 0 : (r.notProcessedAfter24 / r.total) * 100;
             return (
               <tr key={r.id} style={{ background: i % 2 === 0 ? "#fff" : "#f9fafb" }}>
                 <td style={{ ...tdStyle, fontFamily: "monospace", fontSize: 12, color: "#0ea5e9", fontWeight: 600 }}>{r.id}</td>
@@ -434,7 +436,7 @@ function EnterpriseTab({ data, onDrillDown }) {
                 <td style={tdStyle}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <div style={{ width: 80, height: 8, background: "#e5e7eb", borderRadius: 4, overflow: "hidden" }}>
-                      <div style={{ width: `${rate}%`, height: "100%", background: rate >= 70 ? "#22c55e" : rate >= 50 ? "#eab308" : "#ef4444", borderRadius: 4 }} />
+                      <div style={{ width: `${rate}%`, height: "100%", background: rate >= 30 ? "#ef4444" : rate >= 15 ? "#eab308" : "#22c55e", borderRadius: 4 }} />
                     </div>
                     <span style={{ fontSize: 12, fontWeight: 600, color: "#374151" }}>{rate.toFixed(0)}%</span>
                   </div>
@@ -464,8 +466,8 @@ function CSMTab({ data, onDrillDown }) {
   const tdStyle = { padding: "10px 14px", borderBottom: "1px solid #f3f4f6" };
 
   const handleDownload = () => {
-    const headers = ["CSM Name", "Total Inventory", "VIN Delivered", "Delivered >24h", "VIN Not Delivered", "Not Delivered >24h", "Delivery Rate %"];
-    const rows = csms.map(r => [r.name, r.total, r.processed, r.processedAfter24, r.notProcessed, r.notProcessedAfter24, r.total === 0 ? 0 : ((r.processed / r.total) * 100).toFixed(0)]);
+    const headers = ["CSM Name", "Total Inventory", "VIN Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h", "Pending VINs >24h %"];
+    const rows = csms.map(r => [r.name, r.total, r.processed, r.processedAfter24, r.notProcessed, r.notProcessedAfter24, r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0)]);
     downloadCSV("csm-view.csv", headers, rows);
   };
 
@@ -478,14 +480,14 @@ function CSMTab({ data, onDrillDown }) {
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
         <thead>
           <tr style={{ background: "#f9fafb" }}>
-            {["CSM Name", "Total Inventory", "VIN Delivered", "Delivered >24h", "VIN Not Delivered", "Not Delivered >24h", "Delivery Rate"].map(h => (
-              <th key={h} style={{ padding: "10px 14px", textAlign: "left", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "nowrap" }}>{h}</th>
+            {["CSM Name", "Total Inventory", "VIN Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h", "Pending VINs >24h %"].map(h => (
+              <th key={h} style={{ padding: "10px 14px", textAlign: "left", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal" }}>{h}</th>
             ))}
           </tr>
         </thead>
         <tbody>
           {csms.map((r, i) => {
-            const rate = r.total === 0 ? 0 : (r.processed / r.total) * 100;
+            const rate = r.total === 0 ? 0 : (r.notProcessedAfter24 / r.total) * 100;
             return (
               <tr key={r.name} style={{ background: i % 2 === 0 ? "#fff" : "#f9fafb" }}>
                 <td style={{ ...tdStyle, fontWeight: 600 }}>{r.name}</td>
@@ -505,7 +507,7 @@ function CSMTab({ data, onDrillDown }) {
                 <td style={tdStyle}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <div style={{ width: 80, height: 8, background: "#e5e7eb", borderRadius: 4, overflow: "hidden" }}>
-                      <div style={{ width: `${rate}%`, height: "100%", background: rate >= 70 ? "#22c55e" : rate >= 50 ? "#eab308" : "#ef4444", borderRadius: 4 }} />
+                      <div style={{ width: `${rate}%`, height: "100%", background: rate >= 30 ? "#ef4444" : rate >= 15 ? "#eab308" : "#22c55e", borderRadius: 4 }} />
                     </div>
                     <span style={{ fontSize: 12, fontWeight: 600, color: "#374151" }}>{rate.toFixed(0)}%</span>
                   </div>
@@ -565,7 +567,7 @@ function OverviewTab({ data, onDrillDown, onRooftopDrillDown }) {
       notProcessed: t.notProcessed + r.notProcessed, notProcessedAfter24: t.notProcessedAfter24 + r.notProcessedAfter24,
       rooftopCount: t.rooftopCount + r.rooftopCount,
     }), { total: 0, processed: 0, processedAfter24: 0, notProcessed: 0, notProcessedAfter24: 0, rooftopCount: 0 });
-    const totRate = totRow.total === 0 ? 0 : (totRow.processed / totRow.total) * 100;
+    const totRate = totRow.total === 0 ? 0 : (totRow.notProcessedAfter24 / totRow.total) * 100;
     const nameCol = filterKey === "rooftopType" ? "Rooftop Type" : "CSM Name";
     const td = { padding: "10px 14px", borderBottom: "1px solid #f3f4f6" };
     const totTd = { padding: "10px 14px", background: "#f9fafb", fontWeight: 700, borderTop: "2px solid #e5e7eb" };
@@ -578,8 +580,8 @@ function OverviewTab({ data, onDrillDown, onRooftopDrillDown }) {
           </h3>
           <DownloadButton onClick={() => {
             const nameCol = filterKey === "rooftopType" ? "Rooftop Type" : "CSM Name";
-            const headers = [nameCol, "Rooftops", "Total", "Delivered", "Delivered >24h", "Not Delivered", "Not Delivered >24h", "Delivery Rate %"];
-            const csvRows = rows.map(r => [r.label, r.rooftopCount, r.total, r.processed, r.processedAfter24, r.notProcessed, r.notProcessedAfter24, r.total === 0 ? 0 : ((r.processed / r.total) * 100).toFixed(0)]);
+            const headers = [nameCol, "Rooftops", "Total", "Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h", "Pending VINs >24h %"];
+            const csvRows = rows.map(r => [r.label, r.rooftopCount, r.total, r.processed, r.processedAfter24, r.notProcessed, r.notProcessedAfter24, r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0)]);
             downloadCSV(`overview-${filterKey}.csv`, headers, csvRows);
           }} />
         </div>
@@ -588,14 +590,14 @@ function OverviewTab({ data, onDrillDown, onRooftopDrillDown }) {
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
               <thead style={{ position: scrollable ? "sticky" : "static", top: 0, zIndex: 1 }}>
                 <tr style={{ background: "#f9fafb" }}>
-                  {[nameCol, "Rooftops", "Total", "Delivered", "Delivered >24h", "Not Delivered", "Not Delivered >24h", "Delivery Rate"].map(h => (
-                    <th key={h} style={{ padding: "10px 14px", textAlign: "left", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "nowrap", background: "#f9fafb" }}>{h}</th>
+                  {[nameCol, "Rooftops", "Total", "Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h", "Pending VINs >24h %"].map(h => (
+                    <th key={h} style={{ padding: "10px 14px", textAlign: "left", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", background: "#f9fafb" }}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {rows.map((r, i) => {
-                  const rate = r.total === 0 ? 0 : (r.processed / r.total) * 100;
+                  const rate = r.total === 0 ? 0 : (r.notProcessedAfter24 / r.total) * 100;
                   const base = { [filterKey]: r.label };
                   return (
                     <tr key={r.label} style={{ background: i % 2 === 0 ? "#fff" : "#f9fafb" }}>
@@ -623,7 +625,7 @@ function OverviewTab({ data, onDrillDown, onRooftopDrillDown }) {
                       <td style={td}>
                         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                           <div style={{ width: 80, height: 8, background: "#e5e7eb", borderRadius: 4, overflow: "hidden" }}>
-                            <div style={{ width: `${rate}%`, height: "100%", background: rate >= 70 ? "#22c55e" : rate >= 50 ? "#eab308" : "#ef4444", borderRadius: 4 }} />
+                            <div style={{ width: `${rate}%`, height: "100%", background: rate >= 30 ? "#ef4444" : rate >= 15 ? "#eab308" : "#22c55e", borderRadius: 4 }} />
                           </div>
                           <span style={{ fontSize: 12, fontWeight: 600, color: "#374151" }}>{rate.toFixed(0)}%</span>
                         </div>
@@ -644,7 +646,7 @@ function OverviewTab({ data, onDrillDown, onRooftopDrillDown }) {
                   <td style={totTd}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                       <div style={{ width: 80, height: 8, background: "#e5e7eb", borderRadius: 4, overflow: "hidden" }}>
-                        <div style={{ width: `${totRate}%`, height: "100%", background: totRate >= 70 ? "#22c55e" : totRate >= 50 ? "#eab308" : "#ef4444", borderRadius: 4 }} />
+                        <div style={{ width: `${totRate}%`, height: "100%", background: totRate >= 30 ? "#ef4444" : totRate >= 15 ? "#eab308" : "#22c55e", borderRadius: 4 }} />
                       </div>
                       <span style={{ fontSize: 12, fontWeight: 700, color: "#374151" }}>{totRate.toFixed(0)}%</span>
                     </div>
@@ -663,8 +665,8 @@ function OverviewTab({ data, onDrillDown, onRooftopDrillDown }) {
       <div style={{ display: "flex", gap: 14, marginBottom: 28, flexWrap: "wrap" }}>
         <StatCard label="Total Inventory" value={totals.total} color="#6366f1" onClick={() => onDrillDown({})} />
         <StatCard label="VIN Delivered" value={totals.processed} sub={`${((totals.processed / totals.total) * 100).toFixed(0)}% of total`} color="#22c55e" onClick={() => onDrillDown({ status: "Delivered" })} />
-        <StatCard label="VIN Not Delivered" value={totals.notProcessed} sub={`${totals.notProcessedAfter24} over 24h`} color="#ef4444" onClick={() => onDrillDown({ status: "Not Delivered" })} />
-        <StatCard label="Delivered >24h" value={totals.processedAfter24} color="#f59e0b" onClick={() => onDrillDown({ status: "Delivered", after24h: true })} />
+        <StatCard label="Pending VINs" value={totals.notProcessed} sub={totals.total > 0 ? `${((totals.notProcessed / totals.total) * 100).toFixed(0)}% of total` : ""} color="#ef4444" onClick={() => onDrillDown({ status: "Not Delivered" })} />
+        <StatCard label="Pending VINs >24h" value={totals.notProcessedAfter24} sub={totals.total > 0 ? `${((totals.notProcessedAfter24 / totals.total) * 100).toFixed(0)}% of total` : ""} color="#f59e0b" onClick={() => onDrillDown({ status: "Not Delivered", after24h: true })} />
       </div>
       <SummaryTable title="By Rooftop Type" rows={byType} colorHeader="#6366f1" filterKey="rooftopType" onRooftopDrillDown={onRooftopDrillDown} />
       <SummaryTable title="By CSM" rows={byCSM} colorHeader="#0ea5e9" filterKey="csm" onRooftopDrillDown={onRooftopDrillDown} scrollable={true} />
