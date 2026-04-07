@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from "react";
+import React, { useState, useMemo, useCallback, useEffect } from "react";
 
 const SAMPLE_DATA = [
   { vin: "1HGCM82633A004352", enterpriseId: "ENT-001", enterprise: "Metro Auto Group", rooftopId: "RT-001", rooftop: "Downtown Auto", rooftopType: "Franchise", csm: "Sarah Miller", status: "Delivered", processedAt: "2026-04-06T10:30:00", receivedAt: "2026-04-06T08:00:00" },
@@ -25,8 +25,9 @@ const NOW = new Date("2026-04-07T12:00:00");
 const H24 = 24 * 60 * 60 * 1000;
 
 function isAfter24h(item) {
-  if (item.status === "Delivered") return (new Date(item.processedAt) - new Date(item.receivedAt)) > H24;
-  return (NOW - new Date(item.receivedAt)) > H24;
+  if ("after24h" in item && item.after24h !== null && item.after24h !== undefined) return Boolean(item.after24h);
+  if (item.status === "Delivered") return (new Date(item.processedAt).getTime() - new Date(item.receivedAt).getTime()) > H24;
+  return (NOW.getTime() - new Date(item.receivedAt).getTime()) > H24;
 }
 
 function applyRawFilters(data, filters) {
@@ -82,7 +83,7 @@ function DownloadButton({ onClick }) {
   );
 }
 
-function ClickableNum({ value, color, onClick, title }) {
+function ClickableNum({ value, color, onClick, title = "" }) {
   return (
     <span onClick={onClick} title={title || "Click to view in Raw tab"} style={{ color, fontWeight: 700, cursor: "pointer", textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 3, transition: "opacity 0.15s" }}
       onMouseEnter={e => e.target.style.opacity = 0.7} onMouseLeave={e => e.target.style.opacity = 1}>
@@ -188,9 +189,10 @@ function RawTab({ data, filters, setFilters }) {
   const cols = [
     { key: "vin", label: "VIN" }, { key: "enterpriseId", label: "Enterprise ID" }, { key: "enterprise", label: "Enterprise" },
     { key: "rooftopId", label: "Rooftop ID" }, { key: "rooftop", label: "Rooftop" }, { key: "rooftopType", label: "Type" },
-    { key: "csm", label: "CSM" }, { key: "status", label: "Status" }, { key: "after24h", label: "After 24h?" },
+    { key: "csm", label: "CSM" }, { key: "status", label: "Status" }, { key: "after24h", label: "After 24h?", numeric: true },
     { key: "receivedAt", label: "Received" }, { key: "processedAt", label: "Delivered" }
   ];
+  const numericVinKeys = new Set(["after24h"]);
 
   const handleDownload = () => {
     const headers = ["VIN", "Enterprise ID", "Enterprise", "Rooftop ID", "Rooftop", "Type", "CSM", "Status", "After 24h?", "Received", "Delivered"];
@@ -209,7 +211,7 @@ function RawTab({ data, filters, setFilters }) {
           <thead>
             <tr style={{ background: "#f9fafb" }}>
               {cols.map(c => (
-                <th key={c.key} onClick={() => handleSort(c.key)} style={{ padding: "10px 14px", textAlign: "left", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "pointer", userSelect: "none" }}>
+                <th key={c.key} onClick={() => handleSort(c.key)} style={{ padding: "10px 14px", textAlign: c.numeric ? "center" : "left", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "pointer", userSelect: "none" }}>
                   {c.label} {sortCol === c.key ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
                 </th>
               ))}
@@ -229,7 +231,7 @@ function RawTab({ data, filters, setFilters }) {
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}><Badge label={d.rooftopType} color={d.rooftopType === "Franchise" ? "blue" : "gray"} /></td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}>{d.csm}</td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}><Badge label={d.status} color={d.status === "Delivered" ? "green" : "red"} /></td>
-                <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}>{isAfter24h(d) ? <Badge label="Yes" color="amber" /> : <Badge label="No" color="green" />}</td>
+                <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6", textAlign: "center" }}>{isAfter24h(d) ? <Badge label="Yes" color="amber" /> : <Badge label="No" color="green" />}</td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6", whiteSpace: "nowrap", fontSize: 12 }}>{new Date(d.receivedAt).toLocaleString()}</td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6", whiteSpace: "nowrap", fontSize: 12 }}>{d.processedAt ? new Date(d.processedAt).toLocaleString() : "—"}</td>
               </tr>
@@ -292,9 +294,9 @@ function RooftopTab({ data, onDrillDown, filters, setFilters }) {
 
   const cols = [
     { key: "name", label: "Rooftop Name" }, { key: "type", label: "Type" }, { key: "csm", label: "CSM" },
-    { key: "total", label: "Total Inventory" }, { key: "processed", label: "VIN Delivered" },
-    { key: "processedAfter24", label: "Delivered VINs >24h" }, { key: "notProcessed", label: "Pending VINs" },
-    { key: "notProcessedAfter24", label: "Pending VINs >24h" },
+    { key: "total", label: "Total Inventory", numeric: true }, { key: "processed", label: "VIN Delivered", numeric: true },
+    { key: "processedAfter24", label: "Delivered VINs >24h", numeric: true }, { key: "notProcessed", label: "Pending VINs", numeric: true },
+    { key: "notProcessedAfter24", label: "Pending VINs >24h", numeric: true },
   ];
 
   const tdStyle = { padding: "10px 14px", borderBottom: "1px solid #f3f4f6" };
@@ -341,7 +343,7 @@ function RooftopTab({ data, onDrillDown, filters, setFilters }) {
           <thead>
             <tr style={{ background: "#f9fafb" }}>
               {cols.map(c => (
-                <th key={c.key} onClick={() => handleSort(c.key)} style={{ padding: "10px 14px", textAlign: "left", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "pointer", userSelect: "none" }}>
+                <th key={c.key} onClick={() => handleSort(c.key)} style={{ padding: "10px 14px", textAlign: c.numeric ? "center" : "left", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "pointer", userSelect: "none" }}>
                   {c.label} {sortCol === c.key ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
                 </th>
               ))}
@@ -356,15 +358,15 @@ function RooftopTab({ data, onDrillDown, filters, setFilters }) {
                 <td style={{ ...tdStyle, fontWeight: 600 }}>{r.name}</td>
                 <td style={tdStyle}><Badge label={r.type} color={r.type === "Franchise" ? "blue" : "gray"} /></td>
                 <td style={tdStyle}>{r.csm}</td>
-                <td style={tdStyle}><ClickableNum value={r.total} color="#4f46e5" onClick={() => onDrillDown({ rooftop: r.name })} /></td>
-                <td style={tdStyle}><ClickableNum value={r.processed} color="#166534" onClick={() => onDrillDown({ rooftop: r.name, status: "Delivered" })} /></td>
-                <td style={tdStyle}>
+                <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.total} color="#4f46e5" onClick={() => onDrillDown({ rooftop: r.name })} /></td>
+                <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.processed} color="#166534" onClick={() => onDrillDown({ rooftop: r.name, status: "Delivered" })} /></td>
+                <td style={{ ...tdStyle, textAlign: "center" }}>
                   {r.processedAfter24 > 0
                     ? <span onClick={() => onDrillDown({ rooftop: r.name, status: "Delivered", after24h: true })} style={{ cursor: "pointer" }}><Badge label={r.processedAfter24} color="amber" /></span>
                     : <span style={{ color: "#9ca3af" }}>0</span>}
                 </td>
-                <td style={tdStyle}><ClickableNum value={r.notProcessed} color="#991b1b" onClick={() => onDrillDown({ rooftop: r.name, status: "Not Delivered" })} /></td>
-                <td style={tdStyle}>
+                <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.notProcessed} color="#991b1b" onClick={() => onDrillDown({ rooftop: r.name, status: "Not Delivered" })} /></td>
+                <td style={{ ...tdStyle, textAlign: "center" }}>
                   {r.notProcessedAfter24 > 0
                     ? <span onClick={() => onDrillDown({ rooftop: r.name, status: "Not Delivered", after24h: true })} style={{ cursor: "pointer" }}><Badge label={r.notProcessedAfter24} color="red" /></span>
                     : <span style={{ color: "#9ca3af" }}>0</span>}
@@ -408,8 +410,8 @@ function EnterpriseTab({ data, onDrillDown }) {
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
         <thead>
           <tr style={{ background: "#f9fafb" }}>
-            {["Enterprise ID", "Enterprise Name", "Total Inventory", "VIN Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h", "Pending VINs >24h %"].map(h => (
-              <th key={h} style={{ padding: "10px 14px", textAlign: "left", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal" }}>{h}</th>
+            {["Enterprise ID", "Enterprise Name", "Total Inventory", "VIN Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h", "Pending VINs >24h %"].map((h, idx) => (
+              <th key={h} style={{ padding: "10px 14px", textAlign: idx >= 2 ? "center" : "left", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal" }}>{h}</th>
             ))}
           </tr>
         </thead>
@@ -420,21 +422,21 @@ function EnterpriseTab({ data, onDrillDown }) {
               <tr key={r.id} style={{ background: i % 2 === 0 ? "#fff" : "#f9fafb" }}>
                 <td style={{ ...tdStyle, fontFamily: "monospace", fontSize: 12, color: "#0ea5e9", fontWeight: 600 }}>{r.id}</td>
                 <td style={{ ...tdStyle, fontWeight: 600 }}>{r.name}</td>
-                <td style={tdStyle}><ClickableNum value={r.total} color="#4f46e5" onClick={() => onDrillDown({ enterprise: r.name })} /></td>
-                <td style={tdStyle}><ClickableNum value={r.processed} color="#166534" onClick={() => onDrillDown({ enterprise: r.name, status: "Delivered" })} /></td>
-                <td style={tdStyle}>
+                <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.total} color="#4f46e5" onClick={() => onDrillDown({ enterprise: r.name })} /></td>
+                <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.processed} color="#166534" onClick={() => onDrillDown({ enterprise: r.name, status: "Delivered" })} /></td>
+                <td style={{ ...tdStyle, textAlign: "center" }}>
                   {r.processedAfter24 > 0
                     ? <span onClick={() => onDrillDown({ enterprise: r.name, status: "Delivered", after24h: true })} style={{ cursor: "pointer" }}><Badge label={r.processedAfter24} color="amber" /></span>
                     : <span style={{ color: "#9ca3af" }}>0</span>}
                 </td>
-                <td style={tdStyle}><ClickableNum value={r.notProcessed} color="#991b1b" onClick={() => onDrillDown({ enterprise: r.name, status: "Not Delivered" })} /></td>
-                <td style={tdStyle}>
+                <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.notProcessed} color="#991b1b" onClick={() => onDrillDown({ enterprise: r.name, status: "Not Delivered" })} /></td>
+                <td style={{ ...tdStyle, textAlign: "center" }}>
                   {r.notProcessedAfter24 > 0
                     ? <span onClick={() => onDrillDown({ enterprise: r.name, status: "Not Delivered", after24h: true })} style={{ cursor: "pointer" }}><Badge label={r.notProcessedAfter24} color="red" /></span>
                     : <span style={{ color: "#9ca3af" }}>0</span>}
                 </td>
-                <td style={tdStyle}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <td style={{ ...tdStyle, textAlign: "center" }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
                     <div style={{ width: 80, height: 8, background: "#e5e7eb", borderRadius: 4, overflow: "hidden" }}>
                       <div style={{ width: `${rate}%`, height: "100%", background: rate >= 30 ? "#ef4444" : rate >= 15 ? "#eab308" : "#22c55e", borderRadius: 4 }} />
                     </div>
@@ -480,8 +482,8 @@ function CSMTab({ data, onDrillDown }) {
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
         <thead>
           <tr style={{ background: "#f9fafb" }}>
-            {["CSM Name", "Total Inventory", "VIN Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h", "Pending VINs >24h %"].map(h => (
-              <th key={h} style={{ padding: "10px 14px", textAlign: "left", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal" }}>{h}</th>
+            {["CSM Name", "Total Inventory", "VIN Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h", "Pending VINs >24h %"].map((h, idx) => (
+              <th key={h} style={{ padding: "10px 14px", textAlign: idx >= 1 ? "center" : "left", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal" }}>{h}</th>
             ))}
           </tr>
         </thead>
@@ -491,21 +493,21 @@ function CSMTab({ data, onDrillDown }) {
             return (
               <tr key={r.name} style={{ background: i % 2 === 0 ? "#fff" : "#f9fafb" }}>
                 <td style={{ ...tdStyle, fontWeight: 600 }}>{r.name}</td>
-                <td style={tdStyle}><ClickableNum value={r.total} color="#4f46e5" onClick={() => onDrillDown({ csm: r.name })} /></td>
-                <td style={tdStyle}><ClickableNum value={r.processed} color="#166534" onClick={() => onDrillDown({ csm: r.name, status: "Delivered" })} /></td>
-                <td style={tdStyle}>
+                <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.total} color="#4f46e5" onClick={() => onDrillDown({ csm: r.name })} /></td>
+                <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.processed} color="#166534" onClick={() => onDrillDown({ csm: r.name, status: "Delivered" })} /></td>
+                <td style={{ ...tdStyle, textAlign: "center" }}>
                   {r.processedAfter24 > 0
                     ? <span onClick={() => onDrillDown({ csm: r.name, status: "Delivered", after24h: true })} style={{ cursor: "pointer" }}><Badge label={r.processedAfter24} color="amber" /></span>
                     : <span style={{ color: "#9ca3af" }}>0</span>}
                 </td>
-                <td style={tdStyle}><ClickableNum value={r.notProcessed} color="#991b1b" onClick={() => onDrillDown({ csm: r.name, status: "Not Delivered" })} /></td>
-                <td style={tdStyle}>
+                <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.notProcessed} color="#991b1b" onClick={() => onDrillDown({ csm: r.name, status: "Not Delivered" })} /></td>
+                <td style={{ ...tdStyle, textAlign: "center" }}>
                   {r.notProcessedAfter24 > 0
                     ? <span onClick={() => onDrillDown({ csm: r.name, status: "Not Delivered", after24h: true })} style={{ cursor: "pointer" }}><Badge label={r.notProcessedAfter24} color="red" /></span>
                     : <span style={{ color: "#9ca3af" }}>0</span>}
                 </td>
                 <td style={tdStyle}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
                     <div style={{ width: 80, height: 8, background: "#e5e7eb", borderRadius: 4, overflow: "hidden" }}>
                       <div style={{ width: `${rate}%`, height: "100%", background: rate >= 30 ? "#ef4444" : rate >= 15 ? "#eab308" : "#22c55e", borderRadius: 4 }} />
                     </div>
@@ -590,8 +592,8 @@ function OverviewTab({ data, onDrillDown, onRooftopDrillDown }) {
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
               <thead style={{ position: scrollable ? "sticky" : "static", top: 0, zIndex: 1 }}>
                 <tr style={{ background: "#f9fafb" }}>
-                  {[nameCol, "Rooftops", "Total", "Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h", "Pending VINs >24h %"].map(h => (
-                    <th key={h} style={{ padding: "10px 14px", textAlign: "left", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", background: "#f9fafb" }}>{h}</th>
+                  {[nameCol, "Rooftops", "Total", "Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h", "Pending VINs >24h %"].map((h, idx) => (
+                    <th key={h} style={{ padding: "10px 14px", textAlign: idx >= 1 ? "center" : "left", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", background: "#f9fafb" }}>{h}</th>
                   ))}
                 </tr>
               </thead>
@@ -608,22 +610,22 @@ function OverviewTab({ data, onDrillDown, onRooftopDrillDown }) {
                           {r.label}
                         </span>
                       </td>
-                      <td style={{ ...td, color: "#6b7280" }}>{r.rooftopCount}</td>
-                      <td style={td}><ClickableNum value={r.total} color="#4f46e5" onClick={() => onDrillDown(base)} /></td>
-                      <td style={td}><ClickableNum value={r.processed} color="#166534" onClick={() => onDrillDown({ ...base, status: "Delivered" })} /></td>
-                      <td style={td}>
+                      <td style={{ ...td, textAlign: "center", color: "#6b7280" }}>{r.rooftopCount}</td>
+                      <td style={{ ...td, textAlign: "center" }}><ClickableNum value={r.total} color="#4f46e5" onClick={() => onDrillDown(base)} /></td>
+                      <td style={{ ...td, textAlign: "center" }}><ClickableNum value={r.processed} color="#166534" onClick={() => onDrillDown({ ...base, status: "Delivered" })} /></td>
+                      <td style={{ ...td, textAlign: "center" }}>
                         {r.processedAfter24 > 0
                           ? <span onClick={() => onDrillDown({ ...base, status: "Delivered", after24h: true })} style={{ cursor: "pointer" }}><Badge label={r.processedAfter24} color="amber" /></span>
                           : "0"}
                       </td>
-                      <td style={td}><ClickableNum value={r.notProcessed} color="#991b1b" onClick={() => onDrillDown({ ...base, status: "Not Delivered" })} /></td>
-                      <td style={td}>
+                      <td style={{ ...td, textAlign: "center" }}><ClickableNum value={r.notProcessed} color="#991b1b" onClick={() => onDrillDown({ ...base, status: "Not Delivered" })} /></td>
+                      <td style={{ ...td, textAlign: "center" }}>
                         {r.notProcessedAfter24 > 0
                           ? <span onClick={() => onDrillDown({ ...base, status: "Not Delivered", after24h: true })} style={{ cursor: "pointer" }}><Badge label={r.notProcessedAfter24} color="red" /></span>
                           : "0"}
                       </td>
-                      <td style={td}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <td style={{ ...td, textAlign: "center" }}>
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
                           <div style={{ width: 80, height: 8, background: "#e5e7eb", borderRadius: 4, overflow: "hidden" }}>
                             <div style={{ width: `${rate}%`, height: "100%", background: rate >= 30 ? "#ef4444" : rate >= 15 ? "#eab308" : "#22c55e", borderRadius: 4 }} />
                           </div>
@@ -637,14 +639,14 @@ function OverviewTab({ data, onDrillDown, onRooftopDrillDown }) {
               <tfoot>
                 <tr>
                   <td style={{ ...totTd }}>Total</td>
-                  <td style={{ ...totTd, color: "#6b7280" }}>{totRow.rooftopCount}</td>
-                  <td style={totTd}><ClickableNum value={totRow.total} color="#4f46e5" onClick={() => onDrillDown({})} /></td>
-                  <td style={totTd}><ClickableNum value={totRow.processed} color="#166534" onClick={() => onDrillDown({ status: "Delivered" })} /></td>
-                  <td style={totTd}>{totRow.processedAfter24 > 0 ? <Badge label={totRow.processedAfter24} color="amber" /> : "0"}</td>
-                  <td style={totTd}><ClickableNum value={totRow.notProcessed} color="#991b1b" onClick={() => onDrillDown({ status: "Not Delivered" })} /></td>
-                  <td style={totTd}>{totRow.notProcessedAfter24 > 0 ? <Badge label={totRow.notProcessedAfter24} color="red" /> : "0"}</td>
+                  <td style={{ ...totTd, textAlign: "center", color: "#6b7280" }}>{totRow.rooftopCount}</td>
+                  <td style={{ ...totTd, textAlign: "center" }}><ClickableNum value={totRow.total} color="#4f46e5" onClick={() => onDrillDown({})} /></td>
+                  <td style={{ ...totTd, textAlign: "center" }}><ClickableNum value={totRow.processed} color="#166534" onClick={() => onDrillDown({ status: "Delivered" })} /></td>
+                  <td style={{ ...totTd, textAlign: "center" }}>{totRow.processedAfter24 > 0 ? <Badge label={totRow.processedAfter24} color="amber" /> : "0"}</td>
+                  <td style={{ ...totTd, textAlign: "center" }}><ClickableNum value={totRow.notProcessed} color="#991b1b" onClick={() => onDrillDown({ status: "Not Delivered" })} /></td>
+                  <td style={{ ...totTd, textAlign: "center" }}>{totRow.notProcessedAfter24 > 0 ? <Badge label={totRow.notProcessedAfter24} color="red" /> : "0"}</td>
                   <td style={totTd}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
                       <div style={{ width: 80, height: 8, background: "#e5e7eb", borderRadius: 4, overflow: "hidden" }}>
                         <div style={{ width: `${totRate}%`, height: "100%", background: totRate >= 30 ? "#ef4444" : totRate >= 15 ? "#eab308" : "#22c55e", borderRadius: 4 }} />
                       </div>
@@ -677,11 +679,41 @@ function OverviewTab({ data, onDrillDown, onRooftopDrillDown }) {
 const DEFAULT_FILTERS = { search: "", rooftop: null, rooftopType: null, csm: null, status: null, after24h: null };
 const DEFAULT_ROOFTOP_FILTERS = { search: "", rooftopType: null, csm: null };
 
+const METABASE_URL = "/metabase-api/api/public/card/15e908e4-fe21-4982-9d8c-4aff07f2c948/query/json";
+
+function mapMetabaseRow(row: any) {
+  return {
+    vin: row.vinName ?? "",
+    enterpriseId: row["m.enterpriseId"] ?? "",
+    enterprise: row.name ?? "",
+    rooftopId: String(row["m.teamId"] ?? ""),
+    rooftop: row.rooftop_name ?? "",
+    rooftopType: row.type ?? "",
+    csm: row.email_id ?? "",
+    status: row.status ?? "",
+    after24h: row.after_24hrs !== null && row.after_24hrs !== undefined ? Boolean(row.after_24hrs) : null,
+    receivedAt: row.receivedAt ?? null,
+    processedAt: row.sentAt ?? null,
+  };
+}
+
 export default function Dashboard() {
   const [tab, setTab] = useState("Overview");
   const [rawFilters, setRawFilters] = useState(DEFAULT_FILTERS);
   const [rooftopFilters, setRooftopFilters] = useState(DEFAULT_ROOFTOP_FILTERS);
+  const [liveData, setLiveData] = useState<any[] | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [fetchError, setFetchError] = useState<string | null>(null);
   const tabs = ["Overview", "Enterprise View", "Rooftop View", "CSM View", "VIN Data"];
+
+  useEffect(() => {
+    fetch(METABASE_URL)
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+      .then((rows: any[]) => { setLiveData(rows.map(mapMetabaseRow)); setLoading(false); })
+      .catch(err => { setFetchError(err.message); setLoading(false); });
+  }, []);
+
+  const data = liveData ?? SAMPLE_DATA;
 
   const handleDrillDown = useCallback((filters) => {
     setRawFilters({ ...DEFAULT_FILTERS, ...filters });
@@ -695,9 +727,16 @@ export default function Dashboard() {
 
   return (
     <div style={{ fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif", maxWidth: 1200, margin: "0 auto", padding: 20 }}>
-      <div style={{ marginBottom: 24 }}>
-        <h1 style={{ fontSize: 22, fontWeight: 800, color: "#111827", margin: 0 }}>VIN Inventory Dashboard</h1>
-        <p style={{ fontSize: 13, color: "#6b7280", margin: "4px 0 0" }}>Tracking VIN processing across rooftops and CSMs — click any number to drill down</p>
+      <div style={{ marginBottom: 24, display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+        <div>
+          <h1 style={{ fontSize: 22, fontWeight: 800, color: "#111827", margin: 0 }}>VIN Inventory Dashboard</h1>
+          <p style={{ fontSize: 13, color: "#6b7280", margin: "4px 0 0" }}>Tracking VIN processing across rooftops and CSMs — click any number to drill down</p>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, paddingTop: 4 }}>
+          {loading && <span style={{ fontSize: 12, color: "#6b7280" }}>⟳ Loading live data…</span>}
+          {!loading && fetchError && <span style={{ fontSize: 12, color: "#dc2626" }} title={fetchError}>⚠ Live data unavailable — showing sample data</span>}
+          {!loading && liveData && <span style={{ fontSize: 12, color: "#16a34a" }}>● Live · {liveData.length} records</span>}
+        </div>
       </div>
 
       <div style={{ display: "flex", gap: 4, marginBottom: 24, background: "#f3f4f6", borderRadius: 10, padding: 4, width: "fit-content" }}>
@@ -712,11 +751,11 @@ export default function Dashboard() {
         ))}
       </div>
 
-      {tab === "Overview" && <OverviewTab data={SAMPLE_DATA} onDrillDown={handleDrillDown} onRooftopDrillDown={handleRooftopDrillDown} />}
-      {tab === "Enterprise View" && <EnterpriseTab data={SAMPLE_DATA} onDrillDown={handleDrillDown} />}
-      {tab === "Rooftop View" && <RooftopTab data={SAMPLE_DATA} onDrillDown={handleDrillDown} filters={rooftopFilters} setFilters={setRooftopFilters} />}
-      {tab === "CSM View" && <CSMTab data={SAMPLE_DATA} onDrillDown={handleDrillDown} />}
-      {tab === "VIN Data" && <RawTab data={SAMPLE_DATA} filters={rawFilters} setFilters={setRawFilters} />}
+      {tab === "Overview" && <OverviewTab data={data} onDrillDown={handleDrillDown} onRooftopDrillDown={handleRooftopDrillDown} />}
+      {tab === "Enterprise View" && <EnterpriseTab data={data} onDrillDown={handleDrillDown} />}
+      {tab === "Rooftop View" && <RooftopTab data={data} onDrillDown={handleDrillDown} filters={rooftopFilters} setFilters={setRooftopFilters} />}
+      {tab === "CSM View" && <CSMTab data={data} onDrillDown={handleDrillDown} />}
+      {tab === "VIN Data" && <RawTab data={data} filters={rawFilters} setFilters={setRawFilters} />}
     </div>
   );
 }
