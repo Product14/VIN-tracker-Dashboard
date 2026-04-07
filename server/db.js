@@ -3,7 +3,13 @@ import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const db = new Database(join(__dirname, "vins.db"));
+
+// On Vercel the main filesystem is read-only; use /tmp instead.
+const DB_PATH = process.env.VERCEL
+  ? "/tmp/vins.db"
+  : join(__dirname, "vins.db");
+
+const db = new Database(DB_PATH);
 
 // ─── Schema ──────────────────────────────────────────────────────────────────
 
@@ -37,10 +43,10 @@ db.exec(`
   DROP VIEW IF EXISTS v_totals;
   CREATE VIEW v_totals AS
   SELECT
-    COUNT(*)                                                                     AS total,
-    SUM(CASE WHEN status = 'Delivered' THEN 1 ELSE 0 END)                       AS processed,
+    COUNT(*)                                                                          AS total,
+    SUM(CASE WHEN status = 'Delivered' THEN 1 ELSE 0 END)                            AS processed,
     SUM(CASE WHEN status = 'Delivered' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END) AS processed_after_24h,
-    SUM(CASE WHEN status != 'Delivered' THEN 1 ELSE 0 END)                      AS not_processed,
+    SUM(CASE WHEN status != 'Delivered' THEN 1 ELSE 0 END)                           AS not_processed,
     SUM(CASE WHEN status != 'Delivered' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END) AS not_processed_after_24h
   FROM vins;
 `);
@@ -49,15 +55,15 @@ db.exec(`
   DROP VIEW IF EXISTS v_by_rooftop;
   CREATE VIEW v_by_rooftop AS
   SELECT
-    rooftop                                                                      AS name,
-    rooftop_type                                                                 AS type,
+    rooftop       AS name,
+    rooftop_type  AS type,
     csm,
-    enterprise_id                                                                AS enterprise_id,
+    enterprise_id,
     enterprise,
-    COUNT(*)                                                                     AS total,
-    SUM(CASE WHEN status = 'Delivered' THEN 1 ELSE 0 END)                       AS processed,
+    COUNT(*)                                                                          AS total,
+    SUM(CASE WHEN status = 'Delivered' THEN 1 ELSE 0 END)                            AS processed,
     SUM(CASE WHEN status = 'Delivered' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END) AS processed_after_24h,
-    SUM(CASE WHEN status != 'Delivered' THEN 1 ELSE 0 END)                      AS not_processed,
+    SUM(CASE WHEN status != 'Delivered' THEN 1 ELSE 0 END)                           AS not_processed,
     SUM(CASE WHEN status != 'Delivered' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END) AS not_processed_after_24h
   FROM vins
   GROUP BY rooftop;
@@ -67,12 +73,12 @@ db.exec(`
   DROP VIEW IF EXISTS v_by_enterprise;
   CREATE VIEW v_by_enterprise AS
   SELECT
-    enterprise_id                                                                AS id,
-    enterprise                                                                   AS name,
-    COUNT(*)                                                                     AS total,
-    SUM(CASE WHEN status = 'Delivered' THEN 1 ELSE 0 END)                       AS processed,
+    enterprise_id AS id,
+    enterprise    AS name,
+    COUNT(*)                                                                          AS total,
+    SUM(CASE WHEN status = 'Delivered' THEN 1 ELSE 0 END)                            AS processed,
     SUM(CASE WHEN status = 'Delivered' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END) AS processed_after_24h,
-    SUM(CASE WHEN status != 'Delivered' THEN 1 ELSE 0 END)                      AS not_processed,
+    SUM(CASE WHEN status != 'Delivered' THEN 1 ELSE 0 END)                           AS not_processed,
     SUM(CASE WHEN status != 'Delivered' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END) AS not_processed_after_24h
   FROM vins
   GROUP BY enterprise_id;
@@ -82,12 +88,12 @@ db.exec(`
   DROP VIEW IF EXISTS v_by_csm;
   CREATE VIEW v_by_csm AS
   SELECT
-    csm                                                                          AS name,
-    COUNT(DISTINCT rooftop)                                                      AS rooftop_count,
-    COUNT(*)                                                                     AS total,
-    SUM(CASE WHEN status = 'Delivered' THEN 1 ELSE 0 END)                       AS processed,
+    csm                     AS name,
+    COUNT(DISTINCT rooftop) AS rooftop_count,
+    COUNT(*)                                                                          AS total,
+    SUM(CASE WHEN status = 'Delivered' THEN 1 ELSE 0 END)                            AS processed,
     SUM(CASE WHEN status = 'Delivered' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END) AS processed_after_24h,
-    SUM(CASE WHEN status != 'Delivered' THEN 1 ELSE 0 END)                      AS not_processed,
+    SUM(CASE WHEN status != 'Delivered' THEN 1 ELSE 0 END)                           AS not_processed,
     SUM(CASE WHEN status != 'Delivered' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END) AS not_processed_after_24h
   FROM vins
   GROUP BY csm
@@ -98,12 +104,12 @@ db.exec(`
   DROP VIEW IF EXISTS v_by_type;
   CREATE VIEW v_by_type AS
   SELECT
-    rooftop_type                                                                 AS label,
-    COUNT(DISTINCT rooftop)                                                      AS rooftop_count,
-    COUNT(*)                                                                     AS total,
-    SUM(CASE WHEN status = 'Delivered' THEN 1 ELSE 0 END)                       AS processed,
+    rooftop_type            AS label,
+    COUNT(DISTINCT rooftop) AS rooftop_count,
+    COUNT(*)                                                                          AS total,
+    SUM(CASE WHEN status = 'Delivered' THEN 1 ELSE 0 END)                            AS processed,
     SUM(CASE WHEN status = 'Delivered' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END) AS processed_after_24h,
-    SUM(CASE WHEN status != 'Delivered' THEN 1 ELSE 0 END)                      AS not_processed,
+    SUM(CASE WHEN status != 'Delivered' THEN 1 ELSE 0 END)                           AS not_processed,
     SUM(CASE WHEN status != 'Delivered' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END) AS not_processed_after_24h
   FROM vins
   GROUP BY rooftop_type;
