@@ -57,6 +57,31 @@ function Badge({ label, color }) {
   return <span style={{ display: "inline-block", padding: "2px 10px", borderRadius: 999, fontSize: 12, fontWeight: 600, background: c.bg, color: c.text, border: `1px solid ${c.border}` }}>{label}</span>;
 }
 
+
+function downloadCSV(filename, headers, rows) {
+  const escape = v => {
+    const s = v === null || v === undefined ? "" : String(v);
+    return s.includes(",") || s.includes('"') || s.includes("\n") ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const csv = [headers.map(escape).join(","), ...rows.map(r => r.map(escape).join(","))].join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+}
+
+function DownloadButton({ onClick }) {
+  return (
+    <button onClick={onClick} title="Download as CSV"
+      style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 14px", borderRadius: 8, border: "1px solid #d1d5db", background: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", color: "#374151", transition: "all 0.15s" }}
+      onMouseEnter={e => { e.currentTarget.style.background = "#f9fafb"; e.currentTarget.style.borderColor = "#9ca3af"; }}
+      onMouseLeave={e => { e.currentTarget.style.background = "#fff"; e.currentTarget.style.borderColor = "#d1d5db"; }}>
+      ↓ Download CSV
+    </button>
+  );
+}
+
 function ClickableNum({ value, color, onClick, title }) {
   return (
     <span onClick={onClick} title={title || "Click to view in Raw tab"} style={{ color, fontWeight: 700, cursor: "pointer", textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 3, transition: "opacity 0.15s" }}
@@ -165,8 +190,17 @@ function RawTab({ data, filters, setFilters }) {
     { key: "receivedAt", label: "Received" }, { key: "processedAt", label: "Delivered" }
   ];
 
+  const handleDownload = () => {
+    const headers = ["VIN", "Enterprise ID", "Enterprise", "Rooftop ID", "Rooftop", "Type", "CSM", "Status", "After 24h?", "Received", "Delivered"];
+    const rows = sorted.map(d => [d.vin, d.enterpriseId, d.enterprise, d.rooftopId, d.rooftop, d.rooftopType, d.csm, d.status, isAfter24h(d) ? "Yes" : "No", new Date(d.receivedAt).toLocaleString(), d.processedAt ? new Date(d.processedAt).toLocaleString() : ""]);
+    downloadCSV("vin-data.csv", headers, rows);
+  };
+
   return (
     <div>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
+        <DownloadButton onClick={handleDownload} />
+      </div>
       <FilterBar filters={filters} setFilters={setFilters} data={data} />
       <div style={{ overflowX: "auto", borderRadius: 10, border: "1px solid #e5e7eb" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
@@ -263,8 +297,17 @@ function RooftopTab({ data, onDrillDown, filters, setFilters }) {
 
   const tdStyle = { padding: "10px 14px", borderBottom: "1px solid #f3f4f6" };
 
+  const handleDownload = () => {
+    const headers = ["Rooftop Name", "Type", "CSM", "Total Inventory", "VIN Delivered", "Delivered >24h", "VIN Not Delivered", "Not Delivered >24h"];
+    const rows = sorted.map(r => [r.name, r.type, r.csm, r.total, r.processed, r.processedAfter24, r.notProcessed, r.notProcessedAfter24]);
+    downloadCSV("rooftop-view.csv", headers, rows);
+  };
+
   return (
     <div>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
+        <DownloadButton onClick={handleDownload} />
+      </div>
       <div style={{ marginBottom: 16 }}>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
           <input placeholder="Search Rooftop, CSM..." value={filters.search || ""} onChange={e => setFilters(f => ({ ...f, search: e.target.value }))}
@@ -348,8 +391,18 @@ function EnterpriseTab({ data, onDrillDown }) {
 
   const tdStyle = { padding: "10px 14px", borderBottom: "1px solid #f3f4f6" };
 
+  const handleDownload = () => {
+    const headers = ["Enterprise ID", "Enterprise Name", "Total Inventory", "VIN Delivered", "Delivered >24h", "VIN Not Delivered", "Not Delivered >24h", "Delivery Rate %"];
+    const rows = enterprises.map(r => [r.id, r.name, r.total, r.processed, r.processedAfter24, r.notProcessed, r.notProcessedAfter24, r.total === 0 ? 0 : ((r.processed / r.total) * 100).toFixed(0)]);
+    downloadCSV("enterprise-view.csv", headers, rows);
+  };
+
   return (
-    <div style={{ overflowX: "auto", borderRadius: 10, border: "1px solid #e5e7eb" }}>
+    <div>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
+        <DownloadButton onClick={handleDownload} />
+      </div>
+      <div style={{ overflowX: "auto", borderRadius: 10, border: "1px solid #e5e7eb" }}>
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
         <thead>
           <tr style={{ background: "#f9fafb" }}>
@@ -392,6 +445,7 @@ function EnterpriseTab({ data, onDrillDown }) {
         </tbody>
       </table>
     </div>
+    </div>
   );
 }
 
@@ -409,8 +463,18 @@ function CSMTab({ data, onDrillDown }) {
 
   const tdStyle = { padding: "10px 14px", borderBottom: "1px solid #f3f4f6" };
 
+  const handleDownload = () => {
+    const headers = ["CSM Name", "Total Inventory", "VIN Delivered", "Delivered >24h", "VIN Not Delivered", "Not Delivered >24h", "Delivery Rate %"];
+    const rows = csms.map(r => [r.name, r.total, r.processed, r.processedAfter24, r.notProcessed, r.notProcessedAfter24, r.total === 0 ? 0 : ((r.processed / r.total) * 100).toFixed(0)]);
+    downloadCSV("csm-view.csv", headers, rows);
+  };
+
   return (
-    <div style={{ overflowX: "auto", borderRadius: 10, border: "1px solid #e5e7eb" }}>
+    <div>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
+        <DownloadButton onClick={handleDownload} />
+      </div>
+      <div style={{ overflowX: "auto", borderRadius: 10, border: "1px solid #e5e7eb" }}>
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
         <thead>
           <tr style={{ background: "#f9fafb" }}>
@@ -451,6 +515,7 @@ function CSMTab({ data, onDrillDown }) {
           })}
         </tbody>
       </table>
+    </div>
     </div>
   );
 }
@@ -506,10 +571,18 @@ function OverviewTab({ data, onDrillDown, onRooftopDrillDown }) {
     const totTd = { padding: "10px 14px", background: "#f9fafb", fontWeight: 700, borderTop: "2px solid #e5e7eb" };
     return (
       <div style={{ marginBottom: 28 }}>
-        <h3 style={{ fontSize: 16, fontWeight: 700, color: "#1f2937", marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ width: 4, height: 20, borderRadius: 2, background: colorHeader, display: "inline-block" }} />
-          {title}
-        </h3>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+          <h3 style={{ fontSize: 16, fontWeight: 700, color: "#1f2937", margin: 0, display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ width: 4, height: 20, borderRadius: 2, background: colorHeader, display: "inline-block" }} />
+            {title}
+          </h3>
+          <DownloadButton onClick={() => {
+            const nameCol = filterKey === "rooftopType" ? "Rooftop Type" : "CSM Name";
+            const headers = [nameCol, "Rooftops", "Total", "Delivered", "Delivered >24h", "Not Delivered", "Not Delivered >24h", "Delivery Rate %"];
+            const csvRows = rows.map(r => [r.label, r.rooftopCount, r.total, r.processed, r.processedAfter24, r.notProcessed, r.notProcessedAfter24, r.total === 0 ? 0 : ((r.processed / r.total) * 100).toFixed(0)]);
+            downloadCSV(`overview-${filterKey}.csv`, headers, csvRows);
+          }} />
+        </div>
         <div style={{ borderRadius: 10, border: "1px solid #e5e7eb", overflow: "hidden" }}>
           <div style={{ overflowX: "auto", ...(scrollable ? { maxHeight: 260, overflowY: "auto" } : {}) }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
