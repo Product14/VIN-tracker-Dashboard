@@ -1,18 +1,4 @@
-import app, { syncFromMetabase } from "./app.js";
-
-// ─── Auto-sync every hour (local dev only) ───────────────────────────────────
-
-async function runAutoSync() {
-  try {
-    const { count, syncedAt } = await syncFromMetabase();
-    console.log(`[auto-sync] OK — ${count} rows at ${syncedAt}`);
-  } catch (err) {
-    console.error(`[auto-sync] FAILED — ${err.message}`);
-  }
-}
-
-runAutoSync();
-setInterval(runAutoSync, 60 * 60 * 1000);
+import app from "./app.js";
 
 // ─── Start ───────────────────────────────────────────────────────────────────
 

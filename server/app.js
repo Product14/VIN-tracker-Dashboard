@@ -19,25 +19,13 @@ const cleanAfter24 = (v) => {
   return v ? 1 : 0;
 };
 
-const upsertStmt = db.prepare(`
+const insertStmt = db.prepare(`
   INSERT INTO vins
     (vin, enterprise_id, enterprise, rooftop_id, rooftop, rooftop_type,
      csm, status, after_24h, received_at, processed_at, synced_at)
   VALUES
     (@vin, @enterpriseId, @enterprise, @rooftopId, @rooftop, @rooftopType,
      @csm, @status, @after24h, @receivedAt, @processedAt, @syncedAt)
-  ON CONFLICT(vin) DO UPDATE SET
-    enterprise_id = excluded.enterprise_id,
-    enterprise    = excluded.enterprise,
-    rooftop_id    = excluded.rooftop_id,
-    rooftop       = excluded.rooftop,
-    rooftop_type  = excluded.rooftop_type,
-    csm           = excluded.csm,
-    status        = excluded.status,
-    after_24h     = excluded.after_24h,
-    received_at   = excluded.received_at,
-    processed_at  = excluded.processed_at,
-    synced_at     = excluded.synced_at
 `);
 
 export async function syncFromMetabase() {
@@ -47,9 +35,17 @@ export async function syncFromMetabase() {
 
   const syncedAt = new Date().toISOString();
 
+  // Deduplicate by vin — Metabase sometimes returns the same VIN twice; keep last occurrence.
+  const deduped = Object.values(
+    metaRows.reduce((acc, row) => { acc[row.vinName ?? ""] = row; return acc; }, {})
+  );
+
+  // Delete all existing rows and insert fresh — inside one transaction so the
+  // table is never left empty if the insert fails partway through.
   db.transaction(() => {
-    for (const row of metaRows) {
-      upsertStmt.run({
+    db.prepare("DELETE FROM vins").run();
+    for (const row of deduped) {
+      insertStmt.run({
         vin:          row.vinName ?? "",
         enterpriseId: row["m.enterpriseId"] ?? "",
         enterprise:   row.name ?? "",
@@ -66,7 +62,7 @@ export async function syncFromMetabase() {
     }
   })();
 
-  return { count: metaRows.length, syncedAt };
+  return { count: deduped.length, syncedAt };
 }
 
 // ─── Row serialiser ──────────────────────────────────────────────────────────
@@ -88,19 +84,7 @@ function toApiRow(r) {
   };
 }
 
-// ─── Middleware: auto-sync on cold start if DB is empty ──────────────────────
-// On Vercel /tmp is ephemeral — if the DB is empty, sync before serving.
-
-let syncPromise = null;
-
-async function ensureData() {
-  const { count } = db.prepare("SELECT COUNT(*) AS count FROM vins").get();
-  if (count > 0) return;
-  if (!syncPromise) {
-    syncPromise = syncFromMetabase().finally(() => { syncPromise = null; });
-  }
-  await syncPromise;
-}
+// ─── ensureData removed — data is only refreshed via manual POST /api/sync ───
 
 // ─── GET /api/sync/status ────────────────────────────────────────────────────
 
@@ -188,7 +172,6 @@ function toTypeRow(r) {
 // ─── GET /api/summary ────────────────────────────────────────────────────────
 
 app.get("/api/summary", async (_req, res) => {
-  await ensureData();
   const meta         = db.prepare("SELECT MAX(synced_at) AS last_sync, COUNT(*) AS total_rows FROM vins").get();
   const totals       = toTotals(db.prepare("SELECT * FROM v_totals").get());
   const byRooftop    = db.prepare("SELECT * FROM v_by_rooftop").all().map(toRooftopRow);
@@ -207,7 +190,6 @@ app.get("/api/summary/by-type",       async (_req, res) => { await ensureData();
 // ─── GET /api/vins ───────────────────────────────────────────────────────────
 
 app.get("/api/vins", async (req, res) => {
-  await ensureData();
 
   const page     = Math.max(1, parseInt(req.query.page)     || 1);
   const pageSize = Math.min(500, Math.max(10, parseInt(req.query.pageSize) || 50));
@@ -246,6 +228,38 @@ app.get("/api/vins", async (req, res) => {
 // Keep old path as alias
 app.get("/api/vins/raw", (req, res) => {
   res.redirect(307, `/api/vins?${new URLSearchParams(req.query)}`);
+});
+
+// ─── GET /api/vins/export ────────────────────────────────────────────────────
+
+app.get("/api/vins/export", async (req, res) => {
+
+  const { search, rooftop, rooftopType, csm, status, after24h, enterprise } = req.query;
+
+  const conditions = [];
+  const params     = [];
+
+  if (search) {
+    conditions.push("(vin LIKE ? OR rooftop LIKE ? OR csm LIKE ? OR enterprise LIKE ?)");
+    const s = `%${search}%`;
+    params.push(s, s, s, s);
+  }
+  if (rooftop)     { conditions.push("rooftop = ?");      params.push(rooftop); }
+  if (rooftopType) { conditions.push("rooftop_type = ?"); params.push(rooftopType); }
+  if (csm)         { conditions.push("csm = ?");          params.push(csm); }
+  if (status)      { conditions.push("status = ?");       params.push(status); }
+  if (enterprise)  { conditions.push("enterprise = ?");   params.push(enterprise); }
+  if (after24h === "true"  || after24h === "1") { conditions.push("COALESCE(after_24h,0) = 1"); }
+  if (after24h === "false" || after24h === "0") { conditions.push("COALESCE(after_24h,0) = 0"); }
+
+  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+
+  const rows = db.prepare(`
+    SELECT * FROM vins ${where}
+    ORDER BY received_at DESC NULLS LAST
+  `).all(...params);
+
+  res.json({ data: rows.map(toApiRow) });
 });
 
 export default app;
