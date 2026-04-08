@@ -954,10 +954,19 @@ export default function Dashboard() {
       .catch(err => { setFetchError(err.message); setRawLoading(false); });
   }, []);
 
-  // On mount: load whatever is already in the DB — never auto-sync
+  // On mount: load DB. If empty (fresh deployment), auto-sync once then load.
   useEffect(() => {
     loadSummary()
-      .then(() => setLoading(false))
+      .then(data => {
+        if (data) { setLoading(false); return; }
+        // DB is empty — auto-sync (happens after every new Vercel deployment)
+        setSyncing(true);
+        return fetch("/api/sync", { method: "POST" })
+          .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+          .then(({ error }) => { if (error) throw new Error(error); return loadSummary(); })
+          .then(() => { setSyncing(false); setLoading(false); })
+          .catch(err => { setFetchError(err.message); setSyncing(false); setLoading(false); });
+      })
       .catch(err => { setFetchError(err.message); setLoading(false); });
   }, []);
 
