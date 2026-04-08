@@ -64,33 +64,42 @@ db.exec(`
   DROP VIEW IF EXISTS v_by_rooftop;
   CREATE VIEW v_by_rooftop AS
   SELECT
-    rooftop       AS name,
-    rooftop_type  AS type,
-    csm,
-    enterprise_id,
-    enterprise,
-    COUNT(*)                                                                          AS total,
-    SUM(CASE WHEN status = 'Delivered' THEN 1 ELSE 0 END)                            AS processed,
-    SUM(CASE WHEN status = 'Delivered' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END) AS processed_after_24h,
-    SUM(CASE WHEN status != 'Delivered' THEN 1 ELSE 0 END)                           AS not_processed,
-    SUM(CASE WHEN status != 'Delivered' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END) AS not_processed_after_24h
-  FROM vins
-  GROUP BY rooftop;
+    v.rooftop       AS name,
+    v.rooftop_type  AS type,
+    v.csm,
+    v.enterprise_id,
+    v.enterprise,
+    COUNT(*)                                                                            AS total,
+    SUM(CASE WHEN v.status = 'Delivered' THEN 1 ELSE 0 END)                            AS processed,
+    SUM(CASE WHEN v.status = 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END) AS processed_after_24h,
+    SUM(CASE WHEN v.status != 'Delivered' THEN 1 ELSE 0 END)                           AS not_processed,
+    SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END) AS not_processed_after_24h,
+    MAX(ws.website_score) AS website_score
+  FROM vins v
+  LEFT JOIN website_scores ws ON v.rooftop_id = ws.team_id
+  GROUP BY v.rooftop;
 `);
 
 db.exec(`
   DROP VIEW IF EXISTS v_by_enterprise;
   CREATE VIEW v_by_enterprise AS
   SELECT
-    enterprise_id AS id,
-    enterprise    AS name,
-    COUNT(*)                                                                          AS total,
-    SUM(CASE WHEN status = 'Delivered' THEN 1 ELSE 0 END)                            AS processed,
-    SUM(CASE WHEN status = 'Delivered' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END) AS processed_after_24h,
-    SUM(CASE WHEN status != 'Delivered' THEN 1 ELSE 0 END)                           AS not_processed,
-    SUM(CASE WHEN status != 'Delivered' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END) AS not_processed_after_24h
-  FROM vins
-  GROUP BY enterprise_id;
+    v.enterprise_id AS id,
+    v.enterprise    AS name,
+    COUNT(*)                                                                            AS total,
+    SUM(CASE WHEN v.status = 'Delivered' THEN 1 ELSE 0 END)                            AS processed,
+    SUM(CASE WHEN v.status = 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END) AS processed_after_24h,
+    SUM(CASE WHEN v.status != 'Delivered' THEN 1 ELSE 0 END)                           AS not_processed,
+    SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END) AS not_processed_after_24h,
+    ws_avg.avg_score AS avg_website_score
+  FROM vins v
+  LEFT JOIN (
+    SELECT rv.enterprise_id, ROUND(AVG(ws.website_score), 2) AS avg_score
+    FROM (SELECT DISTINCT enterprise_id, rooftop_id FROM vins) rv
+    INNER JOIN website_scores ws ON rv.rooftop_id = ws.team_id
+    GROUP BY rv.enterprise_id
+  ) ws_avg ON v.enterprise_id = ws_avg.enterprise_id
+  GROUP BY v.enterprise_id;
 `);
 
 db.exec(`

@@ -164,6 +164,7 @@ function toRooftopRow(r) {
     processedAfter24:     r.processed_after_24h,
     notProcessed:         r.not_processed,
     notProcessedAfter24:  r.not_processed_after_24h,
+    websiteScore:         r.website_score ?? null,
   };
 }
 
@@ -176,6 +177,7 @@ function toEnterpriseRow(r) {
     processedAfter24:     r.processed_after_24h,
     notProcessed:         r.not_processed,
     notProcessedAfter24:  r.not_processed_after_24h,
+    avgWebsiteScore:      r.avg_website_score ?? null,
   };
 }
 

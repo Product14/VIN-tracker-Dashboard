@@ -422,13 +422,14 @@ function RooftopTab({ allRooftops, onDrillDown, filters, setFilters }) {
     { key: "total", label: "Total Inventory", numeric: true }, { key: "processed", label: "VIN Delivered", numeric: true },
     { key: "processedAfter24", label: "Delivered VINs >24h", numeric: true }, { key: "notProcessed", label: "Pending VINs", numeric: true },
     { key: "notProcessedAfter24", label: "Pending VINs >24h", numeric: true },
+    { key: "websiteScore", label: "Website Score", numeric: true },
   ];
 
   const tdStyle = { padding: "10px 14px", borderBottom: "1px solid #f3f4f6" };
 
   const handleDownload = () => {
-    const headers = ["Rooftop Name", "Type", "CSM", "Enterprise", "Total Inventory", "VIN Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h"];
-    const rows = sorted.map(r => [r.name, r.type, r.csm, r.enterprise, r.total, r.processed, r.processedAfter24, r.notProcessed, r.notProcessedAfter24]);
+    const headers = ["Rooftop Name", "Type", "CSM", "Enterprise", "Total Inventory", "VIN Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h", "Website Score"];
+    const rows = sorted.map(r => [r.name, r.type, r.csm, r.enterprise, r.total, r.processed, r.processedAfter24, r.notProcessed, r.notProcessedAfter24, r.websiteScore !== null && r.websiteScore !== undefined ? Number(r.websiteScore).toFixed(1) : ""]);
     downloadCSV("rooftop-view.csv", headers, rows);
   };
 
@@ -487,7 +488,7 @@ function RooftopTab({ allRooftops, onDrillDown, filters, setFilters }) {
           </thead>
           <tbody>
             {sorted.length === 0 && (
-              <tr><td colSpan={9} style={{ padding: 40, textAlign: "center", color: "#9ca3af", fontSize: 14 }}>No records match the current filters.</td></tr>
+              <tr><td colSpan={10} style={{ padding: 40, textAlign: "center", color: "#9ca3af", fontSize: 14 }}>No records match the current filters.</td></tr>
             )}
             {sorted.map((r, i) => (
               <tr key={r.name} style={{ background: i % 2 === 0 ? "#fff" : "#f9fafb" }}>
@@ -507,6 +508,13 @@ function RooftopTab({ allRooftops, onDrillDown, filters, setFilters }) {
                   {r.notProcessedAfter24 > 0
                     ? <span onClick={() => onDrillDown({ rooftop: r.name, status: "Not Delivered", after24h: true })} style={{ cursor: "pointer" }}><Badge label={r.notProcessedAfter24} color="red" /></span>
                     : <span style={{ color: "#9ca3af" }}>0</span>}
+                </td>
+                <td style={{ ...tdStyle, textAlign: "center" }}>
+                  {r.websiteScore !== null && r.websiteScore !== undefined
+                    ? <span style={{ fontWeight: 700, color: r.websiteScore >= 8 ? "#166534" : r.websiteScore >= 6 ? "#92400e" : "#991b1b" }}>
+                        {Number(r.websiteScore).toFixed(1)}
+                      </span>
+                    : <span style={{ color: "#9ca3af" }}>—</span>}
                 </td>
               </tr>
             ))}
@@ -533,6 +541,7 @@ function EnterpriseTab({ enterprises, onDrillDown, filters = { search: "" }, set
     { key: "notProcessed",        label: "Pending VINs",        numeric: true },
     { key: "notProcessedAfter24", label: "Pending VINs >24h",   numeric: true },
     { key: "rate",                label: "Pending VINs >24h %", numeric: true },
+    { key: "avgWebsiteScore",     label: "Avg Website Score",   numeric: true },
   ];
 
   const handleSort = col => {
@@ -559,8 +568,8 @@ function EnterpriseTab({ enterprises, onDrillDown, filters = { search: "" }, set
   }, [filtered, sortCol, sortDir]);
 
   const handleDownload = () => {
-    const headers = ["Enterprise ID", "Enterprise Name", "Total Inventory", "VIN Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h", "Pending VINs >24h %"];
-    const rows = sorted.map(r => [r.id, r.name, r.total, r.processed, r.processedAfter24, r.notProcessed, r.notProcessedAfter24, r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0)]);
+    const headers = ["Enterprise ID", "Enterprise Name", "Total Inventory", "VIN Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h", "Pending VINs >24h %", "Avg Website Score"];
+    const rows = sorted.map(r => [r.id, r.name, r.total, r.processed, r.processedAfter24, r.notProcessed, r.notProcessedAfter24, r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0), r.avgWebsiteScore !== null && r.avgWebsiteScore !== undefined ? Number(r.avgWebsiteScore).toFixed(1) : ""]);
     downloadCSV("enterprise-view.csv", headers, rows);
   };
 
@@ -597,7 +606,7 @@ function EnterpriseTab({ enterprises, onDrillDown, filters = { search: "" }, set
           </thead>
           <tbody>
             {sorted.length === 0 && (
-              <tr><td colSpan={8} style={{ padding: 40, textAlign: "center", color: "#9ca3af", fontSize: 14 }}>No records match the current filters.</td></tr>
+              <tr><td colSpan={9} style={{ padding: 40, textAlign: "center", color: "#9ca3af", fontSize: 14 }}>No records match the current filters.</td></tr>
             )}
             {sorted.map((r, i) => {
               const rate = r.total === 0 ? 0 : (r.notProcessedAfter24 / r.total) * 100;
@@ -625,6 +634,13 @@ function EnterpriseTab({ enterprises, onDrillDown, filters = { search: "" }, set
                       </div>
                       <span style={{ fontSize: 12, fontWeight: 600, color: "#374151" }}>{rate.toFixed(0)}%</span>
                     </div>
+                  </td>
+                  <td style={{ ...tdStyle, textAlign: "center" }}>
+                    {r.avgWebsiteScore !== null && r.avgWebsiteScore !== undefined
+                      ? <span style={{ fontWeight: 700, color: r.avgWebsiteScore >= 8 ? "#166534" : r.avgWebsiteScore >= 6 ? "#92400e" : "#991b1b" }}>
+                          {Number(r.avgWebsiteScore).toFixed(1)}
+                        </span>
+                      : <span style={{ color: "#9ca3af" }}>—</span>}
                   </td>
                 </tr>
               );
