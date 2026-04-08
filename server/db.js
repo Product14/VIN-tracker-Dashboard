@@ -64,6 +64,7 @@ db.exec(`
   DROP VIEW IF EXISTS v_by_rooftop;
   CREATE VIEW v_by_rooftop AS
   SELECT
+    v.rooftop_id    AS rooftop_id,
     v.rooftop       AS name,
     v.rooftop_type  AS type,
     v.csm,
@@ -77,7 +78,7 @@ db.exec(`
     MAX(ws.website_score) AS website_score
   FROM vins v
   LEFT JOIN website_scores ws ON v.rooftop_id = ws.team_id
-  GROUP BY v.rooftop;
+  GROUP BY v.rooftop_id;
 `);
 
 db.exec(`

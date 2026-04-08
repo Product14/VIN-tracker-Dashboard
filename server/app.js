@@ -154,6 +154,7 @@ function toTotals(r) {
 
 function toRooftopRow(r) {
   return {
+    rooftopId:            r.rooftop_id,
     name:                 r.name,
     type:                 r.type,
     csm:                  r.csm,
@@ -234,7 +235,7 @@ app.get("/api/vins", async (req, res) => {
   const pageSize = Math.min(500, Math.max(10, parseInt(req.query.pageSize) || 50));
   const offset   = (page - 1) * pageSize;
 
-  const { search, rooftop, rooftopType, csm, status, after24h, enterprise } = req.query;
+  const { search, rooftop, rooftopId, rooftopType, csm, status, after24h, enterprise, enterpriseId } = req.query;
 
   const conditions = [];
   const params     = [];
@@ -244,11 +245,13 @@ app.get("/api/vins", async (req, res) => {
     const s = `%${search}%`;
     params.push(s, s, s, s);
   }
-  if (rooftop)     { conditions.push("rooftop = ?");      params.push(rooftop); }
-  if (rooftopType) { conditions.push("rooftop_type = ?"); params.push(rooftopType); }
-  if (csm)         { conditions.push("csm = ?");          params.push(csm); }
-  if (status)      { conditions.push("status = ?");       params.push(status); }
-  if (enterprise)  { conditions.push("enterprise = ?");   params.push(enterprise); }
+  if (enterpriseId) { conditions.push("enterprise_id = ?"); params.push(enterpriseId); }
+  if (rooftopId)    { conditions.push("rooftop_id = ?");    params.push(rooftopId); }
+  if (rooftop)      { conditions.push("rooftop = ?");       params.push(rooftop); }
+  if (rooftopType)  { conditions.push("rooftop_type = ?");  params.push(rooftopType); }
+  if (csm)          { conditions.push("csm = ?");           params.push(csm); }
+  if (status)       { conditions.push("status = ?");        params.push(status); }
+  if (enterprise)   { conditions.push("enterprise = ?");    params.push(enterprise); }
   if (after24h === "true"  || after24h === "1") { conditions.push("COALESCE(after_24h,0) = 1"); }
   if (after24h === "false" || after24h === "0") { conditions.push("COALESCE(after_24h,0) = 0"); }
 
@@ -273,7 +276,7 @@ app.get("/api/vins/raw", (req, res) => {
 
 app.get("/api/vins/export", async (req, res) => {
 
-  const { search, rooftop, rooftopType, csm, status, after24h, enterprise } = req.query;
+  const { search, rooftop, rooftopId, rooftopType, csm, status, after24h, enterprise, enterpriseId } = req.query;
 
   const conditions = [];
   const params     = [];
@@ -283,11 +286,13 @@ app.get("/api/vins/export", async (req, res) => {
     const s = `%${search}%`;
     params.push(s, s, s, s);
   }
-  if (rooftop)     { conditions.push("rooftop = ?");      params.push(rooftop); }
-  if (rooftopType) { conditions.push("rooftop_type = ?"); params.push(rooftopType); }
-  if (csm)         { conditions.push("csm = ?");          params.push(csm); }
-  if (status)      { conditions.push("status = ?");       params.push(status); }
-  if (enterprise)  { conditions.push("enterprise = ?");   params.push(enterprise); }
+  if (enterpriseId) { conditions.push("enterprise_id = ?"); params.push(enterpriseId); }
+  if (rooftopId)    { conditions.push("rooftop_id = ?");    params.push(rooftopId); }
+  if (rooftop)      { conditions.push("rooftop = ?");       params.push(rooftop); }
+  if (rooftopType)  { conditions.push("rooftop_type = ?");  params.push(rooftopType); }
+  if (csm)          { conditions.push("csm = ?");           params.push(csm); }
+  if (status)       { conditions.push("status = ?");        params.push(status); }
+  if (enterprise)   { conditions.push("enterprise = ?");    params.push(enterprise); }
   if (after24h === "true"  || after24h === "1") { conditions.push("COALESCE(after_24h,0) = 1"); }
   if (after24h === "false" || after24h === "0") { conditions.push("COALESCE(after_24h,0) = 0"); }
 

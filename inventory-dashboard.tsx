@@ -59,6 +59,22 @@ function Badge({ label, color }) {
 }
 
 
+// Strip @spyne.ai domain from CSM emails for display; show full email as tooltip
+function fmtCsm(email: string | null | undefined): string {
+  if (!email) return "—";
+  return email.replace(/@spyne\.ai$/i, "");
+}
+
+// Inline truncation span — shows ellipsis when content overflows, full value on hover
+function Truncated({ value, maxWidth }: { value: string | null | undefined, maxWidth: number }) {
+  const text = value ?? "—";
+  return (
+    <span title={text} style={{ display: "block", maxWidth, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+      {text}
+    </span>
+  );
+}
+
 function downloadCSV(filename, headers, rows) {
   const escape = v => {
     const s = v === null || v === undefined ? "" : String(v);
@@ -197,8 +213,14 @@ function SearchableSelect({ value, onChange, options, placeholder = "All" }) {
   );
 }
 
-function FilterBar({ filters, setFilters, rooftopOptions = [], typeOptions = [], csmOptions = [], enterpriseOptions = [] }) {
-  const activeCount = [filters.enterprise, filters.rooftop, filters.rooftopType, filters.csm, filters.status, filters.after24h !== null ? "x" : null].filter(Boolean).length;
+function FilterBar({ filters, setFilters, rooftopOptions = [], typeOptions = [], csmOptions = [], enterpriseObjects = [] }) {
+  // Build id→name and name→id maps for display vs filter
+  const enterpriseIdToName = useMemo(() => Object.fromEntries(enterpriseObjects.map(e => [e.id, e.name])), [enterpriseObjects]);
+  const enterpriseNameToId = useMemo(() => Object.fromEntries(enterpriseObjects.map(e => [e.name, e.id])), [enterpriseObjects]);
+  const enterpriseNames = useMemo(() => enterpriseObjects.map(e => e.name).sort(), [enterpriseObjects]);
+  const selectedEnterpriseName = filters.enterpriseId ? (enterpriseIdToName[filters.enterpriseId] ?? filters.enterpriseId) : null;
+
+  const activeCount = [filters.enterpriseId, filters.rooftop, filters.rooftopType, filters.csm, filters.status, filters.after24h !== null ? "x" : null].filter(Boolean).length;
 
   return (
     <div style={{ marginBottom: 16 }}>
@@ -206,9 +228,9 @@ function FilterBar({ filters, setFilters, rooftopOptions = [], typeOptions = [],
         <input placeholder="Search VIN, Rooftop, CSM..." value={filters.search || ""} onChange={e => setFilters(f => ({ ...f, search: e.target.value }))}
           style={{ flex: 1, minWidth: 180, padding: "7px 14px", borderRadius: 8, border: "1px solid #d1d5db", fontSize: 13, outline: "none" }} />
         <SearchableSelect
-          value={filters.enterprise}
-          onChange={v => setFilters(f => ({ ...f, enterprise: v }))}
-          options={enterpriseOptions}
+          value={selectedEnterpriseName}
+          onChange={v => setFilters(f => ({ ...f, enterpriseId: v ? (enterpriseNameToId[v] ?? null) : null }))}
+          options={enterpriseNames}
           placeholder="All Enterprises"
         />
         <SearchableSelect
@@ -242,7 +264,7 @@ function FilterBar({ filters, setFilters, rooftopOptions = [], typeOptions = [],
           placeholder="24h: Any"
         />
         {activeCount > 0 && (
-          <button onClick={() => setFilters({ search: "", enterprise: null, rooftop: null, rooftopType: null, csm: null, status: null, after24h: null })}
+          <button onClick={() => setFilters({ search: "", enterpriseId: null, rooftop: null, rooftopType: null, csm: null, status: null, after24h: null })}
             style={{ padding: "7px 14px", borderRadius: 8, border: "1px solid #fca5a5", background: "#fef2f2", color: "#dc2626", fontSize: 13, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>
             Clear {activeCount} filter{activeCount > 1 ? "s" : ""}
           </button>
@@ -250,7 +272,7 @@ function FilterBar({ filters, setFilters, rooftopOptions = [], typeOptions = [],
       </div>
       {activeCount > 0 && (
         <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
-          {filters.enterprise && <Badge label={`Enterprise: ${filters.enterprise}`} color="blue" />}
+          {filters.enterpriseId && <Badge label={`Enterprise: ${selectedEnterpriseName}`} color="blue" />}
           {filters.rooftop && <Badge label={`Rooftop: ${filters.rooftop}`} color="blue" />}
           {filters.rooftopType && <Badge label={`Type: ${filters.rooftopType}`} color="blue" />}
           {filters.csm && <Badge label={`CSM: ${filters.csm}`} color="blue" />}
@@ -262,7 +284,7 @@ function FilterBar({ filters, setFilters, rooftopOptions = [], typeOptions = [],
   );
 }
 
-function RawTab({ data, filters, setFilters, total, page, pageCount, onPageChange, rooftopOptions, typeOptions, csmOptions, enterpriseOptions = [] }) {
+function RawTab({ data, filters, setFilters, total, page, pageCount, onPageChange, rooftopOptions, typeOptions, csmOptions, enterpriseObjects = [] }) {
   const [sortCol, setSortCol] = useState(null);
   const [sortDir, setSortDir] = useState("asc");
   const [downloading, setDownloading] = useState(false);
@@ -300,12 +322,13 @@ function RawTab({ data, filters, setFilters, total, page, pageCount, onPageChang
   const handleDownload = async () => {
     setDownloading(true);
     const params = new URLSearchParams();
-    if (filters.search)      params.set("search",      filters.search);
-    if (filters.enterprise)  params.set("enterprise",  filters.enterprise);
-    if (filters.rooftop)     params.set("rooftop",     filters.rooftop);
-    if (filters.rooftopType) params.set("rooftopType", filters.rooftopType);
-    if (filters.csm)         params.set("csm",         filters.csm);
-    if (filters.status)      params.set("status",      filters.status);
+    if (filters.search)       params.set("search",       filters.search);
+    if (filters.enterpriseId) params.set("enterpriseId", filters.enterpriseId);
+    if (filters.rooftopId)    params.set("rooftopId",    filters.rooftopId);
+    if (filters.rooftop)      params.set("rooftop",      filters.rooftop);
+    if (filters.rooftopType)  params.set("rooftopType",  filters.rooftopType);
+    if (filters.csm)          params.set("csm",          filters.csm);
+    if (filters.status)       params.set("status",       filters.status);
     if (filters.after24h !== null) params.set("after24h", filters.after24h ? "true" : "false");
     try {
       const res = await fetch(`/api/vins/export?${params}`);
@@ -331,7 +354,7 @@ function RawTab({ data, filters, setFilters, total, page, pageCount, onPageChang
           {downloading ? "⟳ Downloading…" : "↓ Download CSV"}
         </button>
       </div>
-      <FilterBar filters={filters} setFilters={setFilters} rooftopOptions={rooftopOptions} typeOptions={typeOptions} csmOptions={csmOptions} enterpriseOptions={enterpriseOptions} />
+      <FilterBar filters={filters} setFilters={setFilters} rooftopOptions={rooftopOptions} typeOptions={typeOptions} csmOptions={csmOptions} enterpriseObjects={enterpriseObjects} />
       <div style={{ maxHeight: "calc(100vh - 260px)", overflow: "auto", borderRadius: 10, border: "1px solid #e5e7eb" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
           <thead>
@@ -349,10 +372,10 @@ function RawTab({ data, filters, setFilters, total, page, pageCount, onPageChang
             )}
             {sorted.map((d, i) => (
               <tr key={d.vin} style={{ background: i % 2 === 0 ? "#fff" : "#f9fafb" }}>
-                <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}>{d.enterprise}</td>
-                <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}>{d.rooftop}</td>
+                <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}><Truncated value={d.enterprise} maxWidth={180} /></td>
+                <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}><Truncated value={d.rooftop} maxWidth={150} /></td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}><Badge label={d.rooftopType} color={d.rooftopType === "Franchise" ? "blue" : "gray"} /></td>
-                <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}>{d.csm}</td>
+                <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}><Truncated value={fmtCsm(d.csm)} maxWidth={130} /></td>
                 <td style={{ padding: "10px 14px", fontFamily: "monospace", fontSize: 12, borderBottom: "1px solid #f3f4f6" }}>{d.vin}</td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}><Badge label={d.status} color={d.status === "Delivered" ? "green" : "red"} /></td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6", textAlign: "center" }}>{isAfter24h(d) ? <Badge label="Yes" color="amber" /> : <Badge label="No" color="green" />}</td>
@@ -403,7 +426,8 @@ function RooftopTab({ allRooftops, onDrillDown, filters, setFilters }) {
   const sorted = useMemo(() => {
     if (!sortCol) return filtered;
     return [...filtered].sort((a, b) => {
-      const va = a[sortCol], vb = b[sortCol];
+      const va = sortCol === "rate" ? (a.total === 0 ? 0 : a.notProcessedAfter24 / a.total) : a[sortCol];
+      const vb = sortCol === "rate" ? (b.total === 0 ? 0 : b.notProcessedAfter24 / b.total) : b[sortCol];
       if (va === null || va === undefined) return 1;
       if (vb === null || vb === undefined) return -1;
       if (typeof va === "string") return sortDir === "asc" ? va.localeCompare(vb) : vb.localeCompare(va);
@@ -419,19 +443,25 @@ function RooftopTab({ allRooftops, onDrillDown, filters, setFilters }) {
 
   const activeCount = [filters.rooftopType, filters.csm, filters.enterprise].filter(Boolean).length;
   const cols = [
-    { key: "name", label: "Rooftop Name" }, { key: "type", label: "Type" }, { key: "csm", label: "CSM" },
-    { key: "enterprise", label: "Enterprise" },
-    { key: "total", label: "Total Inventory", numeric: true }, { key: "processed", label: "VIN Delivered", numeric: true },
-    { key: "processedAfter24", label: "Delivered VINs >24h", numeric: true }, { key: "notProcessed", label: "Pending VINs", numeric: true },
-    { key: "notProcessedAfter24", label: "Pending VINs >24h", numeric: true },
-    { key: "websiteScore", label: "Website Score", numeric: true },
+    { key: "enterprise",          label: "Enterprise Name" },
+    { key: "name",                label: "Rooftop Name" },
+    { key: "type",                label: "Type" },
+    { key: "csm",                 label: "CSM" },
+    { key: "total",               label: "Total Inventory",     numeric: true },
+    { key: "processed",           label: "VINs Delivered",      numeric: true },
+    { key: "notProcessedAfter24", label: "Pending VINs >24h",   numeric: true },
+    { key: "rate",                label: "Pending VINs >24h %", numeric: true },
+    { key: "websiteScore",        label: "Website Score",       numeric: true },
   ];
 
   const tdStyle = { padding: "10px 14px", borderBottom: "1px solid #f3f4f6" };
 
   const handleDownload = () => {
-    const headers = ["Rooftop Name", "Type", "CSM", "Enterprise", "Total Inventory", "VIN Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h", "Website Score"];
-    const rows = sorted.map(r => [r.name, r.type, r.csm, r.enterprise, r.total, r.processed, r.processedAfter24, r.notProcessed, r.notProcessedAfter24, r.websiteScore !== null && r.websiteScore !== undefined ? Number(r.websiteScore).toFixed(1) : ""]);
+    const headers = ["Enterprise Name", "Rooftop Name", "Type", "CSM", "Total Inventory", "VINs Delivered", "Pending VINs >24h", "Pending VINs >24h %", "Website Score"];
+    const rows = sorted.map(r => {
+      const rate = r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0);
+      return [r.enterprise, r.name, r.type, r.csm, r.total, r.processed, r.notProcessedAfter24, rate, r.websiteScore !== null && r.websiteScore !== undefined ? Number(r.websiteScore).toFixed(1) : ""];
+    });
     downloadCSV("rooftop-view.csv", headers, rows);
   };
 
@@ -490,36 +520,41 @@ function RooftopTab({ allRooftops, onDrillDown, filters, setFilters }) {
           </thead>
           <tbody>
             {sorted.length === 0 && (
-              <tr><td colSpan={10} style={{ padding: 40, textAlign: "center", color: "#9ca3af", fontSize: 14 }}>No records match the current filters.</td></tr>
+              <tr><td colSpan={9} style={{ padding: 40, textAlign: "center", color: "#9ca3af", fontSize: 14 }}>No records match the current filters.</td></tr>
             )}
-            {sorted.map((r, i) => (
-              <tr key={r.name} style={{ background: i % 2 === 0 ? "#fff" : "#f9fafb" }}>
-                <td style={{ ...tdStyle, fontWeight: 600 }}>{r.name}</td>
-                <td style={tdStyle}><Badge label={r.type} color={r.type === "Franchise" ? "blue" : "gray"} /></td>
-                <td style={tdStyle}>{r.csm}</td>
-                <td style={tdStyle}>{r.enterprise}</td>
-                <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.total} color="#4f46e5" onClick={() => onDrillDown({ rooftop: r.name })} /></td>
-                <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.processed} color="#166534" onClick={() => onDrillDown({ rooftop: r.name, status: "Delivered" })} /></td>
-                <td style={{ ...tdStyle, textAlign: "center" }}>
-                  {r.processedAfter24 > 0
-                    ? <span onClick={() => onDrillDown({ rooftop: r.name, status: "Delivered", after24h: true })} style={{ cursor: "pointer" }}><Badge label={r.processedAfter24} color="amber" /></span>
-                    : <span style={{ color: "#9ca3af" }}>0</span>}
-                </td>
-                <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.notProcessed} color="#991b1b" onClick={() => onDrillDown({ rooftop: r.name, status: "Not Delivered" })} /></td>
-                <td style={{ ...tdStyle, textAlign: "center" }}>
-                  {r.notProcessedAfter24 > 0
-                    ? <span onClick={() => onDrillDown({ rooftop: r.name, status: "Not Delivered", after24h: true })} style={{ cursor: "pointer" }}><Badge label={r.notProcessedAfter24} color="red" /></span>
-                    : <span style={{ color: "#9ca3af" }}>0</span>}
-                </td>
-                <td style={{ ...tdStyle, textAlign: "center" }}>
-                  {r.websiteScore !== null && r.websiteScore !== undefined
-                    ? <span style={{ fontWeight: 700, color: r.websiteScore >= 8 ? "#166534" : r.websiteScore >= 6 ? "#92400e" : "#991b1b" }}>
-                        {Number(r.websiteScore).toFixed(1)}
-                      </span>
-                    : <span style={{ color: "#9ca3af" }}>—</span>}
-                </td>
-              </tr>
-            ))}
+            {sorted.map((r, i) => {
+              const rate = r.total === 0 ? 0 : (r.notProcessedAfter24 / r.total) * 100;
+              return (
+                <tr key={r.rooftopId || r.name} style={{ background: i % 2 === 0 ? "#fff" : "#f9fafb" }}>
+                  <td style={tdStyle}><Truncated value={r.enterprise} maxWidth={180} /></td>
+                  <td style={{ ...tdStyle, fontWeight: 600 }}><Truncated value={r.name} maxWidth={150} /></td>
+                  <td style={tdStyle}><Badge label={r.type} color={r.type === "Franchise" ? "blue" : "gray"} /></td>
+                  <td style={tdStyle}><Truncated value={fmtCsm(r.csm)} maxWidth={130} /></td>
+                  <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.total} color="#4f46e5" onClick={() => onDrillDown({ rooftopId: r.rooftopId })} /></td>
+                  <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.processed} color="#166534" onClick={() => onDrillDown({ rooftopId: r.rooftopId, status: "Delivered" })} /></td>
+                  <td style={{ ...tdStyle, textAlign: "center" }}>
+                    {r.notProcessedAfter24 > 0
+                      ? <span onClick={() => onDrillDown({ rooftopId: r.rooftopId, status: "Not Delivered", after24h: true })} style={{ cursor: "pointer" }}><Badge label={r.notProcessedAfter24} color="red" /></span>
+                      : <span style={{ color: "#9ca3af" }}>0</span>}
+                  </td>
+                  <td style={{ ...tdStyle, textAlign: "center" }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+                      <div style={{ width: 60, height: 8, background: "#e5e7eb", borderRadius: 4, overflow: "hidden" }}>
+                        <div style={{ width: `${rate}%`, height: "100%", background: rate >= 30 ? "#ef4444" : rate >= 15 ? "#eab308" : "#22c55e", borderRadius: 4 }} />
+                      </div>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: "#374151" }}>{rate.toFixed(0)}%</span>
+                    </div>
+                  </td>
+                  <td style={{ ...tdStyle, textAlign: "center" }}>
+                    {r.websiteScore !== null && r.websiteScore !== undefined
+                      ? <span style={{ fontWeight: 700, color: r.websiteScore >= 8 ? "#166534" : r.websiteScore >= 6 ? "#92400e" : "#991b1b" }}>
+                          {Number(r.websiteScore).toFixed(1)}
+                        </span>
+                      : <span style={{ color: "#9ca3af" }}>—</span>}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -636,20 +671,20 @@ function EnterpriseTab({ enterprises, onDrillDown, filters = { search: "", csm: 
               const rate = r.total === 0 ? 0 : (r.notProcessedAfter24 / r.total) * 100;
               return (
                 <tr key={r.id} style={{ background: i % 2 === 0 ? "#fff" : "#f9fafb" }}>
-                  <td style={{ ...tdStyle, fontFamily: "monospace", fontSize: 12, color: "#0ea5e9", fontWeight: 600 }}>{r.id}</td>
-                  <td style={{ ...tdStyle, fontWeight: 600 }}>{r.name}</td>
-                  <td style={tdStyle}>{r.csm ?? "—"}</td>
-                  <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.total} color="#4f46e5" onClick={() => onDrillDown({ enterprise: r.name })} /></td>
-                  <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.processed} color="#166534" onClick={() => onDrillDown({ enterprise: r.name, status: "Delivered" })} /></td>
+                  <td style={{ ...tdStyle, fontFamily: "monospace", fontSize: 12, color: "#0ea5e9", fontWeight: 600 }}><Truncated value={r.id} maxWidth={90} /></td>
+                  <td style={{ ...tdStyle, fontWeight: 600 }}><Truncated value={r.name} maxWidth={180} /></td>
+                  <td style={tdStyle}><Truncated value={fmtCsm(r.csm)} maxWidth={130} /></td>
+                  <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.total} color="#4f46e5" onClick={() => onDrillDown({ enterpriseId: r.id })} /></td>
+                  <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.processed} color="#166534" onClick={() => onDrillDown({ enterpriseId: r.id, status: "Delivered" })} /></td>
                   <td style={{ ...tdStyle, textAlign: "center" }}>
                     {r.processedAfter24 > 0
-                      ? <span onClick={() => onDrillDown({ enterprise: r.name, status: "Delivered", after24h: true })} style={{ cursor: "pointer" }}><Badge label={r.processedAfter24} color="amber" /></span>
+                      ? <span onClick={() => onDrillDown({ enterpriseId: r.id, status: "Delivered", after24h: true })} style={{ cursor: "pointer" }}><Badge label={r.processedAfter24} color="amber" /></span>
                       : <span style={{ color: "#9ca3af" }}>0</span>}
                   </td>
-                  <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.notProcessed} color="#991b1b" onClick={() => onDrillDown({ enterprise: r.name, status: "Not Delivered" })} /></td>
+                  <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.notProcessed} color="#991b1b" onClick={() => onDrillDown({ enterpriseId: r.id, status: "Not Delivered" })} /></td>
                   <td style={{ ...tdStyle, textAlign: "center" }}>
                     {r.notProcessedAfter24 > 0
-                      ? <span onClick={() => onDrillDown({ enterprise: r.name, status: "Not Delivered", after24h: true })} style={{ cursor: "pointer" }}><Badge label={r.notProcessedAfter24} color="red" /></span>
+                      ? <span onClick={() => onDrillDown({ enterpriseId: r.id, status: "Not Delivered", after24h: true })} style={{ cursor: "pointer" }}><Badge label={r.notProcessedAfter24} color="red" /></span>
                       : <span style={{ color: "#9ca3af" }}>0</span>}
                   </td>
                   <td style={{ ...tdStyle, textAlign: "center" }}>
@@ -707,7 +742,7 @@ function CSMTab({ csms, onDrillDown }) {
             const rate = r.total === 0 ? 0 : (r.notProcessedAfter24 / r.total) * 100;
             return (
               <tr key={r.name} style={{ background: i % 2 === 0 ? "#fff" : "#f9fafb" }}>
-                <td style={{ ...tdStyle, fontWeight: 600 }}>{r.name}</td>
+                <td style={{ ...tdStyle, fontWeight: 600 }}><Truncated value={fmtCsm(r.name)} maxWidth={160} /></td>
                 <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.total} color="#4f46e5" onClick={() => onDrillDown({ csm: r.name })} /></td>
                 <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.processed} color="#166534" onClick={() => onDrillDown({ csm: r.name, status: "Delivered" })} /></td>
                 <td style={{ ...tdStyle, textAlign: "center" }}>
@@ -815,10 +850,10 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
                 return (
                   <tr key={r.label} style={{ background: i % 2 === 0 ? "#fff" : "#f9fafb" }}>
                     <td style={{ ...td, fontWeight: 600 }}>
-                      <span onClick={() => onRooftopDrillDown({ [filterKey]: r.label })} title="Click to view in Rooftop View"
-                        style={{ cursor: "pointer", color: "#111827", textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 3 }}
+                      <span onClick={() => onRooftopDrillDown({ [filterKey]: r.label })} title={r.label}
+                        style={{ cursor: "pointer", color: "#111827", textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 3, display: "block", maxWidth: filterKey === "csm" ? 160 : 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
                         onMouseEnter={e => (e.currentTarget.style.color = "#4f46e5")} onMouseLeave={e => (e.currentTarget.style.color = "#111827")}>
-                        {r.label}
+                        {filterKey === "csm" ? fmtCsm(r.label) : r.label}
                       </span>
                     </td>
                     <td style={{ ...td, textAlign: "center", color: "#6b7280" }}>{r.rooftopCount?.toLocaleString()}</td>
@@ -906,7 +941,7 @@ function timeAgo(isoString: string): string {
   const d = Math.floor(diff / 86400); return `${d} day${d > 1 ? "s" : ""} ago`;
 }
 
-const DEFAULT_FILTERS = { search: "", enterprise: null, rooftop: null, rooftopType: null, csm: null, status: null, after24h: null };
+const DEFAULT_FILTERS = { search: "", enterpriseId: null, rooftop: null, rooftopId: null, rooftopType: null, csm: null, status: null, after24h: null };
 const DEFAULT_ROOFTOP_FILTERS = { search: "", rooftopType: null, csm: null, enterprise: null };
 const DEFAULT_ENTERPRISE_FILTERS = { search: "", csm: null };
 
@@ -957,12 +992,13 @@ export default function Dashboard() {
   const loadRawPage = useCallback((page: number, filters: any) => {
     setRawLoading(true);
     const params = new URLSearchParams({ page: String(page), pageSize: "50" });
-    if (filters.search)      params.set("search",      filters.search);
-    if (filters.enterprise)  params.set("enterprise",  filters.enterprise);
-    if (filters.rooftop)     params.set("rooftop",     filters.rooftop);
-    if (filters.rooftopType) params.set("rooftopType", filters.rooftopType);
-    if (filters.csm)         params.set("csm",         filters.csm);
-    if (filters.status)      params.set("status",      filters.status);
+    if (filters.search)       params.set("search",       filters.search);
+    if (filters.enterpriseId) params.set("enterpriseId", filters.enterpriseId);
+    if (filters.rooftopId)    params.set("rooftopId",    filters.rooftopId);
+    if (filters.rooftop)      params.set("rooftop",      filters.rooftop);
+    if (filters.rooftopType)  params.set("rooftopType",  filters.rooftopType);
+    if (filters.csm)          params.set("csm",          filters.csm);
+    if (filters.status)       params.set("status",       filters.status);
     if (filters.after24h !== null) params.set("after24h", filters.after24h ? "true" : "false");
 
     fetch(`/api/vins?${params}`)
@@ -1021,10 +1057,10 @@ export default function Dashboard() {
   const s = summary ?? EMPTY_SUMMARY;
 
   // Derive filter dropdown options from summary data (full dataset)
-  const rooftopOptions    = useMemo(() => [...new Set((s.byRooftop    ?? []).map((r: any) => r.name))].sort() as string[], [s.byRooftop]);
-  const typeOptions       = useMemo(() => [...new Set((s.byRooftop    ?? []).map((r: any) => r.type))].sort() as string[], [s.byRooftop]);
-  const csmOptions        = useMemo(() => [...new Set((s.byCSM        ?? []).map((r: any) => r.name))].sort() as string[], [s.byCSM]);
-  const enterpriseOptions = useMemo(() => [...new Set((s.byEnterprise ?? []).map((r: any) => r.name).filter(Boolean))].sort() as string[], [s.byEnterprise]);
+  const rooftopOptions    = useMemo(() => [...new Set((s.byRooftop ?? []).map((r: any) => r.name))].sort() as string[], [s.byRooftop]);
+  const typeOptions       = useMemo(() => [...new Set((s.byRooftop ?? []).map((r: any) => r.type))].sort() as string[], [s.byRooftop]);
+  const csmOptions        = useMemo(() => [...new Set((s.byCSM     ?? []).map((r: any) => r.name))].sort() as string[], [s.byCSM]);
+  const enterpriseObjects = useMemo(() => (s.byEnterprise ?? []).filter((r: any) => r.name).sort((a: any, b: any) => a.name.localeCompare(b.name)), [s.byEnterprise]);
 
   const handleDrillDown = useCallback((filters) => {
     setRawFilters({ ...DEFAULT_FILTERS, ...filters });
@@ -1089,7 +1125,7 @@ export default function Dashboard() {
           rooftopOptions={rooftopOptions}
           typeOptions={typeOptions}
           csmOptions={csmOptions}
-          enterpriseOptions={enterpriseOptions}
+          enterpriseObjects={enterpriseObjects}
         />
       )}
     </div>
