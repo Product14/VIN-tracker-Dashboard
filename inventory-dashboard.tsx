@@ -737,6 +737,7 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
     { key: "notProcessed",        label: "Pending VINs",        numeric: true  },
     { key: "notProcessedAfter24", label: "Pending VINs >24h",   numeric: true  },
     { key: "rate",                label: "Pending VINs >24h %", numeric: true  },
+    ...(filterKey === "csm" ? [{ key: "avgWebsiteScore", label: "Avg Website Score", numeric: true }] : []),
   ];
 
   return (
@@ -747,8 +748,8 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
           {title}
         </h3>
         <DownloadButton onClick={() => {
-          const headers = [nameCol, "Rooftops", "Total", "Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h", "Pending VINs >24h %"];
-          const csvRows = sorted.map(r => [r.label, r.rooftopCount, r.total, r.processed, r.processedAfter24, r.notProcessed, r.notProcessedAfter24, r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0)]);
+          const headers = [nameCol, "Rooftops", "Total", "Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h", "Pending VINs >24h %", ...(filterKey === "csm" ? ["Avg Website Score"] : [])];
+          const csvRows = sorted.map(r => [r.label, r.rooftopCount, r.total, r.processed, r.processedAfter24, r.notProcessed, r.notProcessedAfter24, r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0), ...(filterKey === "csm" ? [r.avgWebsiteScore !== null && r.avgWebsiteScore !== undefined ? Number(r.avgWebsiteScore).toFixed(1) : ""] : [])]);
           downloadCSV(`overview-${filterKey}.csv`, headers, csvRows);
         }} />
       </div>
@@ -800,6 +801,15 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
                         <span style={{ fontSize: 12, fontWeight: 600, color: "#374151" }}>{rate.toFixed(0)}%</span>
                       </div>
                     </td>
+                    {filterKey === "csm" && (
+                      <td style={{ ...td, textAlign: "center" }}>
+                        {r.avgWebsiteScore !== null && r.avgWebsiteScore !== undefined
+                          ? <span style={{ fontWeight: 700, color: r.avgWebsiteScore >= 8 ? "#166534" : r.avgWebsiteScore >= 6 ? "#92400e" : "#991b1b" }}>
+                              {Number(r.avgWebsiteScore).toFixed(1)}
+                            </span>
+                          : <span style={{ color: "#9ca3af" }}>—</span>}
+                      </td>
+                    )}
                   </tr>
                 );
               })}
@@ -821,6 +831,7 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
                     <span style={{ fontSize: 12, fontWeight: 700, color: "#374151" }}>{totRate.toFixed(0)}%</span>
                   </div>
                 </td>
+                {filterKey === "csm" && <td style={{ ...totTd, textAlign: "center", color: "#9ca3af" }}>—</td>}
               </tr>
             </tfoot>
           </table>
@@ -886,7 +897,7 @@ export default function Dashboard() {
   const [rawTotal, setRawTotal] = useState(0);
   const [rawLoading, setRawLoading] = useState(false);
 
-  const tabs = ["Overview", "Rooftop View", "Enterprise View", "VIN Data"];
+  const tabs = ["Overview", "Enterprise View", "Rooftop View", "VIN Data"];
 
   // Fetch summary data from DB views
   const loadSummary = useCallback(() => {

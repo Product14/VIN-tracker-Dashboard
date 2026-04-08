@@ -37,6 +37,15 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_vins_received_at   ON vins(received_at);
 `);
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS website_scores (
+    team_id       TEXT PRIMARY KEY,
+    enterprise_id TEXT,
+    website_score REAL,
+    synced_at     TEXT
+  );
+`);
+
 // ─── Views ───────────────────────────────────────────────────────────────────
 
 db.exec(`
@@ -88,16 +97,23 @@ db.exec(`
   DROP VIEW IF EXISTS v_by_csm;
   CREATE VIEW v_by_csm AS
   SELECT
-    csm                     AS name,
-    COUNT(DISTINCT rooftop) AS rooftop_count,
-    COUNT(*)                                                                          AS total,
-    SUM(CASE WHEN status = 'Delivered' THEN 1 ELSE 0 END)                            AS processed,
-    SUM(CASE WHEN status = 'Delivered' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END) AS processed_after_24h,
-    SUM(CASE WHEN status != 'Delivered' THEN 1 ELSE 0 END)                           AS not_processed,
-    SUM(CASE WHEN status != 'Delivered' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END) AS not_processed_after_24h
-  FROM vins
-  GROUP BY csm
-  ORDER BY csm;
+    v.csm                     AS name,
+    COUNT(DISTINCT v.rooftop) AS rooftop_count,
+    COUNT(*)                                                                            AS total,
+    SUM(CASE WHEN v.status = 'Delivered' THEN 1 ELSE 0 END)                            AS processed,
+    SUM(CASE WHEN v.status = 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END) AS processed_after_24h,
+    SUM(CASE WHEN v.status != 'Delivered' THEN 1 ELSE 0 END)                           AS not_processed,
+    SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END) AS not_processed_after_24h,
+    ws_avg.avg_score AS avg_website_score
+  FROM vins v
+  LEFT JOIN (
+    SELECT rv.csm, ROUND(AVG(ws.website_score), 2) AS avg_score
+    FROM (SELECT DISTINCT csm, rooftop_id FROM vins) rv
+    INNER JOIN website_scores ws ON rv.rooftop_id = ws.team_id
+    GROUP BY rv.csm
+  ) ws_avg ON v.csm = ws_avg.csm
+  GROUP BY v.csm
+  ORDER BY v.csm;
 `);
 
 db.exec(`

@@ -9,6 +9,9 @@ app.use(express.json());
 const METABASE_URL =
   "https://metabase.spyne.ai/api/public/card/15e908e4-fe21-4982-9d8c-4aff07f2c948/query/json";
 
+const WEBSITE_SCORE_URL =
+  "https://metabase.spyne.ai/api/public/card/10a24df7-a062-452f-969f-fe4d45af3f79/query/json";
+
 // ─── Sync helpers ────────────────────────────────────────────────────────────
 
 const EPOCH        = "1970-01-01T00:00:00Z";
@@ -28,10 +31,24 @@ const insertStmt = db.prepare(`
      @csm, @status, @after24h, @receivedAt, @processedAt, @syncedAt)
 `);
 
+const insertScoreStmt = db.prepare(`
+  INSERT INTO website_scores (team_id, enterprise_id, website_score, synced_at)
+  VALUES (@teamId, @enterpriseId, @websiteScore, @syncedAt)
+`);
+
 export async function syncFromMetabase() {
-  const response = await fetch(METABASE_URL);
-  if (!response.ok) throw new Error(`Metabase HTTP ${response.status}`);
-  const metaRows = await response.json();
+  // Fetch both datasets in parallel
+  const [vinResponse, scoreResponse] = await Promise.all([
+    fetch(METABASE_URL),
+    fetch(WEBSITE_SCORE_URL),
+  ]);
+  if (!vinResponse.ok)   throw new Error(`Metabase VINs HTTP ${vinResponse.status}`);
+  if (!scoreResponse.ok) throw new Error(`Metabase scores HTTP ${scoreResponse.status}`);
+
+  const [metaRows, scoreRows] = await Promise.all([
+    vinResponse.json(),
+    scoreResponse.json(),
+  ]);
 
   const syncedAt = new Date().toISOString();
 
@@ -41,7 +58,7 @@ export async function syncFromMetabase() {
   );
 
   // Delete all existing rows and insert fresh — inside one transaction so the
-  // table is never left empty if the insert fails partway through.
+  // tables are never left empty if an insert fails partway through.
   db.transaction(() => {
     db.prepare("DELETE FROM vins").run();
     for (const row of deduped) {
@@ -60,9 +77,27 @@ export async function syncFromMetabase() {
         syncedAt,
       });
     }
+    // Deduplicate website scores by teamId — keep last occurrence.
+    const dedupedScores = Object.values(
+      scoreRows.reduce((acc, row) => {
+        if (row.teamId) acc[String(row.teamId)] = row;
+        return acc;
+      }, {})
+    );
+    db.prepare("DELETE FROM website_scores").run();
+    for (const row of dedupedScores) {
+      const score = row.websiteScore !== null && row.websiteScore !== undefined
+        ? Number(row.websiteScore) : null;
+      insertScoreStmt.run({
+        teamId:       String(row.teamId),
+        enterpriseId: String(row.enterpriseId ?? ""),
+        websiteScore: score,
+        syncedAt,
+      });
+    }
   })();
 
-  return { count: deduped.length, syncedAt };
+  return { count: deduped.length, scoreCount: scoreRows.length, syncedAt };
 }
 
 // ─── Row serialiser ──────────────────────────────────────────────────────────
@@ -154,6 +189,7 @@ function toCsmRow(r) {
     processedAfter24:     r.processed_after_24h,
     notProcessed:         r.not_processed,
     notProcessedAfter24:  r.not_processed_after_24h,
+    avgWebsiteScore:      r.avg_website_score ?? null,
   };
 }
 
