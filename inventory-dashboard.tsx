@@ -539,7 +539,7 @@ function EnterpriseTab({ enterprises, onDrillDown, filters = { search: "", csm: 
   const cols = [
     { key: "id",                  label: "Enterprise ID" },
     { key: "name",                label: "Enterprise Name" },
-    { key: "csm",                 label: "POC (CSM)" },
+    { key: "csm",                 label: "CSM" },
     { key: "total",               label: "Total Inventory",     numeric: true },
     { key: "processed",           label: "VIN Delivered",       numeric: true },
     { key: "processedAfter24",    label: "Delivered VINs >24h", numeric: true },
@@ -581,7 +581,7 @@ function EnterpriseTab({ enterprises, onDrillDown, filters = { search: "", csm: 
   }, [filtered, sortCol, sortDir]);
 
   const handleDownload = () => {
-    const headers = ["Enterprise ID", "Enterprise Name", "POC (CSM)", "Total Inventory", "VIN Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h", "Pending VINs >24h %", "Avg Website Score"];
+    const headers = ["Enterprise ID", "Enterprise Name", "CSM", "Total Inventory", "VIN Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h", "Pending VINs >24h %", "Avg Website Score"];
     const rows = sorted.map(r => [r.id, r.name, r.csm ?? "", r.total, r.processed, r.processedAfter24, r.notProcessed, r.notProcessedAfter24, r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0), r.avgWebsiteScore !== null && r.avgWebsiteScore !== undefined ? Number(r.avgWebsiteScore).toFixed(1) : ""]);
     downloadCSV("enterprise-view.csv", headers, rows);
   };
