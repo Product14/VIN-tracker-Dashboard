@@ -280,8 +280,9 @@ function RawTab({ data, filters, setFilters, total, page, pageCount, onPageChang
   }, [data, sortCol, sortDir]);
 
   const handleSort = (col) => {
-    if (sortCol === col) setSortDir(d => d === "asc" ? "desc" : "asc");
-    else { setSortCol(col); setSortDir("asc"); }
+    if (sortCol !== col) { setSortCol(col); setSortDir("asc"); }
+    else if (sortDir === "asc") { setSortDir("desc"); }
+    else { setSortCol(null); setSortDir("asc"); }
   };
 
   const cols = [
@@ -411,8 +412,9 @@ function RooftopTab({ allRooftops, onDrillDown, filters, setFilters }) {
   }, [filtered, sortCol, sortDir]);
 
   const handleSort = col => {
-    if (sortCol === col) setSortDir(d => d === "asc" ? "desc" : "asc");
-    else { setSortCol(col); setSortDir("asc"); }
+    if (sortCol !== col) { setSortCol(col); setSortDir("asc"); }
+    else if (sortDir === "asc") { setSortDir("desc"); }
+    else { setSortCol(null); setSortDir("asc"); }
   };
 
   const activeCount = [filters.rooftopType, filters.csm, filters.enterprise].filter(Boolean).length;
@@ -545,8 +547,9 @@ function EnterpriseTab({ enterprises, onDrillDown, filters = { search: "" }, set
   ];
 
   const handleSort = col => {
-    if (sortCol === col) setSortDir(d => d === "asc" ? "desc" : "asc");
-    else { setSortCol(col); setSortDir("asc"); }
+    if (sortCol !== col) { setSortCol(col); setSortDir("asc"); }
+    else if (sortDir === "asc") { setSortDir("desc"); }
+    else { setSortCol(null); setSortDir("asc"); }
   };
 
   const filtered = useMemo(() => {
@@ -719,8 +722,9 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
   const [sortDir, setSortDir] = useState("desc");
 
   const handleSort = col => {
-    if (sortCol === col) setSortDir(d => d === "asc" ? "desc" : "asc");
-    else { setSortCol(col); setSortDir("asc"); }
+    if (sortCol !== col) { setSortCol(col); setSortDir("asc"); }
+    else if (sortDir === "asc") { setSortDir("desc"); }
+    else { setSortCol(null); setSortDir("asc"); }
   };
 
   const sorted = useMemo(() => {
