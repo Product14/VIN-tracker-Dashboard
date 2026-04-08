@@ -86,6 +86,7 @@ db.exec(`
   SELECT
     v.enterprise_id AS id,
     v.enterprise    AS name,
+    MIN(v.csm)      AS csm,
     COUNT(*)                                                                            AS total,
     SUM(CASE WHEN v.status = 'Delivered' THEN 1 ELSE 0 END)                            AS processed,
     SUM(CASE WHEN v.status = 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END) AS processed_after_24h,

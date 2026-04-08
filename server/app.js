@@ -172,6 +172,7 @@ function toEnterpriseRow(r) {
   return {
     id:                   r.id,
     name:                 r.name,
+    csm:                  r.csm ?? null,
     total:                r.total,
     processed:            r.processed,
     processedAfter24:     r.processed_after_24h,

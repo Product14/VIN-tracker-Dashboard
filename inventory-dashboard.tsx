@@ -528,15 +528,18 @@ function RooftopTab({ allRooftops, onDrillDown, filters, setFilters }) {
   );
 }
 
-function EnterpriseTab({ enterprises, onDrillDown, filters = { search: "" }, setFilters = () => {} }) {
+function EnterpriseTab({ enterprises, onDrillDown, filters = { search: "", csm: null }, setFilters = () => {} }) {
   const [sortCol, setSortCol] = useState("notProcessedAfter24");
   const [sortDir, setSortDir] = useState("desc");
 
   const tdStyle = { padding: "10px 14px", borderBottom: "1px solid #f3f4f6" };
 
+  const csmOptions = useMemo(() => [...new Set(enterprises.map(r => r.csm).filter(Boolean))].sort() as string[], [enterprises]);
+
   const cols = [
     { key: "id",                  label: "Enterprise ID" },
     { key: "name",                label: "Enterprise Name" },
+    { key: "csm",                 label: "POC (CSM)" },
     { key: "total",               label: "Total Inventory",     numeric: true },
     { key: "processed",           label: "VIN Delivered",       numeric: true },
     { key: "processedAfter24",    label: "Delivered VINs >24h", numeric: true },
@@ -552,11 +555,18 @@ function EnterpriseTab({ enterprises, onDrillDown, filters = { search: "" }, set
     else { setSortCol(null); setSortDir("asc"); }
   };
 
+  const activeCount = [filters.csm].filter(Boolean).length;
+
   const filtered = useMemo(() => {
-    if (!filters.search) return enterprises;
-    const s = filters.search.toLowerCase();
-    return enterprises.filter(r => r.name.toLowerCase().includes(s) || (r.id || "").toLowerCase().includes(s));
-  }, [enterprises, filters.search]);
+    return enterprises.filter(r => {
+      if (filters.csm && r.csm !== filters.csm) return false;
+      if (filters.search) {
+        const s = filters.search.toLowerCase();
+        if (!r.name.toLowerCase().includes(s) && !(r.id || "").toLowerCase().includes(s) && !(r.csm || "").toLowerCase().includes(s)) return false;
+      }
+      return true;
+    });
+  }, [enterprises, filters.search, filters.csm]);
 
   const sorted = useMemo(() => {
     if (!sortCol) return filtered;
@@ -571,30 +581,41 @@ function EnterpriseTab({ enterprises, onDrillDown, filters = { search: "" }, set
   }, [filtered, sortCol, sortDir]);
 
   const handleDownload = () => {
-    const headers = ["Enterprise ID", "Enterprise Name", "Total Inventory", "VIN Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h", "Pending VINs >24h %", "Avg Website Score"];
-    const rows = sorted.map(r => [r.id, r.name, r.total, r.processed, r.processedAfter24, r.notProcessed, r.notProcessedAfter24, r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0), r.avgWebsiteScore !== null && r.avgWebsiteScore !== undefined ? Number(r.avgWebsiteScore).toFixed(1) : ""]);
+    const headers = ["Enterprise ID", "Enterprise Name", "POC (CSM)", "Total Inventory", "VIN Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h", "Pending VINs >24h %", "Avg Website Score"];
+    const rows = sorted.map(r => [r.id, r.name, r.csm ?? "", r.total, r.processed, r.processedAfter24, r.notProcessed, r.notProcessedAfter24, r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0), r.avgWebsiteScore !== null && r.avgWebsiteScore !== undefined ? Number(r.avgWebsiteScore).toFixed(1) : ""]);
     downloadCSV("enterprise-view.csv", headers, rows);
   };
 
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10, gap: 10 }}>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", flex: 1 }}>
           <input
-            placeholder="Search Enterprise..."
+            placeholder="Search Enterprise, CSM..."
             value={filters.search || ""}
             onChange={e => setFilters(f => ({ ...f, search: e.target.value }))}
-            style={{ minWidth: 220, padding: "7px 14px", borderRadius: 8, border: "1px solid #d1d5db", fontSize: 13, outline: "none" }}
+            style={{ flex: 1, minWidth: 220, padding: "7px 14px", borderRadius: 8, border: "1px solid #d1d5db", fontSize: 13, outline: "none" }}
           />
-          {filters.search && (
-            <button onClick={() => setFilters({ search: "" })}
-              style={{ padding: "7px 14px", borderRadius: 8, border: "1px solid #fca5a5", background: "#fef2f2", color: "#dc2626", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
-              Clear filter
+          <SearchableSelect
+            value={filters.csm}
+            onChange={v => setFilters(f => ({ ...f, csm: v }))}
+            options={csmOptions}
+            placeholder="All CSMs"
+          />
+          {(filters.search || activeCount > 0) && (
+            <button onClick={() => setFilters({ search: "", csm: null })}
+              style={{ padding: "7px 14px", borderRadius: 8, border: "1px solid #fca5a5", background: "#fef2f2", color: "#dc2626", fontSize: 13, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>
+              Clear filters
             </button>
           )}
         </div>
         <DownloadButton onClick={handleDownload} />
       </div>
+      {(filters.csm) && (
+        <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
+          {filters.csm && <Badge label={`CSM: ${filters.csm}`} color="blue" />}
+        </div>
+      )}
       <div style={{ maxHeight: "calc(100vh - 260px)", overflow: "auto", borderRadius: 10, border: "1px solid #e5e7eb" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
           <thead>
@@ -609,7 +630,7 @@ function EnterpriseTab({ enterprises, onDrillDown, filters = { search: "" }, set
           </thead>
           <tbody>
             {sorted.length === 0 && (
-              <tr><td colSpan={9} style={{ padding: 40, textAlign: "center", color: "#9ca3af", fontSize: 14 }}>No records match the current filters.</td></tr>
+              <tr><td colSpan={10} style={{ padding: 40, textAlign: "center", color: "#9ca3af", fontSize: 14 }}>No records match the current filters.</td></tr>
             )}
             {sorted.map((r, i) => {
               const rate = r.total === 0 ? 0 : (r.notProcessedAfter24 / r.total) * 100;
@@ -617,6 +638,7 @@ function EnterpriseTab({ enterprises, onDrillDown, filters = { search: "" }, set
                 <tr key={r.id} style={{ background: i % 2 === 0 ? "#fff" : "#f9fafb" }}>
                   <td style={{ ...tdStyle, fontFamily: "monospace", fontSize: 12, color: "#0ea5e9", fontWeight: 600 }}>{r.id}</td>
                   <td style={{ ...tdStyle, fontWeight: 600 }}>{r.name}</td>
+                  <td style={tdStyle}>{r.csm ?? "—"}</td>
                   <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.total} color="#4f46e5" onClick={() => onDrillDown({ enterprise: r.name })} /></td>
                   <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.processed} color="#166534" onClick={() => onDrillDown({ enterprise: r.name, status: "Delivered" })} /></td>
                   <td style={{ ...tdStyle, textAlign: "center" }}>
@@ -886,7 +908,7 @@ function timeAgo(isoString: string): string {
 
 const DEFAULT_FILTERS = { search: "", enterprise: null, rooftop: null, rooftopType: null, csm: null, status: null, after24h: null };
 const DEFAULT_ROOFTOP_FILTERS = { search: "", rooftopType: null, csm: null, enterprise: null };
-const DEFAULT_ENTERPRISE_FILTERS = { search: "" };
+const DEFAULT_ENTERPRISE_FILTERS = { search: "", csm: null };
 
 const EMPTY_SUMMARY = {
   totals:       { total: 0, processed: 0, notProcessed: 0, processedAfter24: 0, notProcessedAfter24: 0 },
