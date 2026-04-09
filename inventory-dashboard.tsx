@@ -453,10 +453,18 @@ function RooftopTab({ allRooftops, onDrillDown, filters, setFilters }) {
   const csms = [...new Set(allRooftops.map(r => r.csm))].sort();
   const enterpriseOptions = [...new Set(allRooftops.map(r => r.enterprise).filter(Boolean))].sort();
 
+  const SCORE_OPTIONS = ["Poor (<6)", "Average (6–8)", "Good (8+)"];
+
   const filtered = useMemo(() => allRooftops.filter(r => {
     if (filters.rooftopType && r.type !== filters.rooftopType) return false;
     if (filters.csm && r.csm !== filters.csm) return false;
     if (filters.enterprise && r.enterprise !== filters.enterprise) return false;
+    if (filters.websiteScore) {
+      const s = r.websiteScore;
+      if (filters.websiteScore === "Poor (<6)"     && !(s !== null && s !== undefined && s < 6))  return false;
+      if (filters.websiteScore === "Average (6–8)" && !(s !== null && s !== undefined && s >= 6 && s < 8)) return false;
+      if (filters.websiteScore === "Good (8+)"     && !(s !== null && s !== undefined && s >= 8)) return false;
+    }
     if (filters.search) {
       const s = filters.search.toLowerCase();
       if (!r.name.toLowerCase().includes(s) && !r.csm.toLowerCase().includes(s)) return false;
@@ -482,7 +490,7 @@ function RooftopTab({ allRooftops, onDrillDown, filters, setFilters }) {
     else { setSortCol(null); setSortDir("asc"); }
   };
 
-  const activeCount = [filters.rooftopType, filters.csm, filters.enterprise].filter(Boolean).length;
+  const activeCount = [filters.rooftopType, filters.csm, filters.enterprise, filters.websiteScore].filter(Boolean).length;
   const cols = [
     { key: "enterprise",          label: "Enterprise Name" },
     { key: "name",                label: "Rooftop Name" },
@@ -534,8 +542,14 @@ function RooftopTab({ allRooftops, onDrillDown, filters, setFilters }) {
             options={enterpriseOptions}
             placeholder="All Enterprises"
           />
+          <SearchableSelect
+            value={filters.websiteScore}
+            onChange={v => setFilters(f => ({ ...f, websiteScore: v }))}
+            options={SCORE_OPTIONS}
+            placeholder="All Scores"
+          />
           {activeCount > 0 && (
-            <button onClick={() => setFilters({ search: "", rooftopType: null, csm: null, enterprise: null })}
+            <button onClick={() => setFilters(DEFAULT_ROOFTOP_FILTERS)}
               style={{ padding: "7px 14px", borderRadius: 8, border: "1px solid #fca5a5", background: "#fef2f2", color: "#dc2626", fontSize: 13, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>
               Clear {activeCount} filter{activeCount > 1 ? "s" : ""}
             </button>
@@ -546,6 +560,7 @@ function RooftopTab({ allRooftops, onDrillDown, filters, setFilters }) {
             {filters.rooftopType && <Badge label={`Type: ${filters.rooftopType}`} color="blue" />}
             {filters.csm && <Badge label={`CSM: ${filters.csm}`} color="blue" />}
             {filters.enterprise && <Badge label={`Enterprise: ${filters.enterprise}`} color="blue" />}
+            {filters.websiteScore && <Badge label={`Score: ${filters.websiteScore}`} color="blue" />}
           </div>
         )}
       </div>
@@ -1059,7 +1074,7 @@ function timeAgo(isoString: string): string {
 }
 
 const DEFAULT_FILTERS = { search: "", enterpriseId: null, rooftop: null, rooftopId: null, rooftopType: null, csm: null, status: null, after24h: null };
-const DEFAULT_ROOFTOP_FILTERS = { search: "", rooftopType: null, csm: null, enterprise: null };
+const DEFAULT_ROOFTOP_FILTERS = { search: "", rooftopType: null, csm: null, enterprise: null, websiteScore: null };
 const DEFAULT_ENTERPRISE_FILTERS = { search: "", csm: null, accountType: null, websiteScore: null };
 
 const EMPTY_SUMMARY = {
