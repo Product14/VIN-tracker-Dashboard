@@ -491,6 +491,7 @@ function RooftopTab({ allRooftops, onDrillDown, filters, setFilters }) {
     { key: "notProcessedAfter24", label: "Pending VINs >24h",   numeric: true },
     { key: "rate",                label: "Pending VINs >24h %", numeric: true },
     { key: "websiteScore",        label: "Website Score",       numeric: true },
+    { key: "_console",            label: "Console",             numeric: true, noSort: true },
   ];
 
   const tdStyle = { padding: "10px 14px", borderBottom: "1px solid #f3f4f6" };
@@ -551,15 +552,15 @@ function RooftopTab({ allRooftops, onDrillDown, filters, setFilters }) {
           <thead>
             <tr style={{ background: "#f9fafb" }}>
               {cols.map(c => (
-                <th key={c.key} onClick={() => handleSort(c.key)} style={{ padding: "10px 14px", textAlign: c.numeric ? "center" : "left", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "pointer", userSelect: "none", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
-                  {c.label} {sortCol === c.key ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
+                <th key={c.key} onClick={() => !c.noSort && handleSort(c.key)} style={{ padding: "10px 14px", textAlign: c.numeric ? "center" : "left", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: c.noSort ? "default" : "pointer", userSelect: "none", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
+                  {c.label} {!c.noSort && (sortCol === c.key ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>)}
                 </th>
               ))}
             </tr>
           </thead>
           <tbody>
             {sorted.length === 0 && (
-              <tr><td colSpan={9} style={{ padding: 40, textAlign: "center", color: "#9ca3af", fontSize: 14 }}>No records match the current filters.</td></tr>
+              <tr><td colSpan={10} style={{ padding: 40, textAlign: "center", color: "#9ca3af", fontSize: 14 }}>No records match the current filters.</td></tr>
             )}
             {sorted.map((r, i) => {
               const rate = r.total === 0 ? 0 : (r.notProcessedAfter24 / r.total) * 100;
@@ -591,6 +592,14 @@ function RooftopTab({ allRooftops, onDrillDown, filters, setFilters }) {
                         </span>
                       : <span style={{ color: "#9ca3af" }}>—</span>}
                   </td>
+                  <td style={{ ...tdStyle, textAlign: "center" }}>
+                    <a href={`https://console.spyne.ai/home?enterprise_id=${r.enterpriseId}&team_id=${r.rooftopId}`} target="_blank" rel="noreferrer" title="Open in Console"
+                      style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 28, height: 28, borderRadius: 6, border: "1px solid #e5e7eb", background: "#f9fafb", color: "#6b7280", textDecoration: "none", transition: "all 0.15s" }}
+                      onMouseEnter={e => { e.currentTarget.style.borderColor = "#818cf8"; e.currentTarget.style.color = "#4f46e5"; e.currentTarget.style.background = "#eef2ff"; }}
+                      onMouseLeave={e => { e.currentTarget.style.borderColor = "#e5e7eb"; e.currentTarget.style.color = "#6b7280"; e.currentTarget.style.background = "#f9fafb"; }}>
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                    </a>
+                  </td>
                 </tr>
               );
             })}
@@ -621,6 +630,7 @@ function EnterpriseTab({ enterprises, onDrillDown, filters = { search: "", csm: 
     { key: "notProcessedAfter24", label: "Pending VINs >24h",   numeric: true },
     { key: "rate",                label: "Pending VINs >24h %", numeric: true },
     { key: "avgWebsiteScore",     label: "Avg Website Score",   numeric: true },
+    { key: "_console",            label: "Console",             numeric: true, noSort: true },
   ];
 
   const handleSort = col => {
@@ -695,16 +705,16 @@ function EnterpriseTab({ enterprises, onDrillDown, filters = { search: "", csm: 
           <thead>
             <tr style={{ background: "#f9fafb" }}>
               {cols.map(c => (
-                <th key={c.key} onClick={() => handleSort(c.key)}
-                  style={{ padding: "10px 14px", textAlign: c.numeric ? "center" : "left", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "pointer", userSelect: "none", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
-                  {c.label} {sortCol === c.key ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
+                <th key={c.key} onClick={() => !c.noSort && handleSort(c.key)}
+                  style={{ padding: "10px 14px", textAlign: c.numeric ? "center" : "left", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: c.noSort ? "default" : "pointer", userSelect: "none", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
+                  {c.label} {!c.noSort && (sortCol === c.key ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>)}
                 </th>
               ))}
             </tr>
           </thead>
           <tbody>
             {sorted.length === 0 && (
-              <tr><td colSpan={10} style={{ padding: 40, textAlign: "center", color: "#9ca3af", fontSize: 14 }}>No records match the current filters.</td></tr>
+              <tr><td colSpan={11} style={{ padding: 40, textAlign: "center", color: "#9ca3af", fontSize: 14 }}>No records match the current filters.</td></tr>
             )}
             {sorted.map((r, i) => {
               const rate = r.total === 0 ? 0 : (r.notProcessedAfter24 / r.total) * 100;
@@ -740,6 +750,14 @@ function EnterpriseTab({ enterprises, onDrillDown, filters = { search: "", csm: 
                           {Number(r.avgWebsiteScore).toFixed(1)}
                         </span>
                       : <span style={{ color: "#9ca3af" }}>—</span>}
+                  </td>
+                  <td style={{ ...tdStyle, textAlign: "center" }}>
+                    <a href={`https://console.spyne.ai/home?enterprise_id=${r.id}`} target="_blank" rel="noreferrer" title="Open in Console"
+                      style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 28, height: 28, borderRadius: 6, border: "1px solid #e5e7eb", background: "#f9fafb", color: "#6b7280", textDecoration: "none", transition: "all 0.15s" }}
+                      onMouseEnter={e => { e.currentTarget.style.borderColor = "#818cf8"; e.currentTarget.style.color = "#4f46e5"; e.currentTarget.style.background = "#eef2ff"; }}
+                      onMouseLeave={e => { e.currentTarget.style.borderColor = "#e5e7eb"; e.currentTarget.style.color = "#6b7280"; e.currentTarget.style.background = "#f9fafb"; }}>
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                    </a>
                   </td>
                 </tr>
               );
