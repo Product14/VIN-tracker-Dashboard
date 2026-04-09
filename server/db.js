@@ -15,18 +15,19 @@ const db = new Database(DB_PATH);
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS vins (
-    vin           TEXT PRIMARY KEY,
-    enterprise_id TEXT,
-    enterprise    TEXT,
-    rooftop_id    TEXT,
-    rooftop       TEXT,
-    rooftop_type  TEXT,
-    csm           TEXT,
-    status        TEXT,
-    after_24h     INTEGER,
-    received_at   TEXT,
-    processed_at  TEXT,
-    synced_at     TEXT
+    vin             TEXT PRIMARY KEY,
+    dealer_vin_id   TEXT,
+    enterprise_id   TEXT,
+    enterprise      TEXT,
+    rooftop_id      TEXT,
+    rooftop         TEXT,
+    rooftop_type    TEXT,
+    csm             TEXT,
+    status          TEXT,
+    after_24h       INTEGER,
+    received_at     TEXT,
+    processed_at    TEXT,
+    synced_at       TEXT
   );
 
   CREATE INDEX IF NOT EXISTS idx_vins_rooftop       ON vins(rooftop);
@@ -141,5 +142,9 @@ db.exec(`
   FROM vins
   GROUP BY rooftop_type;
 `);
+
+// ─── Migrations ──────────────────────────────────────────────────────────────
+
+try { db.exec(`ALTER TABLE vins ADD COLUMN dealer_vin_id TEXT`); } catch (_) { /* column already exists */ }
 
 export default db;

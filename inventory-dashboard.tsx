@@ -127,6 +127,27 @@ function StatCard({ label, value, sub, color = "#6366f1", onClick }) {
   );
 }
 
+function CopyButton({ value }: { value: string }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = (e) => {
+    e.stopPropagation();
+    navigator.clipboard.writeText(value).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  };
+  return (
+    <button onClick={handleCopy} title={copied ? "Copied!" : `Copy: ${value}`}
+      style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 26, height: 26, borderRadius: 6, border: `1px solid ${copied ? "#bbf7d0" : "#e5e7eb"}`, background: copied ? "#dcfce7" : "#f9fafb", cursor: "pointer", color: copied ? "#166534" : "#9ca3af", transition: "all 0.15s", flexShrink: 0 }}
+      onMouseEnter={e => { if (!copied) e.currentTarget.style.borderColor = "#9ca3af"; }}
+      onMouseLeave={e => { if (!copied) e.currentTarget.style.borderColor = "#e5e7eb"; }}>
+      {copied
+        ? <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        : <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>}
+    </button>
+  );
+}
+
 function SearchableSelect({ value, onChange, options, placeholder = "All" }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -313,6 +334,7 @@ function RawTab({ data, filters, setFilters, total, page, pageCount, onPageChang
     { key: "rooftopType", label: "Type" },
     { key: "csm",         label: "CSM" },
     { key: "vin",         label: "VIN" },
+    { key: "dealerVinId", label: "Dealer VIN ID", numeric: true },
     { key: "status",      label: "Status" },
     { key: "after24h",    label: "After 24h?", numeric: true },
     { key: "receivedAt",  label: "Received" },
@@ -368,7 +390,7 @@ function RawTab({ data, filters, setFilters, total, page, pageCount, onPageChang
           </thead>
           <tbody>
             {sorted.length === 0 && (
-              <tr><td colSpan={9} style={{ padding: 40, textAlign: "center", color: "#9ca3af", fontSize: 14 }}>No records match the current filters.</td></tr>
+              <tr><td colSpan={10} style={{ padding: 40, textAlign: "center", color: "#9ca3af", fontSize: 14 }}>No records match the current filters.</td></tr>
             )}
             {sorted.map((d, i) => (
               <tr key={d.vin} style={{ background: i % 2 === 0 ? "#fff" : "#f9fafb" }}>
@@ -376,7 +398,24 @@ function RawTab({ data, filters, setFilters, total, page, pageCount, onPageChang
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}><Truncated value={d.rooftop} maxWidth={150} /></td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}><Badge label={d.rooftopType} color={d.rooftopType === "Franchise" ? "blue" : "gray"} /></td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}><Truncated value={fmtCsm(d.csm)} maxWidth={130} /></td>
-                <td style={{ padding: "10px 14px", fontFamily: "monospace", fontSize: 12, borderBottom: "1px solid #f3f4f6" }}>{d.vin}</td>
+                <td style={{ padding: "10px 14px", fontFamily: "monospace", fontSize: 12, borderBottom: "1px solid #f3f4f6" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    {d.dealerVinId
+                      ? <a href={`https://console.spyne.ai/inventory/v2/listings/${d.dealerVinId}?enterprise_id=${d.enterpriseId}&team_id=${d.rooftopId}`} target="_blank" rel="noreferrer"
+                          style={{ color: "#4f46e5", textDecoration: "none", fontWeight: 600 }}
+                          onMouseEnter={e => (e.currentTarget.style.textDecoration = "underline")}
+                          onMouseLeave={e => (e.currentTarget.style.textDecoration = "none")}>
+                          {d.vin}
+                        </a>
+                      : d.vin}
+                    <CopyButton value={d.vin} />
+                  </div>
+                </td>
+                <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6", textAlign: "center" }}>
+                  {d.dealerVinId
+                    ? <CopyButton value={d.dealerVinId} />
+                    : <span style={{ color: "#9ca3af" }}>—</span>}
+                </td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}><Badge label={d.status} color={d.status === "Delivered" ? "green" : "red"} /></td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6", textAlign: "center" }}>{isAfter24h(d) ? <Badge label="Yes" color="amber" /> : <Badge label="No" color="green" />}</td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6", whiteSpace: "nowrap", fontSize: 12 }}>{new Date(d.receivedAt).toLocaleString()}</td>

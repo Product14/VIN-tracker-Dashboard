@@ -24,10 +24,10 @@ const cleanAfter24 = (v) => {
 
 const insertStmt = db.prepare(`
   INSERT INTO vins
-    (vin, enterprise_id, enterprise, rooftop_id, rooftop, rooftop_type,
+    (vin, dealer_vin_id, enterprise_id, enterprise, rooftop_id, rooftop, rooftop_type,
      csm, status, after_24h, received_at, processed_at, synced_at)
   VALUES
-    (@vin, @enterpriseId, @enterprise, @rooftopId, @rooftop, @rooftopType,
+    (@vin, @dealerVinId, @enterpriseId, @enterprise, @rooftopId, @rooftop, @rooftopType,
      @csm, @status, @after24h, @receivedAt, @processedAt, @syncedAt)
 `);
 
@@ -64,6 +64,7 @@ export async function syncFromMetabase() {
     for (const row of deduped) {
       insertStmt.run({
         vin:          row.vinName ?? "",
+        dealerVinId:  row["m.dealerVinId"] ?? null,
         enterpriseId: row["m.enterpriseId"] ?? "",
         enterprise:   row.name ?? "",
         rooftopId:    String(row["m.teamId"] ?? ""),
@@ -105,6 +106,7 @@ export async function syncFromMetabase() {
 function toApiRow(r) {
   return {
     vin:          r.vin,
+    dealerVinId:  r.dealer_vin_id ?? null,
     enterpriseId: r.enterprise_id,
     enterprise:   r.enterprise,
     rooftopId:    r.rooftop_id,
