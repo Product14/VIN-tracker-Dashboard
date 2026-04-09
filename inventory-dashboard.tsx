@@ -628,13 +628,15 @@ function RooftopTab({ allRooftops, onDrillDown, filters, setFilters }) {
   );
 }
 
-function EnterpriseTab({ enterprises, onDrillDown, filters = { search: "", csm: null }, setFilters = () => {} }) {
+function EnterpriseTab({ enterprises, onDrillDown, filters = DEFAULT_ENTERPRISE_FILTERS, setFilters = (_f) => {} }) {
   const [sortCol, setSortCol] = useState("notProcessedAfter24");
   const [sortDir, setSortDir] = useState("desc");
 
   const tdStyle = { padding: "10px 14px", borderBottom: "1px solid #f3f4f6" };
 
   const csmOptions = useMemo(() => [...new Set(enterprises.map(r => r.csm).filter(Boolean))].sort() as string[], [enterprises]);
+  const typeOptions = useMemo(() => [...new Set(enterprises.map(r => r.accountType).filter(Boolean))].sort() as string[], [enterprises]);
+  const SCORE_OPTIONS = ["Poor (<6)", "Average (6–8)", "Good (8+)"];
 
   const cols = [
     { key: "id",                  label: "Enterprise ID" },
@@ -657,18 +659,25 @@ function EnterpriseTab({ enterprises, onDrillDown, filters = { search: "", csm: 
     else { setSortCol(null); setSortDir("asc"); }
   };
 
-  const activeCount = [filters.csm].filter(Boolean).length;
+  const activeCount = [filters.csm, filters.accountType, filters.websiteScore].filter(Boolean).length;
 
   const filtered = useMemo(() => {
     return enterprises.filter(r => {
       if (filters.csm && r.csm !== filters.csm) return false;
+      if (filters.accountType && r.accountType !== filters.accountType) return false;
+      if (filters.websiteScore) {
+        const s = r.avgWebsiteScore;
+        if (filters.websiteScore === "Poor (<6)"    && !(s !== null && s !== undefined && s < 6))  return false;
+        if (filters.websiteScore === "Average (6–8)" && !(s !== null && s !== undefined && s >= 6 && s < 8)) return false;
+        if (filters.websiteScore === "Good (8+)"    && !(s !== null && s !== undefined && s >= 8)) return false;
+      }
       if (filters.search) {
         const s = filters.search.toLowerCase();
         if (!r.name.toLowerCase().includes(s) && !(r.id || "").toLowerCase().includes(s) && !(r.csm || "").toLowerCase().includes(s)) return false;
       }
       return true;
     });
-  }, [enterprises, filters.search, filters.csm]);
+  }, [enterprises, filters.search, filters.csm, filters.accountType, filters.websiteScore]);
 
   const sorted = useMemo(() => {
     if (!sortCol) return filtered;
@@ -704,18 +713,32 @@ function EnterpriseTab({ enterprises, onDrillDown, filters = { search: "", csm: 
             options={csmOptions}
             placeholder="All CSMs"
           />
+          <SearchableSelect
+            value={filters.accountType}
+            onChange={v => setFilters(f => ({ ...f, accountType: v }))}
+            options={typeOptions}
+            placeholder="All Types"
+          />
+          <SearchableSelect
+            value={filters.websiteScore}
+            onChange={v => setFilters(f => ({ ...f, websiteScore: v }))}
+            options={SCORE_OPTIONS}
+            placeholder="All Scores"
+          />
           {(filters.search || activeCount > 0) && (
-            <button onClick={() => setFilters({ search: "", csm: null })}
+            <button onClick={() => setFilters(DEFAULT_ENTERPRISE_FILTERS)}
               style={{ padding: "7px 14px", borderRadius: 8, border: "1px solid #fca5a5", background: "#fef2f2", color: "#dc2626", fontSize: 13, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>
-              Clear filters
+              Clear {activeCount > 0 ? `${activeCount} filter${activeCount > 1 ? "s" : ""}` : "filters"}
             </button>
           )}
         </div>
         <DownloadButton onClick={handleDownload} />
       </div>
-      {(filters.csm) && (
+      {(filters.csm || filters.accountType || filters.websiteScore) && (
         <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
-          {filters.csm && <Badge label={`CSM: ${filters.csm}`} color="blue" />}
+          {filters.csm         && <Badge label={`CSM: ${fmtCsm(filters.csm)}`} color="blue" />}
+          {filters.accountType && <Badge label={`Type: ${filters.accountType}`} color="blue" />}
+          {filters.websiteScore && <Badge label={`Score: ${filters.websiteScore}`} color="blue" />}
         </div>
       )}
       <div style={{ maxHeight: "calc(100vh - 260px)", overflow: "auto", borderRadius: 10, border: "1px solid #e5e7eb" }}>
@@ -1037,7 +1060,7 @@ function timeAgo(isoString: string): string {
 
 const DEFAULT_FILTERS = { search: "", enterpriseId: null, rooftop: null, rooftopId: null, rooftopType: null, csm: null, status: null, after24h: null };
 const DEFAULT_ROOFTOP_FILTERS = { search: "", rooftopType: null, csm: null, enterprise: null };
-const DEFAULT_ENTERPRISE_FILTERS = { search: "", csm: null };
+const DEFAULT_ENTERPRISE_FILTERS = { search: "", csm: null, accountType: null, websiteScore: null };
 
 const EMPTY_SUMMARY = {
   totals:       { total: 0, processed: 0, notProcessed: 0, processedAfter24: 0, notProcessedAfter24: 0 },
