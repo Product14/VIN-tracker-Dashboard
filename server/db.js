@@ -40,9 +40,19 @@ db.exec(`
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS website_scores (
-    team_id       TEXT PRIMARY KEY,
-    enterprise_id TEXT,
-    website_score REAL,
+    team_id              TEXT PRIMARY KEY,
+    enterprise_id        TEXT,
+    website_score        REAL,
+    website_listing_url  TEXT,
+    synced_at            TEXT
+  );
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS website_urls (
+    enterprise_id TEXT PRIMARY KEY,
+    name          TEXT,
+    website_url   TEXT,
     synced_at     TEXT
   );
 `);
@@ -76,7 +86,8 @@ db.exec(`
     SUM(CASE WHEN v.status = 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END) AS processed_after_24h,
     SUM(CASE WHEN v.status != 'Delivered' THEN 1 ELSE 0 END)                           AS not_processed,
     SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END) AS not_processed_after_24h,
-    MAX(ws.website_score) AS website_score
+    MAX(ws.website_score)       AS website_score,
+    MAX(ws.website_listing_url) AS website_listing_url
   FROM vins v
   LEFT JOIN website_scores ws ON v.rooftop_id = ws.team_id
   GROUP BY v.rooftop_id;
@@ -94,7 +105,8 @@ db.exec(`
     SUM(CASE WHEN v.status = 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END) AS processed_after_24h,
     SUM(CASE WHEN v.status != 'Delivered' THEN 1 ELSE 0 END)                           AS not_processed,
     SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END) AS not_processed_after_24h,
-    ws_avg.avg_score AS avg_website_score
+    ws_avg.avg_score AS avg_website_score,
+    wu.website_url   AS website_url
   FROM vins v
   LEFT JOIN (
     SELECT rv.enterprise_id, ROUND(AVG(ws.website_score), 2) AS avg_score
@@ -102,6 +114,7 @@ db.exec(`
     INNER JOIN website_scores ws ON rv.rooftop_id = ws.team_id
     GROUP BY rv.enterprise_id
   ) ws_avg ON v.enterprise_id = ws_avg.enterprise_id
+  LEFT JOIN website_urls wu ON v.enterprise_id = wu.enterprise_id
   GROUP BY v.enterprise_id;
 `);
 
@@ -146,5 +159,6 @@ db.exec(`
 // ─── Migrations ──────────────────────────────────────────────────────────────
 
 try { db.exec(`ALTER TABLE vins ADD COLUMN dealer_vin_id TEXT`); } catch (_) { /* column already exists */ }
+try { db.exec(`ALTER TABLE website_scores ADD COLUMN website_listing_url TEXT`); } catch (_) { /* column already exists */ }
 
 export default db;

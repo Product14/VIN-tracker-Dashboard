@@ -10,7 +10,10 @@ const METABASE_URL =
   "https://metabase.spyne.ai/api/public/card/15e908e4-fe21-4982-9d8c-4aff07f2c948/query/json";
 
 const WEBSITE_SCORE_URL =
-  "https://metabase.spyne.ai/api/public/card/10a24df7-a062-452f-969f-fe4d45af3f79/query/json";
+  "https://metabase.spyne.ai/api/public/card/f5c032a6-c262-40ee-8d95-c115d326d3a8/query/json";
+
+const ENTERPRISE_URL_URL =
+  "https://metabase.spyne.ai/api/public/card/b8f1271c-cc5a-470f-badf-807711f74af4/query/json";
 
 // ─── Sync helpers ────────────────────────────────────────────────────────────
 
@@ -32,22 +35,31 @@ const insertStmt = db.prepare(`
 `);
 
 const insertScoreStmt = db.prepare(`
-  INSERT INTO website_scores (team_id, enterprise_id, website_score, synced_at)
-  VALUES (@teamId, @enterpriseId, @websiteScore, @syncedAt)
+  INSERT INTO website_scores (team_id, enterprise_id, website_score, website_listing_url, synced_at)
+  VALUES (@teamId, @enterpriseId, @websiteScore, @websiteListingUrl, @syncedAt)
 `);
 
+const insertEnterpriseUrlStmt = db.prepare(`
+  INSERT INTO website_urls (enterprise_id, name, website_url, synced_at)
+  VALUES (@enterpriseId, @name, @websiteUrl, @syncedAt)
+`);
+
+
 export async function syncFromMetabase() {
-  // Fetch both datasets in parallel
-  const [vinResponse, scoreResponse] = await Promise.all([
+  // Fetch all three datasets in parallel
+  const [vinResponse, scoreResponse, enterpriseUrlResponse] = await Promise.all([
     fetch(METABASE_URL),
     fetch(WEBSITE_SCORE_URL),
+    fetch(ENTERPRISE_URL_URL),
   ]);
-  if (!vinResponse.ok)   throw new Error(`Metabase VINs HTTP ${vinResponse.status}`);
-  if (!scoreResponse.ok) throw new Error(`Metabase scores HTTP ${scoreResponse.status}`);
+  if (!vinResponse.ok)           throw new Error(`Metabase VINs HTTP ${vinResponse.status}`);
+  if (!scoreResponse.ok)         throw new Error(`Metabase scores HTTP ${scoreResponse.status}`);
+  if (!enterpriseUrlResponse.ok) throw new Error(`Metabase enterprise URLs HTTP ${enterpriseUrlResponse.status}`);
 
-  const [metaRows, scoreRows] = await Promise.all([
+  const [metaRows, scoreRows, enterpriseUrlRows] = await Promise.all([
     vinResponse.json(),
     scoreResponse.json(),
+    enterpriseUrlResponse.json(),
   ]);
 
   const syncedAt = new Date().toISOString();
@@ -78,21 +90,38 @@ export async function syncFromMetabase() {
         syncedAt,
       });
     }
-    // Deduplicate website scores by teamId — keep last occurrence.
+    // Deduplicate website scores by team_id — keep last occurrence.
     const dedupedScores = Object.values(
       scoreRows.reduce((acc, row) => {
-        if (row.teamId) acc[String(row.teamId)] = row;
+        if (row.team_id) acc[String(row.team_id)] = row;
         return acc;
       }, {})
     );
     db.prepare("DELETE FROM website_scores").run();
     for (const row of dedupedScores) {
-      const score = row.websiteScore !== null && row.websiteScore !== undefined
-        ? Number(row.websiteScore) : null;
+      const score = row.overallScore !== null && row.overallScore !== undefined
+        ? Number(row.overallScore) : null;
       insertScoreStmt.run({
-        teamId:       String(row.teamId),
-        enterpriseId: String(row.enterpriseId ?? ""),
-        websiteScore: score,
+        teamId:             String(row.team_id),
+        enterpriseId:       String(row.enterprise_id ?? ""),
+        websiteScore:       score,
+        websiteListingUrl:  row.website_listing_url ?? null,
+        syncedAt,
+      });
+    }
+    // Deduplicate enterprise URLs by enterprise_id — keep last occurrence.
+    const dedupedEnterpriseUrls = Object.values(
+      enterpriseUrlRows.reduce((acc, row) => {
+        if (row.enterprise_id) acc[String(row.enterprise_id)] = row;
+        return acc;
+      }, {})
+    );
+    db.prepare("DELETE FROM website_urls").run();
+    for (const row of dedupedEnterpriseUrls) {
+      insertEnterpriseUrlStmt.run({
+        enterpriseId: String(row.enterprise_id),
+        name:         row.name ?? null,
+        websiteUrl:   row.website_url ?? null,
         syncedAt,
       });
     }
@@ -168,6 +197,7 @@ function toRooftopRow(r) {
     notProcessed:         r.not_processed,
     notProcessedAfter24:  r.not_processed_after_24h,
     websiteScore:         r.website_score ?? null,
+    websiteListingUrl:    r.website_listing_url ?? null,
   };
 }
 
@@ -182,6 +212,7 @@ function toEnterpriseRow(r) {
     notProcessed:         r.not_processed,
     notProcessedAfter24:  r.not_processed_after_24h,
     avgWebsiteScore:      r.avg_website_score ?? null,
+    websiteUrl:           r.website_url ?? null,
   };
 }
 
