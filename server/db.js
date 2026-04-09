@@ -125,7 +125,7 @@ db.exec(`
   CREATE VIEW v_by_csm AS
   SELECT
     v.csm                     AS name,
-    COUNT(DISTINCT v.rooftop) AS rooftop_count,
+    COUNT(DISTINCT v.rooftop_id) AS rooftop_count,
     COUNT(*)                                                                            AS total,
     SUM(CASE WHEN v.status = 'Delivered' THEN 1 ELSE 0 END)                            AS processed,
     SUM(CASE WHEN v.status = 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END) AS processed_after_24h,
@@ -148,7 +148,7 @@ db.exec(`
   CREATE VIEW v_by_type AS
   SELECT
     rooftop_type            AS label,
-    COUNT(DISTINCT rooftop) AS rooftop_count,
+    COUNT(DISTINCT rooftop_id) AS rooftop_count,
     COUNT(*)                                                                          AS total,
     SUM(CASE WHEN status = 'Delivered' THEN 1 ELSE 0 END)                            AS processed,
     SUM(CASE WHEN status = 'Delivered' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END) AS processed_after_24h,
