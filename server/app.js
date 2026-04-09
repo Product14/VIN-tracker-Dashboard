@@ -40,8 +40,8 @@ const insertScoreStmt = db.prepare(`
 `);
 
 const insertEnterpriseUrlStmt = db.prepare(`
-  INSERT INTO website_urls (enterprise_id, name, website_url, synced_at)
-  VALUES (@enterpriseId, @name, @websiteUrl, @syncedAt)
+  INSERT INTO website_urls (enterprise_id, name, website_url, account_type, synced_at)
+  VALUES (@enterpriseId, @name, @websiteUrl, @accountType, @syncedAt)
 `);
 
 
@@ -122,6 +122,7 @@ export async function syncFromMetabase() {
         enterpriseId: String(row.enterprise_id),
         name:         row.name ?? null,
         websiteUrl:   row.website_url ?? null,
+        accountType:  row.type ?? null,
         syncedAt,
       });
     }
@@ -213,6 +214,7 @@ function toEnterpriseRow(r) {
     notProcessedAfter24:  r.not_processed_after_24h,
     avgWebsiteScore:      r.avg_website_score ?? null,
     websiteUrl:           r.website_url ?? null,
+    accountType:          r.account_type ?? null,
   };
 }
 

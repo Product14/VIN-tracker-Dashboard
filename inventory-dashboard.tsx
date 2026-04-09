@@ -639,6 +639,7 @@ function EnterpriseTab({ enterprises, onDrillDown, filters = { search: "", csm: 
   const cols = [
     { key: "id",                  label: "Enterprise ID" },
     { key: "name",                label: "Enterprise Name" },
+    { key: "accountType",         label: "Account Type" },
     { key: "csm",                 label: "CSM" },
     { key: "total",               label: "Total Inventory",     numeric: true },
     { key: "processed",           label: "VIN Delivered",       numeric: true },
@@ -682,8 +683,8 @@ function EnterpriseTab({ enterprises, onDrillDown, filters = { search: "", csm: 
   }, [filtered, sortCol, sortDir]);
 
   const handleDownload = () => {
-    const headers = ["Enterprise ID", "Enterprise Name", "CSM", "Total Inventory", "VIN Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h", "Pending VINs >24h %", "Avg Website Score"];
-    const rows = sorted.map(r => [r.id, r.name, r.csm ?? "", r.total, r.processed, r.processedAfter24, r.notProcessed, r.notProcessedAfter24, r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0), r.avgWebsiteScore !== null && r.avgWebsiteScore !== undefined ? Number(r.avgWebsiteScore).toFixed(1) : ""]);
+    const headers = ["Enterprise ID", "Enterprise Name", "Account Type", "CSM", "Total Inventory", "VIN Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h", "Pending VINs >24h %", "Avg Website Score"];
+    const rows = sorted.map(r => [r.id, r.name, r.accountType ?? "", r.csm ?? "", r.total, r.processed, r.processedAfter24, r.notProcessed, r.notProcessedAfter24, r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0), r.avgWebsiteScore !== null && r.avgWebsiteScore !== undefined ? Number(r.avgWebsiteScore).toFixed(1) : ""]);
     downloadCSV("enterprise-view.csv", headers, rows);
   };
 
@@ -732,7 +733,7 @@ function EnterpriseTab({ enterprises, onDrillDown, filters = { search: "", csm: 
           </thead>
           <tbody>
             {sorted.length === 0 && (
-              <tr><td colSpan={12} style={{ padding: 40, textAlign: "center", color: "#9ca3af", fontSize: 14 }}>No records match the current filters.</td></tr>
+              <tr><td colSpan={13} style={{ padding: 40, textAlign: "center", color: "#9ca3af", fontSize: 14 }}>No records match the current filters.</td></tr>
             )}
             {sorted.map((r, i) => {
               const rate = r.total === 0 ? 0 : (r.notProcessedAfter24 / r.total) * 100;
@@ -741,6 +742,7 @@ function EnterpriseTab({ enterprises, onDrillDown, filters = { search: "", csm: 
                   <td style={{ ...tdStyle, textAlign: "center", color: "#9ca3af", fontSize: 12 }}>{i + 1}</td>
                   <td style={{ ...tdStyle, fontFamily: "monospace", fontSize: 12, color: "#0ea5e9", fontWeight: 600 }}><Truncated value={r.id} maxWidth={90} /></td>
                   <td style={{ ...tdStyle, fontWeight: 600 }}><Truncated value={r.name} maxWidth={180} /></td>
+                  <td style={tdStyle}>{r.accountType ? <Badge label={r.accountType} color="blue" /> : <span style={{ color: "#9ca3af" }}>—</span>}</td>
                   <td style={tdStyle}><Truncated value={fmtCsm(r.csm)} maxWidth={130} /></td>
                   <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.total} color="#4f46e5" onClick={() => onDrillDown({ enterpriseId: r.id })} /></td>
                   <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.processed} color="#166534" onClick={() => onDrillDown({ enterpriseId: r.id, status: "Delivered" })} /></td>

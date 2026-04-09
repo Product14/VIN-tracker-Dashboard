@@ -53,6 +53,7 @@ db.exec(`
     enterprise_id TEXT PRIMARY KEY,
     name          TEXT,
     website_url   TEXT,
+    account_type  TEXT,
     synced_at     TEXT
   );
 `);
@@ -105,8 +106,9 @@ db.exec(`
     SUM(CASE WHEN v.status = 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END) AS processed_after_24h,
     SUM(CASE WHEN v.status != 'Delivered' THEN 1 ELSE 0 END)                           AS not_processed,
     SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END) AS not_processed_after_24h,
-    ws_avg.avg_score AS avg_website_score,
-    wu.website_url   AS website_url
+    ws_avg.avg_score  AS avg_website_score,
+    wu.website_url    AS website_url,
+    wu.account_type   AS account_type
   FROM vins v
   LEFT JOIN (
     SELECT rv.enterprise_id, ROUND(AVG(ws.website_score), 2) AS avg_score
@@ -160,5 +162,6 @@ db.exec(`
 
 try { db.exec(`ALTER TABLE vins ADD COLUMN dealer_vin_id TEXT`); } catch (_) { /* column already exists */ }
 try { db.exec(`ALTER TABLE website_scores ADD COLUMN website_listing_url TEXT`); } catch (_) { /* column already exists */ }
+try { db.exec(`ALTER TABLE website_urls ADD COLUMN account_type TEXT`); } catch (_) { /* column already exists */ }
 
 export default db;
