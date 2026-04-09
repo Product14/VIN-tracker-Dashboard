@@ -1100,7 +1100,7 @@ export default function Dashboard() {
 
       <div style={{ display: "flex", gap: 4, marginBottom: 24, background: "#f3f4f6", borderRadius: 10, padding: 4, width: "fit-content" }}>
         {tabs.map(t => (
-          <button key={t} onClick={() => { setTab(t); if (t !== "VIN Data") setRawFilters(DEFAULT_FILTERS); if (t !== "Rooftop View") setRooftopFilters(DEFAULT_ROOFTOP_FILTERS); if (t !== "Enterprise View") setEnterpriseFilters(DEFAULT_ENTERPRISE_FILTERS); }} style={{
+          <button key={t} onClick={() => { setTab(t); }} style={{
             padding: "8px 20px", borderRadius: 8, border: "none", cursor: "pointer", fontSize: 14, fontWeight: 600,
             background: tab === t ? "#fff" : "transparent", color: tab === t ? "#111827" : "#6b7280",
             boxShadow: tab === t ? "0 1px 3px rgba(0,0,0,0.1)" : "none", transition: "all 0.15s"
