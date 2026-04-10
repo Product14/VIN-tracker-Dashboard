@@ -1111,27 +1111,23 @@ function OverviewTab({ totals, byType, byCSM, onDrillDown, onRooftopDrillDown })
   const activeBuckets = BUCKETS.filter(b => (totals[b.key] ?? 0) > 0);
   return (
     <div>
-      <div style={{ display: "flex", gap: 14, marginBottom: 28, flexWrap: "wrap" }}>
+      <div style={{ display: "flex", gap: 14, marginBottom: activeBuckets.length > 0 ? 10 : 28, flexWrap: "wrap" }}>
         <StatCard label="Total Inventory" value={totals.total} color="#6366f1" onClick={() => onDrillDown({})} />
         <StatCard label="VIN Delivered" value={totals.processed} sub={`${((totals.processed / totals.total) * 100).toFixed(0)}% of total`} color="#22c55e" onClick={() => onDrillDown({ status: "Delivered" })} />
         <StatCard label="Pending VINs" value={totals.notProcessed} sub={totals.total > 0 ? `${((totals.notProcessed / totals.total) * 100).toFixed(0)}% of total` : ""} color="#ef4444" onClick={() => onDrillDown({ status: "Not Delivered" })} />
         <StatCard label="Pending VINs >24h" value={totals.notProcessedAfter24} sub={totals.total > 0 ? `${((totals.notProcessedAfter24 / totals.total) * 100).toFixed(0)}% of total` : ""} color="#f59e0b" onClick={() => onDrillDown({ status: "Not Delivered", after24h: true })} />
       </div>
       {activeBuckets.length > 0 && (
-        <div style={{ marginBottom: 28, padding: "16px 20px", background: "#fff", borderRadius: 12, border: "1px solid #e5e7eb", boxShadow: "0 1px 3px rgba(0,0,0,0.06)" }}>
-          <div style={{ fontSize: 12, fontWeight: 600, color: "#6b7280", marginBottom: 12, textTransform: "uppercase" as const, letterSpacing: 0.5 }}>Pending by Reason</div>
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-            {activeBuckets.map(b => (
-              <div key={b.key} onClick={() => onDrillDown({ status: "Not Delivered", reasonBucket: b.label })}
-                style={{ display: "flex", flexDirection: "column" as const, gap: 4, padding: "12px 20px", borderRadius: 10, background: "#fef2f2", border: "1px solid #fecaca", cursor: "pointer", minWidth: 140, transition: "all 0.15s" }}
-                onMouseEnter={e => { e.currentTarget.style.background = "#fee2e2"; e.currentTarget.style.borderColor = "#fca5a5"; }}
-                onMouseLeave={e => { e.currentTarget.style.background = "#fef2f2"; e.currentTarget.style.borderColor = "#fecaca"; }}>
-                <span style={{ fontSize: 12, color: "#6b7280", fontWeight: 500 }}>{b.label}</span>
-                <span style={{ fontSize: 24, fontWeight: 700, color: "#ef4444" }}>{(totals[b.key] ?? 0).toLocaleString()}</span>
-                <span style={{ fontSize: 11, color: "#a5b4fc" }}>Click to view →</span>
-              </div>
-            ))}
-          </div>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 28, alignItems: "center" }}>
+          <span style={{ fontSize: 11, fontWeight: 600, color: "#9ca3af", textTransform: "uppercase" as const, letterSpacing: 0.5, marginRight: 2 }}>Pending &gt;24h by reason:</span>
+          {activeBuckets.map(b => (
+            <span key={b.key} onClick={() => onDrillDown({ status: "Not Delivered", after24h: true, reasonBucket: b.label })}
+              style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "3px 10px", borderRadius: 999, fontSize: 12, fontWeight: 600, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", cursor: "pointer", transition: "all 0.15s" }}
+              onMouseEnter={e => { e.currentTarget.style.background = "#fee2e2"; e.currentTarget.style.borderColor = "#fca5a5"; }}
+              onMouseLeave={e => { e.currentTarget.style.background = "#fef2f2"; e.currentTarget.style.borderColor = "#fecaca"; }}>
+              {b.label} <span style={{ fontWeight: 700, color: "#ef4444" }}>{(totals[b.key] ?? 0).toLocaleString()}</span>
+            </span>
+          ))}
         </div>
       )}
       <SummaryTable title="By Rooftop Type" rows={byType} colorHeader="#6366f1" filterKey="rooftopType" onDrillDown={onDrillDown} onRooftopDrillDown={onRooftopDrillDown} />
