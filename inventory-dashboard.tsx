@@ -91,6 +91,14 @@ function downloadCSV(filename, headers, rows) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+const BUCKETS = [
+  { key: "bucketProcessingPending", label: "Processing Pending" },
+  { key: "bucketPublishingPending", label: "Publishing Pending" },
+  { key: "bucketQcPending",         label: "QC Pending" },
+  { key: "bucketSold",              label: "Sold" },
+  { key: "bucketOthers",            label: "Others" },
+];
+
 function DownloadButton({ onClick }) {
   return (
     <button onClick={onClick} title="Download as CSV"
@@ -241,7 +249,7 @@ function FilterBar({ filters, setFilters, rooftopOptions = [], typeOptions = [],
   const enterpriseNames = useMemo(() => enterpriseObjects.map(e => e.name).sort(), [enterpriseObjects]);
   const selectedEnterpriseName = filters.enterpriseId ? (enterpriseIdToName[filters.enterpriseId] ?? filters.enterpriseId) : null;
 
-  const activeCount = [filters.enterpriseId, filters.rooftop, filters.rooftopType, filters.csm, filters.status, filters.after24h !== null ? "x" : null].filter(Boolean).length;
+  const activeCount = [filters.enterpriseId, filters.rooftop, filters.rooftopType, filters.csm, filters.status, filters.after24h !== null ? "x" : null, filters.reasonBucket].filter(Boolean).length;
 
   return (
     <div style={{ marginBottom: 16 }}>
@@ -284,8 +292,14 @@ function FilterBar({ filters, setFilters, rooftopOptions = [], typeOptions = [],
           options={["After 24h", "Within 24h"]}
           placeholder="24h: Any"
         />
+        <SearchableSelect
+          value={filters.reasonBucket}
+          onChange={v => setFilters(f => ({ ...f, reasonBucket: v }))}
+          options={BUCKETS.map(b => b.label)}
+          placeholder="All Buckets"
+        />
         {activeCount > 0 && (
-          <button onClick={() => setFilters({ search: "", enterpriseId: null, rooftop: null, rooftopType: null, csm: null, status: null, after24h: null })}
+          <button onClick={() => setFilters({ search: "", enterpriseId: null, rooftop: null, rooftopType: null, csm: null, status: null, after24h: null, reasonBucket: null })}
             style={{ padding: "7px 14px", borderRadius: 8, border: "1px solid #fca5a5", background: "#fef2f2", color: "#dc2626", fontSize: 13, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>
             Clear {activeCount} filter{activeCount > 1 ? "s" : ""}
           </button>
@@ -299,6 +313,7 @@ function FilterBar({ filters, setFilters, rooftopOptions = [], typeOptions = [],
           {filters.csm && <Badge label={`CSM: ${filters.csm}`} color="blue" />}
           {filters.status && <Badge label={`Status: ${filters.status}`} color={filters.status === "Delivered" ? "green" : "red"} />}
           {filters.after24h !== null && <Badge label={filters.after24h ? "After 24h" : "Within 24h"} color="amber" />}
+          {filters.reasonBucket && <Badge label={`Bucket: ${filters.reasonBucket}`} color="amber" />}
         </div>
       )}
     </div>
@@ -338,7 +353,8 @@ function RawTab({ data, filters, setFilters, total, page, pageCount, onPageChang
     { key: "status",      label: "Status" },
     { key: "after24h",    label: "After 24h?", numeric: true },
     { key: "receivedAt",  label: "Received" },
-    { key: "processedAt", label: "Delivered" },
+    { key: "processedAt",  label: "Delivered" },
+    { key: "reasonBucket", label: "Reason Bucket" },
   ];
 
   const handleDownload = async () => {
@@ -352,12 +368,13 @@ function RawTab({ data, filters, setFilters, total, page, pageCount, onPageChang
     if (filters.csm)          params.set("csm",          filters.csm);
     if (filters.status)       params.set("status",       filters.status);
     if (filters.after24h !== null) params.set("after24h", filters.after24h ? "true" : "false");
+    if (filters.reasonBucket)      params.set("reasonBucket", filters.reasonBucket);
     try {
       const res = await fetch(`/api/vins/export?${params}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const { data } = await res.json();
-      const headers = ["Enterprise Name", "Rooftop Name", "Type", "CSM", "VIN", "Dealer VIN ID", "Status", "After 24h?", "Received", "Delivered"];
-      const rows = data.map(d => [d.enterprise, d.rooftop, d.rooftopType, d.csm, d.vin, d.dealerVinId ?? "", d.status, isAfter24h(d) ? "Yes" : "No", d.receivedAt ? new Date(d.receivedAt).toLocaleString() : "", d.processedAt ? new Date(d.processedAt).toLocaleString() : ""]);
+      const headers = ["Enterprise Name", "Rooftop Name", "Type", "CSM", "VIN", "Dealer VIN ID", "Status", "After 24h?", "Received", "Delivered", "Reason Bucket"];
+      const rows = data.map(d => [d.enterprise, d.rooftop, d.rooftopType, d.csm, d.vin, d.dealerVinId ?? "", d.status, isAfter24h(d) ? "Yes" : "No", d.receivedAt ? new Date(d.receivedAt).toLocaleString() : "", d.processedAt ? new Date(d.processedAt).toLocaleString() : "", d.reasonBucket || ""]);
       downloadCSV("vin-data.csv", headers, rows);
     } catch (err) {
       console.error("Export failed:", err);
@@ -391,7 +408,7 @@ function RawTab({ data, filters, setFilters, total, page, pageCount, onPageChang
           </thead>
           <tbody>
             {sorted.length === 0 && (
-              <tr><td colSpan={11} style={{ padding: 40, textAlign: "center", color: "#9ca3af", fontSize: 14 }}>No records match the current filters.</td></tr>
+              <tr><td colSpan={12} style={{ padding: 40, textAlign: "center", color: "#9ca3af", fontSize: 14 }}>No records match the current filters.</td></tr>
             )}
             {sorted.map((d, i) => (
               <tr key={d.vin} style={{ background: i % 2 === 0 ? "#fff" : "#f9fafb" }}>
@@ -422,6 +439,7 @@ function RawTab({ data, filters, setFilters, total, page, pageCount, onPageChang
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6", textAlign: "center" }}>{isAfter24h(d) ? <Badge label="Yes" color="amber" /> : <Badge label="No" color="green" />}</td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6", whiteSpace: "nowrap", fontSize: 12 }}>{new Date(d.receivedAt).toLocaleString()}</td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6", whiteSpace: "nowrap", fontSize: 12 }}>{d.processedAt ? new Date(d.processedAt).toLocaleString() : "—"}</td>
+                <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}>{d.reasonBucket ? <Badge label={d.reasonBucket} color="amber" /> : <span style={{ color: "#9ca3af" }}>—</span>}</td>
               </tr>
             ))}
           </tbody>
@@ -490,6 +508,7 @@ function RooftopTab({ allRooftops, onDrillDown, filters, setFilters }) {
     else { setSortCol(null); setSortDir("asc"); }
   };
 
+  const activeBuckets = BUCKETS.filter(b => allRooftops.some(r => (r[b.key] ?? 0) > 0));
   const activeCount = [filters.rooftopType, filters.csm, filters.enterprise, filters.websiteScore].filter(Boolean).length;
   const cols = [
     { key: "enterprise",          label: "Enterprise Name" },
@@ -501,16 +520,17 @@ function RooftopTab({ allRooftops, onDrillDown, filters, setFilters }) {
     { key: "notProcessedAfter24", label: "Pending VINs >24h",   numeric: true },
     { key: "rate",                label: "Pending VINs >24h %", numeric: true },
     { key: "websiteScore",        label: "Website Score",       numeric: true },
+    ...activeBuckets.map(b => ({ key: b.key, label: b.label, numeric: true })),
     { key: "_links",              label: "Links",               numeric: true, noSort: true },
   ];
 
   const tdStyle = { padding: "10px 14px", borderBottom: "1px solid #f3f4f6" };
 
   const handleDownload = () => {
-    const headers = ["Enterprise Name", "Rooftop Name", "Type", "CSM", "Total Inventory", "VINs Delivered", "Pending VINs >24h", "Pending VINs >24h %", "Website Score"];
+    const headers = ["Enterprise Name", "Rooftop Name", "Type", "CSM", "Total Inventory", "VINs Delivered", "Pending VINs >24h", "Pending VINs >24h %", "Website Score", ...activeBuckets.map(b => b.label)];
     const rows = sorted.map(r => {
       const rate = r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0);
-      return [r.enterprise, r.name, r.type, r.csm, r.total, r.processed, r.notProcessedAfter24, rate, r.websiteScore !== null && r.websiteScore !== undefined ? Number(r.websiteScore).toFixed(1) : ""];
+      return [r.enterprise, r.name, r.type, r.csm, r.total, r.processed, r.notProcessedAfter24, rate, r.websiteScore !== null && r.websiteScore !== undefined ? Number(r.websiteScore).toFixed(1) : "", ...activeBuckets.map(b => r[b.key] ?? 0)];
     });
     downloadCSV("rooftop-view.csv", headers, rows);
   };
@@ -578,7 +598,7 @@ function RooftopTab({ allRooftops, onDrillDown, filters, setFilters }) {
           </thead>
           <tbody>
             {sorted.length === 0 && (
-              <tr><td colSpan={11} style={{ padding: 40, textAlign: "center", color: "#9ca3af", fontSize: 14 }}>No records match the current filters.</td></tr>
+              <tr><td colSpan={cols.length + 1} style={{ padding: 40, textAlign: "center", color: "#9ca3af", fontSize: 14 }}>No records match the current filters.</td></tr>
             )}
             {sorted.map((r, i) => {
               const rate = r.total === 0 ? 0 : (r.notProcessedAfter24 / r.total) * 100;
@@ -611,6 +631,11 @@ function RooftopTab({ allRooftops, onDrillDown, filters, setFilters }) {
                         </span>
                       : <span style={{ color: "#9ca3af" }}>—</span>}
                   </td>
+                  {activeBuckets.map(b => (
+                    <td key={b.key} style={{ ...tdStyle, textAlign: "center" }}>
+                      {(r[b.key] ?? 0) > 0 ? <Badge label={r[b.key]} color="amber" /> : <span style={{ color: "#9ca3af" }}>0</span>}
+                    </td>
+                  ))}
                   <td style={{ ...tdStyle, textAlign: "center" }}>
                     <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
                       <a href={`https://console.spyne.ai/home?enterprise_id=${r.enterpriseId}&team_id=${r.rooftopId}`} target="_blank" rel="noreferrer" title="Open in Console"
@@ -653,6 +678,7 @@ function EnterpriseTab({ enterprises, onDrillDown, filters = DEFAULT_ENTERPRISE_
   const typeOptions = useMemo(() => [...new Set(enterprises.map(r => r.accountType).filter(Boolean))].sort() as string[], [enterprises]);
   const SCORE_OPTIONS = ["Poor (<6)", "Average (6–8)", "Good (8+)"];
 
+  const activeBuckets = BUCKETS.filter(b => enterprises.some(r => (r[b.key] ?? 0) > 0));
   const cols = [
     { key: "id",                  label: "Enterprise ID" },
     { key: "name",                label: "Enterprise Name" },
@@ -665,6 +691,7 @@ function EnterpriseTab({ enterprises, onDrillDown, filters = DEFAULT_ENTERPRISE_
     { key: "notProcessedAfter24", label: "Pending VINs >24h",   numeric: true },
     { key: "rate",                label: "Pending VINs >24h %", numeric: true },
     { key: "avgWebsiteScore",     label: "Avg Website Score",   numeric: true },
+    ...activeBuckets.map(b => ({ key: b.key, label: b.label, numeric: true })),
     { key: "_links",              label: "Links",               numeric: true, noSort: true },
   ];
 
@@ -707,8 +734,8 @@ function EnterpriseTab({ enterprises, onDrillDown, filters = DEFAULT_ENTERPRISE_
   }, [filtered, sortCol, sortDir]);
 
   const handleDownload = () => {
-    const headers = ["Enterprise ID", "Enterprise Name", "Account Type", "CSM", "Total Inventory", "VIN Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h", "Pending VINs >24h %", "Avg Website Score"];
-    const rows = sorted.map(r => [r.id, r.name, r.accountType ?? "", r.csm ?? "", r.total, r.processed, r.processedAfter24, r.notProcessed, r.notProcessedAfter24, r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0), r.avgWebsiteScore !== null && r.avgWebsiteScore !== undefined ? Number(r.avgWebsiteScore).toFixed(1) : ""]);
+    const headers = ["Enterprise ID", "Enterprise Name", "Account Type", "CSM", "Total Inventory", "VIN Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h", "Pending VINs >24h %", "Avg Website Score", ...activeBuckets.map(b => b.label)];
+    const rows = sorted.map(r => [r.id, r.name, r.accountType ?? "", r.csm ?? "", r.total, r.processed, r.processedAfter24, r.notProcessed, r.notProcessedAfter24, r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0), r.avgWebsiteScore !== null && r.avgWebsiteScore !== undefined ? Number(r.avgWebsiteScore).toFixed(1) : "", ...activeBuckets.map(b => r[b.key] ?? 0)]);
     downloadCSV("enterprise-view.csv", headers, rows);
   };
 
@@ -771,7 +798,7 @@ function EnterpriseTab({ enterprises, onDrillDown, filters = DEFAULT_ENTERPRISE_
           </thead>
           <tbody>
             {sorted.length === 0 && (
-              <tr><td colSpan={13} style={{ padding: 40, textAlign: "center", color: "#9ca3af", fontSize: 14 }}>No records match the current filters.</td></tr>
+              <tr><td colSpan={cols.length + 1} style={{ padding: 40, textAlign: "center", color: "#9ca3af", fontSize: 14 }}>No records match the current filters.</td></tr>
             )}
             {sorted.map((r, i) => {
               const rate = r.total === 0 ? 0 : (r.notProcessedAfter24 / r.total) * 100;
@@ -810,6 +837,11 @@ function EnterpriseTab({ enterprises, onDrillDown, filters = DEFAULT_ENTERPRISE_
                         </span>
                       : <span style={{ color: "#9ca3af" }}>—</span>}
                   </td>
+                  {activeBuckets.map(b => (
+                    <td key={b.key} style={{ ...tdStyle, textAlign: "center" }}>
+                      {(r[b.key] ?? 0) > 0 ? <Badge label={r[b.key]} color="amber" /> : <span style={{ color: "#9ca3af" }}>0</span>}
+                    </td>
+                  ))}
                   <td style={{ ...tdStyle, textAlign: "center" }}>
                     <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
                       <a href={`https://console.spyne.ai/home?enterprise_id=${r.id}`} target="_blank" rel="noreferrer" title="Open in Console"
@@ -843,14 +875,17 @@ function EnterpriseTab({ enterprises, onDrillDown, filters = DEFAULT_ENTERPRISE_
 }
 
 function CSMTab({ csms, onDrillDown }) {
-
   const tdStyle = { padding: "10px 14px", borderBottom: "1px solid #f3f4f6" };
+  const activeBuckets = BUCKETS.filter(b => csms.some(r => (r[b.key] ?? 0) > 0));
 
   const handleDownload = () => {
-    const headers = ["CSM Name", "Total Inventory", "VIN Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h", "Pending VINs >24h %"];
-    const rows = csms.map(r => [r.name, r.total, r.processed, r.processedAfter24, r.notProcessed, r.notProcessedAfter24, r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0)]);
+    const headers = ["CSM Name", "Total Inventory", "VIN Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h", "Pending VINs >24h %", ...activeBuckets.map(b => b.label)];
+    const rows = csms.map(r => [r.name, r.total, r.processed, r.processedAfter24, r.notProcessed, r.notProcessedAfter24, r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0), ...activeBuckets.map(b => r[b.key] ?? 0)]);
     downloadCSV("csm-view.csv", headers, rows);
   };
+
+  const baseHeaders = ["CSM Name", "Total Inventory", "VIN Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h", "Pending VINs >24h %"];
+  const allHeaders = [...baseHeaders, ...activeBuckets.map(b => b.label)];
 
   return (
     <div>
@@ -861,7 +896,7 @@ function CSMTab({ csms, onDrillDown }) {
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
         <thead>
           <tr style={{ background: "#f9fafb" }}>
-            {["CSM Name", "Total Inventory", "VIN Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h", "Pending VINs >24h %"].map((h, idx) => (
+            {allHeaders.map((h, idx) => (
               <th key={h} style={{ padding: "10px 14px", textAlign: idx >= 1 ? "center" : "left", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal" }}>{h}</th>
             ))}
           </tr>
@@ -893,6 +928,11 @@ function CSMTab({ csms, onDrillDown }) {
                     <span style={{ fontSize: 12, fontWeight: 600, color: "#374151" }}>{rate.toFixed(0)}%</span>
                   </div>
                 </td>
+                {activeBuckets.map(b => (
+                  <td key={b.key} style={{ ...tdStyle, textAlign: "center" }}>
+                    {(r[b.key] ?? 0) > 0 ? <Badge label={r[b.key]} color="amber" /> : <span style={{ color: "#9ca3af" }}>0</span>}
+                  </td>
+                ))}
               </tr>
             );
           })}
@@ -913,6 +953,8 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
     else { setSortCol(null); setSortDir("asc"); }
   };
 
+  const activeBuckets = BUCKETS.filter(b => rows.some(r => (r[b.key] ?? 0) > 0));
+
   const sorted = useMemo(() => {
     return [...rows].sort((a, b) => {
       const va = sortCol === "rate" ? (a.total === 0 ? 0 : a.notProcessedAfter24 / a.total) : a[sortCol];
@@ -924,11 +966,15 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
     });
   }, [rows, sortCol, sortDir]);
 
-  const totRow = rows.reduce((t, r) => ({
-    total: t.total + r.total, processed: t.processed + r.processed, processedAfter24: t.processedAfter24 + r.processedAfter24,
-    notProcessed: t.notProcessed + r.notProcessed, notProcessedAfter24: t.notProcessedAfter24 + r.notProcessedAfter24,
-    rooftopCount: t.rooftopCount + r.rooftopCount,
-  }), { total: 0, processed: 0, processedAfter24: 0, notProcessed: 0, notProcessedAfter24: 0, rooftopCount: 0 });
+  const totRow = rows.reduce((t, r) => {
+    const obj: any = {
+      total: t.total + r.total, processed: t.processed + r.processed, processedAfter24: t.processedAfter24 + r.processedAfter24,
+      notProcessed: t.notProcessed + r.notProcessed, notProcessedAfter24: t.notProcessedAfter24 + r.notProcessedAfter24,
+      rooftopCount: t.rooftopCount + r.rooftopCount,
+    };
+    BUCKETS.forEach(b => { obj[b.key] = (t[b.key] ?? 0) + (r[b.key] ?? 0); });
+    return obj;
+  }, { total: 0, processed: 0, processedAfter24: 0, notProcessed: 0, notProcessedAfter24: 0, rooftopCount: 0 } as any);
   const totRate = totRow.total === 0 ? 0 : (totRow.notProcessedAfter24 / totRow.total) * 100;
   const nameCol = filterKey === "rooftopType" ? "Rooftop Type" : "CSM Name";
   const td = { padding: "10px 14px", borderBottom: "1px solid #f3f4f6" };
@@ -943,6 +989,7 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
     { key: "notProcessed",        label: "Pending VINs",        numeric: true  },
     { key: "notProcessedAfter24", label: "Pending VINs >24h",   numeric: true  },
     { key: "rate",                label: "Pending VINs >24h %", numeric: true  },
+    ...activeBuckets.map(b => ({ key: b.key, label: b.label, numeric: true })),
     ...(filterKey === "csm" ? [{ key: "avgWebsiteScore", label: "Avg Website Score", numeric: true }] : []),
   ];
 
@@ -954,8 +1001,8 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
           {title}
         </h3>
         <DownloadButton onClick={() => {
-          const headers = [nameCol, "Rooftops", "Total", "Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h", "Pending VINs >24h %", ...(filterKey === "csm" ? ["Avg Website Score"] : [])];
-          const csvRows = sorted.map(r => [r.label, r.rooftopCount, r.total, r.processed, r.processedAfter24, r.notProcessed, r.notProcessedAfter24, r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0), ...(filterKey === "csm" ? [r.avgWebsiteScore !== null && r.avgWebsiteScore !== undefined ? Number(r.avgWebsiteScore).toFixed(1) : ""] : [])]);
+          const headers = [nameCol, "Rooftops", "Total", "Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h", "Pending VINs >24h %", ...activeBuckets.map(b => b.label), ...(filterKey === "csm" ? ["Avg Website Score"] : [])];
+          const csvRows = sorted.map(r => [r.label, r.rooftopCount, r.total, r.processed, r.processedAfter24, r.notProcessed, r.notProcessedAfter24, r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0), ...activeBuckets.map(b => r[b.key] ?? 0), ...(filterKey === "csm" ? [r.avgWebsiteScore !== null && r.avgWebsiteScore !== undefined ? Number(r.avgWebsiteScore).toFixed(1) : ""] : [])]);
           downloadCSV(`overview-${filterKey}.csv`, headers, csvRows);
         }} />
       </div>
@@ -1009,6 +1056,11 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
                         <span style={{ fontSize: 12, fontWeight: 600, color: "#374151" }}>{rate.toFixed(0)}%</span>
                       </div>
                     </td>
+                    {activeBuckets.map(b => (
+                      <td key={b.key} style={{ ...td, textAlign: "center" }}>
+                        {(r[b.key] ?? 0) > 0 ? <Badge label={r[b.key]} color="amber" /> : "0"}
+                      </td>
+                    ))}
                     {filterKey === "csm" && (
                       <td style={{ ...td, textAlign: "center" }}>
                         {r.avgWebsiteScore !== null && r.avgWebsiteScore !== undefined
@@ -1040,6 +1092,11 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
                     <span style={{ fontSize: 12, fontWeight: 700, color: "#374151" }}>{totRate.toFixed(0)}%</span>
                   </div>
                 </td>
+                {activeBuckets.map(b => (
+                  <td key={b.key} style={{ ...totTd, textAlign: "center" }}>
+                    {(totRow[b.key] ?? 0) > 0 ? <Badge label={totRow[b.key]} color="amber" /> : "0"}
+                  </td>
+                ))}
                 {filterKey === "csm" && <td style={{ ...totTd, textAlign: "center", color: "#9ca3af" }}>—</td>}
               </tr>
             </tfoot>
@@ -1051,6 +1108,7 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
 }
 
 function OverviewTab({ totals, byType, byCSM, onDrillDown, onRooftopDrillDown }) {
+  const activeBuckets = BUCKETS.filter(b => (totals[b.key] ?? 0) > 0);
   return (
     <div>
       <div style={{ display: "flex", gap: 14, marginBottom: 28, flexWrap: "wrap" }}>
@@ -1059,6 +1117,23 @@ function OverviewTab({ totals, byType, byCSM, onDrillDown, onRooftopDrillDown })
         <StatCard label="Pending VINs" value={totals.notProcessed} sub={totals.total > 0 ? `${((totals.notProcessed / totals.total) * 100).toFixed(0)}% of total` : ""} color="#ef4444" onClick={() => onDrillDown({ status: "Not Delivered" })} />
         <StatCard label="Pending VINs >24h" value={totals.notProcessedAfter24} sub={totals.total > 0 ? `${((totals.notProcessedAfter24 / totals.total) * 100).toFixed(0)}% of total` : ""} color="#f59e0b" onClick={() => onDrillDown({ status: "Not Delivered", after24h: true })} />
       </div>
+      {activeBuckets.length > 0 && (
+        <div style={{ marginBottom: 28, padding: "16px 20px", background: "#fff", borderRadius: 12, border: "1px solid #e5e7eb", boxShadow: "0 1px 3px rgba(0,0,0,0.06)" }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: "#6b7280", marginBottom: 12, textTransform: "uppercase" as const, letterSpacing: 0.5 }}>Pending by Reason</div>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            {activeBuckets.map(b => (
+              <div key={b.key} onClick={() => onDrillDown({ status: "Not Delivered", reasonBucket: b.label })}
+                style={{ display: "flex", flexDirection: "column" as const, gap: 4, padding: "12px 20px", borderRadius: 10, background: "#fef2f2", border: "1px solid #fecaca", cursor: "pointer", minWidth: 140, transition: "all 0.15s" }}
+                onMouseEnter={e => { e.currentTarget.style.background = "#fee2e2"; e.currentTarget.style.borderColor = "#fca5a5"; }}
+                onMouseLeave={e => { e.currentTarget.style.background = "#fef2f2"; e.currentTarget.style.borderColor = "#fecaca"; }}>
+                <span style={{ fontSize: 12, color: "#6b7280", fontWeight: 500 }}>{b.label}</span>
+                <span style={{ fontSize: 24, fontWeight: 700, color: "#ef4444" }}>{(totals[b.key] ?? 0).toLocaleString()}</span>
+                <span style={{ fontSize: 11, color: "#a5b4fc" }}>Click to view →</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       <SummaryTable title="By Rooftop Type" rows={byType} colorHeader="#6366f1" filterKey="rooftopType" onDrillDown={onDrillDown} onRooftopDrillDown={onRooftopDrillDown} />
       <SummaryTable title="By CSM" rows={byCSM} colorHeader="#0ea5e9" filterKey="csm" onDrillDown={onDrillDown} onRooftopDrillDown={onRooftopDrillDown} />
     </div>
@@ -1073,12 +1148,12 @@ function timeAgo(isoString: string): string {
   const d = Math.floor(diff / 86400); return `${d} day${d > 1 ? "s" : ""} ago`;
 }
 
-const DEFAULT_FILTERS = { search: "", enterpriseId: null, rooftop: null, rooftopId: null, rooftopType: null, csm: null, status: null, after24h: null };
+const DEFAULT_FILTERS = { search: "", enterpriseId: null, rooftop: null, rooftopId: null, rooftopType: null, csm: null, status: null, after24h: null, reasonBucket: null };
 const DEFAULT_ROOFTOP_FILTERS = { search: "", rooftopType: null, csm: null, enterprise: null, websiteScore: null };
 const DEFAULT_ENTERPRISE_FILTERS = { search: "", csm: null, accountType: null, websiteScore: null };
 
 const EMPTY_SUMMARY = {
-  totals:       { total: 0, processed: 0, notProcessed: 0, processedAfter24: 0, notProcessedAfter24: 0 },
+  totals:       { total: 0, processed: 0, notProcessed: 0, processedAfter24: 0, notProcessedAfter24: 0, bucketProcessingPending: 0, bucketPublishingPending: 0, bucketQcPending: 0, bucketSold: 0, bucketOthers: 0 },
   byRooftop:    [],
   byEnterprise: [],
   byCSM:        [],
@@ -1132,6 +1207,7 @@ export default function Dashboard() {
     if (filters.csm)          params.set("csm",          filters.csm);
     if (filters.status)       params.set("status",       filters.status);
     if (filters.after24h !== null) params.set("after24h", filters.after24h ? "true" : "false");
+    if (filters.reasonBucket)      params.set("reasonBucket", filters.reasonBucket);
 
     fetch(`/api/vins?${params}`)
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })

@@ -27,9 +27,9 @@ const cleanAfter24 = (v) => {
 
 const insertVinStmt = db.prepare(`
   INSERT INTO vins
-    (vin, dealer_vin_id, enterprise_id, rooftop_id, status, after_24h, received_at, processed_at, synced_at)
+    (vin, dealer_vin_id, enterprise_id, rooftop_id, status, after_24h, received_at, processed_at, reason_bucket, synced_at)
   VALUES
-    (@vin, @dealerVinId, @enterpriseId, @rooftopId, @status, @after24h, @receivedAt, @processedAt, @syncedAt)
+    (@vin, @dealerVinId, @enterpriseId, @rooftopId, @status, @after24h, @receivedAt, @processedAt, @reasonBucket, @syncedAt)
 `);
 
 const insertRooftopStmt = db.prepare(`
@@ -99,6 +99,7 @@ export async function syncFromMetabase() {
         after24h:     cleanAfter24(row.after_24_hrs ?? row.after_24hrs ?? null),
         receivedAt:   cleanDate(row.receivedAt),
         processedAt:  cleanDate(row.sentAt),
+        reasonBucket: row.reason_bucket ?? "",
         syncedAt,
       });
     }
@@ -161,6 +162,7 @@ function toApiRow(r) {
     rooftopType:  r.rooftop_type,
     csm:          r.csm,
     status:       r.status,
+    reasonBucket: r.reason_bucket || null,
     after24h:     r.after_24h !== null ? Boolean(r.after_24h) : null,
     receivedAt:   r.received_at,
     processedAt:  r.processed_at,
@@ -178,14 +180,14 @@ const VIN_FROM = `
 
 const VIN_SELECT = `
   SELECT v.vin, v.dealer_vin_id, v.enterprise_id, v.rooftop_id,
-         v.status, v.after_24h, v.received_at, v.processed_at, v.synced_at,
+         v.status, v.after_24h, v.received_at, v.processed_at, v.reason_bucket, v.synced_at,
          rd.team_name AS rooftop, rd.team_type AS rooftop_type,
          ed.name AS enterprise, ed.poc_email AS csm
   ${VIN_FROM}
 `;
 
 function buildVinFilters(query) {
-  const { search, rooftop, rooftopId, rooftopType, csm, status, after24h, enterprise, enterpriseId } = query;
+  const { search, rooftop, rooftopId, rooftopType, csm, status, after24h, enterprise, enterpriseId, reasonBucket } = query;
   const conditions = [];
   const params     = [];
 
@@ -203,6 +205,7 @@ function buildVinFilters(query) {
   if (enterprise)   { conditions.push("ed.name = ?");          params.push(enterprise); }
   if (after24h === "true"  || after24h === "1") { conditions.push("COALESCE(v.after_24h,0) = 1"); }
   if (after24h === "false" || after24h === "0") { conditions.push("COALESCE(v.after_24h,0) = 0"); }
+  if (reasonBucket) { conditions.push("v.reason_bucket = ?"); params.push(reasonBucket); }
 
   return { where: conditions.length ? `WHERE ${conditions.join(" AND ")}` : "", params };
 }
@@ -233,11 +236,16 @@ app.post("/api/sync", async (_req, res) => {
 
 function toTotals(r) {
   return {
-    total:                r.total,
-    processed:            r.processed,
-    processedAfter24:     r.processed_after_24h,
-    notProcessed:         r.not_processed,
-    notProcessedAfter24:  r.not_processed_after_24h,
+    total:                      r.total,
+    processed:                  r.processed,
+    processedAfter24:           r.processed_after_24h,
+    notProcessed:               r.not_processed,
+    notProcessedAfter24:        r.not_processed_after_24h,
+    bucketProcessingPending:    r.bucket_processing_pending,
+    bucketPublishingPending:    r.bucket_publishing_pending,
+    bucketQcPending:            r.bucket_qc_pending,
+    bucketSold:                 r.bucket_sold,
+    bucketOthers:               r.bucket_others,
   };
 }
 
@@ -254,8 +262,13 @@ function toRooftopRow(r) {
     processedAfter24:     r.processed_after_24h,
     notProcessed:         r.not_processed,
     notProcessedAfter24:  r.not_processed_after_24h,
-    websiteScore:         r.website_score ?? null,
-    websiteListingUrl:    r.website_listing_url ?? null,
+    websiteScore:               r.website_score ?? null,
+    websiteListingUrl:          r.website_listing_url ?? null,
+    bucketProcessingPending:    r.bucket_processing_pending,
+    bucketPublishingPending:    r.bucket_publishing_pending,
+    bucketQcPending:            r.bucket_qc_pending,
+    bucketSold:                 r.bucket_sold,
+    bucketOthers:               r.bucket_others,
   };
 }
 
@@ -269,9 +282,14 @@ function toEnterpriseRow(r) {
     processedAfter24:     r.processed_after_24h,
     notProcessed:         r.not_processed,
     notProcessedAfter24:  r.not_processed_after_24h,
-    avgWebsiteScore:      r.avg_website_score ?? null,
-    websiteUrl:           r.website_url ?? null,
-    accountType:          r.account_type ?? null,
+    avgWebsiteScore:            r.avg_website_score ?? null,
+    websiteUrl:                 r.website_url ?? null,
+    accountType:                r.account_type ?? null,
+    bucketProcessingPending:    r.bucket_processing_pending,
+    bucketPublishingPending:    r.bucket_publishing_pending,
+    bucketQcPending:            r.bucket_qc_pending,
+    bucketSold:                 r.bucket_sold,
+    bucketOthers:               r.bucket_others,
   };
 }
 
@@ -285,19 +303,29 @@ function toCsmRow(r) {
     processedAfter24:     r.processed_after_24h,
     notProcessed:         r.not_processed,
     notProcessedAfter24:  r.not_processed_after_24h,
-    avgWebsiteScore:      r.avg_website_score ?? null,
+    avgWebsiteScore:            r.avg_website_score ?? null,
+    bucketProcessingPending:    r.bucket_processing_pending,
+    bucketPublishingPending:    r.bucket_publishing_pending,
+    bucketQcPending:            r.bucket_qc_pending,
+    bucketSold:                 r.bucket_sold,
+    bucketOthers:               r.bucket_others,
   };
 }
 
 function toTypeRow(r) {
   return {
-    label:                r.label,
-    rooftopCount:         r.rooftop_count,
-    total:                r.total,
-    processed:            r.processed,
-    processedAfter24:     r.processed_after_24h,
-    notProcessed:         r.not_processed,
-    notProcessedAfter24:  r.not_processed_after_24h,
+    label:                      r.label,
+    rooftopCount:               r.rooftop_count,
+    total:                      r.total,
+    processed:                  r.processed,
+    processedAfter24:           r.processed_after_24h,
+    notProcessed:               r.not_processed,
+    notProcessedAfter24:        r.not_processed_after_24h,
+    bucketProcessingPending:    r.bucket_processing_pending,
+    bucketPublishingPending:    r.bucket_publishing_pending,
+    bucketQcPending:            r.bucket_qc_pending,
+    bucketSold:                 r.bucket_sold,
+    bucketOthers:               r.bucket_others,
   };
 }
 

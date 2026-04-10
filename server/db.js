@@ -31,6 +31,7 @@ db.exec(`
     after_24h       INTEGER,
     received_at     TEXT,
     processed_at    TEXT,
+    reason_bucket   TEXT,
     synced_at       TEXT
   );
 
@@ -74,7 +75,12 @@ db.exec(`
     SUM(CASE WHEN status = 'Delivered' THEN 1 ELSE 0 END)                                AS processed,
     SUM(CASE WHEN status = 'Delivered' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)   AS processed_after_24h,
     SUM(CASE WHEN status != 'Delivered' THEN 1 ELSE 0 END)                               AS not_processed,
-    SUM(CASE WHEN status != 'Delivered' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)  AS not_processed_after_24h
+    SUM(CASE WHEN status != 'Delivered' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)  AS not_processed_after_24h,
+    SUM(CASE WHEN reason_bucket = 'Processing Pending' THEN 1 ELSE 0 END)               AS bucket_processing_pending,
+    SUM(CASE WHEN reason_bucket = 'Publishing Pending' THEN 1 ELSE 0 END)               AS bucket_publishing_pending,
+    SUM(CASE WHEN reason_bucket = 'QC Pending'         THEN 1 ELSE 0 END)               AS bucket_qc_pending,
+    SUM(CASE WHEN reason_bucket = 'Sold'               THEN 1 ELSE 0 END)               AS bucket_sold,
+    SUM(CASE WHEN reason_bucket = 'Others'             THEN 1 ELSE 0 END)               AS bucket_others
   FROM vins;
 `);
 
@@ -94,7 +100,12 @@ db.exec(`
     SUM(CASE WHEN v.status != 'Delivered' THEN 1 ELSE 0 END)                               AS not_processed,
     SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END) AS not_processed_after_24h,
     MAX(rd.website_score)        AS website_score,
-    MAX(rd.website_listing_url)  AS website_listing_url
+    MAX(rd.website_listing_url)  AS website_listing_url,
+    SUM(CASE WHEN v.reason_bucket = 'Processing Pending' THEN 1 ELSE 0 END) AS bucket_processing_pending,
+    SUM(CASE WHEN v.reason_bucket = 'Publishing Pending' THEN 1 ELSE 0 END) AS bucket_publishing_pending,
+    SUM(CASE WHEN v.reason_bucket = 'QC Pending'         THEN 1 ELSE 0 END) AS bucket_qc_pending,
+    SUM(CASE WHEN v.reason_bucket = 'Sold'               THEN 1 ELSE 0 END) AS bucket_sold,
+    SUM(CASE WHEN v.reason_bucket = 'Others'             THEN 1 ELSE 0 END) AS bucket_others
   FROM vins v
   LEFT JOIN rooftop_details rd ON v.rooftop_id = rd.team_id
   LEFT JOIN enterprise_details ed ON v.enterprise_id = ed.enterprise_id
@@ -115,7 +126,12 @@ db.exec(`
     SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END) AS not_processed_after_24h,
     ROUND(AVG(rd.website_score), 2)   AS avg_website_score,
     MAX(ed.website_url)               AS website_url,
-    MAX(ed.type)                      AS account_type
+    MAX(ed.type)                      AS account_type,
+    SUM(CASE WHEN v.reason_bucket = 'Processing Pending' THEN 1 ELSE 0 END) AS bucket_processing_pending,
+    SUM(CASE WHEN v.reason_bucket = 'Publishing Pending' THEN 1 ELSE 0 END) AS bucket_publishing_pending,
+    SUM(CASE WHEN v.reason_bucket = 'QC Pending'         THEN 1 ELSE 0 END) AS bucket_qc_pending,
+    SUM(CASE WHEN v.reason_bucket = 'Sold'               THEN 1 ELSE 0 END) AS bucket_sold,
+    SUM(CASE WHEN v.reason_bucket = 'Others'             THEN 1 ELSE 0 END) AS bucket_others
   FROM vins v
   LEFT JOIN enterprise_details ed ON v.enterprise_id = ed.enterprise_id
   LEFT JOIN rooftop_details rd ON v.rooftop_id = rd.team_id
@@ -133,7 +149,12 @@ db.exec(`
     SUM(CASE WHEN v.status = 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END) AS processed_after_24h,
     SUM(CASE WHEN v.status != 'Delivered' THEN 1 ELSE 0 END)                               AS not_processed,
     SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END) AS not_processed_after_24h,
-    ROUND(AVG(rd.website_score), 2) AS avg_website_score
+    ROUND(AVG(rd.website_score), 2) AS avg_website_score,
+    SUM(CASE WHEN v.reason_bucket = 'Processing Pending' THEN 1 ELSE 0 END) AS bucket_processing_pending,
+    SUM(CASE WHEN v.reason_bucket = 'Publishing Pending' THEN 1 ELSE 0 END) AS bucket_publishing_pending,
+    SUM(CASE WHEN v.reason_bucket = 'QC Pending'         THEN 1 ELSE 0 END) AS bucket_qc_pending,
+    SUM(CASE WHEN v.reason_bucket = 'Sold'               THEN 1 ELSE 0 END) AS bucket_sold,
+    SUM(CASE WHEN v.reason_bucket = 'Others'             THEN 1 ELSE 0 END) AS bucket_others
   FROM vins v
   LEFT JOIN enterprise_details ed ON v.enterprise_id = ed.enterprise_id
   LEFT JOIN rooftop_details rd ON v.rooftop_id = rd.team_id
@@ -151,7 +172,12 @@ db.exec(`
     SUM(CASE WHEN v.status = 'Delivered' THEN 1 ELSE 0 END)                                AS processed,
     SUM(CASE WHEN v.status = 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END) AS processed_after_24h,
     SUM(CASE WHEN v.status != 'Delivered' THEN 1 ELSE 0 END)                               AS not_processed,
-    SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END) AS not_processed_after_24h
+    SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END) AS not_processed_after_24h,
+    SUM(CASE WHEN v.reason_bucket = 'Processing Pending' THEN 1 ELSE 0 END) AS bucket_processing_pending,
+    SUM(CASE WHEN v.reason_bucket = 'Publishing Pending' THEN 1 ELSE 0 END) AS bucket_publishing_pending,
+    SUM(CASE WHEN v.reason_bucket = 'QC Pending'         THEN 1 ELSE 0 END) AS bucket_qc_pending,
+    SUM(CASE WHEN v.reason_bucket = 'Sold'               THEN 1 ELSE 0 END) AS bucket_sold,
+    SUM(CASE WHEN v.reason_bucket = 'Others'             THEN 1 ELSE 0 END) AS bucket_others
   FROM vins v
   LEFT JOIN rooftop_details rd ON v.rooftop_id = rd.team_id
   GROUP BY rd.team_type;
