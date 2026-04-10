@@ -6,13 +6,13 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const METABASE_URL =
+const VIN_DETAILS_URL =
   "https://metabase.spyne.ai/api/public/card/15e908e4-fe21-4982-9d8c-4aff07f2c948/query/json";
 
-const WEBSITE_SCORE_URL =
+const ROOFTOP_DETAILS_URL =
   "https://metabase.spyne.ai/api/public/card/f5c032a6-c262-40ee-8d95-c115d326d3a8/query/json";
 
-const ENTERPRISE_URL_URL =
+const ENTERPRISE_DETAILS_URL =
   "https://metabase.spyne.ai/api/public/card/b8f1271c-cc5a-470f-badf-807711f74af4/query/json";
 
 // ─── Sync helpers ────────────────────────────────────────────────────────────
@@ -25,64 +25,58 @@ const cleanAfter24 = (v) => {
   return v ? 1 : 0;
 };
 
-const insertStmt = db.prepare(`
+const insertVinStmt = db.prepare(`
   INSERT INTO vins
-    (vin, dealer_vin_id, enterprise_id, enterprise, rooftop_id, rooftop, rooftop_type,
-     csm, status, after_24h, received_at, processed_at, synced_at)
+    (vin, dealer_vin_id, enterprise_id, rooftop_id, status, after_24h, received_at, processed_at, synced_at)
   VALUES
-    (@vin, @dealerVinId, @enterpriseId, @enterprise, @rooftopId, @rooftop, @rooftopType,
-     @csm, @status, @after24h, @receivedAt, @processedAt, @syncedAt)
+    (@vin, @dealerVinId, @enterpriseId, @rooftopId, @status, @after24h, @receivedAt, @processedAt, @syncedAt)
 `);
 
-const insertScoreStmt = db.prepare(`
-  INSERT INTO website_scores (team_id, enterprise_id, website_score, website_listing_url, synced_at)
-  VALUES (@teamId, @enterpriseId, @websiteScore, @websiteListingUrl, @syncedAt)
+const insertRooftopStmt = db.prepare(`
+  INSERT INTO rooftop_details (team_id, enterprise_id, team_name, team_type, website_score, website_listing_url, synced_at)
+  VALUES (@teamId, @enterpriseId, @teamName, @teamType, @websiteScore, @websiteListingUrl, @syncedAt)
 `);
 
-const insertEnterpriseUrlStmt = db.prepare(`
-  INSERT INTO website_urls (enterprise_id, name, website_url, account_type, synced_at)
-  VALUES (@enterpriseId, @name, @websiteUrl, @accountType, @syncedAt)
+const insertEnterpriseStmt = db.prepare(`
+  INSERT INTO enterprise_details (enterprise_id, name, type, website_url, poc_email, synced_at)
+  VALUES (@enterpriseId, @name, @type, @websiteUrl, @pocEmail, @syncedAt)
 `);
-
 
 export async function syncFromMetabase() {
   // Fetch all three datasets in parallel
-  const [vinResponse, scoreResponse, enterpriseUrlResponse] = await Promise.all([
-    fetch(METABASE_URL),
-    fetch(WEBSITE_SCORE_URL),
-    fetch(ENTERPRISE_URL_URL),
+  const [vinResponse, rooftopResponse, enterpriseResponse] = await Promise.all([
+    fetch(VIN_DETAILS_URL),
+    fetch(ROOFTOP_DETAILS_URL),
+    fetch(ENTERPRISE_DETAILS_URL),
   ]);
-  if (!vinResponse.ok)           throw new Error(`Metabase VINs HTTP ${vinResponse.status}`);
-  if (!scoreResponse.ok)         throw new Error(`Metabase scores HTTP ${scoreResponse.status}`);
-  if (!enterpriseUrlResponse.ok) throw new Error(`Metabase enterprise URLs HTTP ${enterpriseUrlResponse.status}`);
+  if (!vinResponse.ok)        throw new Error(`Metabase VINs HTTP ${vinResponse.status}`);
+  if (!rooftopResponse.ok)    throw new Error(`Metabase rooftop details HTTP ${rooftopResponse.status}`);
+  if (!enterpriseResponse.ok) throw new Error(`Metabase enterprise details HTTP ${enterpriseResponse.status}`);
 
-  const [metaRows, scoreRows, enterpriseUrlRows] = await Promise.all([
+  const [vinRows, rooftopRows, enterpriseRows] = await Promise.all([
     vinResponse.json(),
-    scoreResponse.json(),
-    enterpriseUrlResponse.json(),
+    rooftopResponse.json(),
+    enterpriseResponse.json(),
   ]);
 
   const syncedAt = new Date().toISOString();
 
   // Deduplicate by vin — Metabase sometimes returns the same VIN twice; keep last occurrence.
-  const deduped = Object.values(
-    metaRows.reduce((acc, row) => { acc[row.vinName ?? ""] = row; return acc; }, {})
+  const dedupedVins = Object.values(
+    vinRows.reduce((acc, row) => { acc[row.vinName ?? ""] = row; return acc; }, {})
   );
 
   // Delete all existing rows and insert fresh — inside one transaction so the
   // tables are never left empty if an insert fails partway through.
   db.transaction(() => {
+    // ── VINs ──
     db.prepare("DELETE FROM vins").run();
-    for (const row of deduped) {
-      insertStmt.run({
+    for (const row of dedupedVins) {
+      insertVinStmt.run({
         vin:          row.vinName ?? "",
         dealerVinId:  row["m.dealerVinId"] ?? null,
-        enterpriseId: row["m.enterpriseId"] ?? "",
-        enterprise:   row.name ?? "",
-        rooftopId:    String(row["m.teamId"] ?? ""),
-        rooftop:      row.rooftop_name ?? "",
-        rooftopType:  row.type ?? "",
-        csm:          row.email_id ?? "",
+        enterpriseId: row.enterpriseId ?? "",
+        rooftopId:    String(row.teamId ?? ""),
         status:       row.status ?? "",
         after24h:     cleanAfter24(row.after_24_hrs ?? row.after_24hrs ?? null),
         receivedAt:   cleanDate(row.receivedAt),
@@ -90,45 +84,50 @@ export async function syncFromMetabase() {
         syncedAt,
       });
     }
-    // Deduplicate website scores by team_id — keep last occurrence.
-    const dedupedScores = Object.values(
-      scoreRows.reduce((acc, row) => {
+
+    // ── Rooftop details ──
+    const dedupedRooftops = Object.values(
+      rooftopRows.reduce((acc, row) => {
         if (row.team_id) acc[String(row.team_id)] = row;
         return acc;
       }, {})
     );
-    db.prepare("DELETE FROM website_scores").run();
-    for (const row of dedupedScores) {
+    db.prepare("DELETE FROM rooftop_details").run();
+    for (const row of dedupedRooftops) {
       const score = row.overallScore !== null && row.overallScore !== undefined
         ? Number(row.overallScore) : null;
-      insertScoreStmt.run({
+      insertRooftopStmt.run({
         teamId:             String(row.team_id),
-        enterpriseId:       String(row.enterprise_id ?? ""),
+        enterpriseId:       String(row["t.enterprise_id"] ?? ""),
+        teamName:           row.team_name ?? null,
+        teamType:           row.team_type ?? null,
         websiteScore:       score,
         websiteListingUrl:  row.website_listing_url ?? null,
         syncedAt,
       });
     }
-    // Deduplicate enterprise URLs by enterprise_id — keep last occurrence.
-    const dedupedEnterpriseUrls = Object.values(
-      enterpriseUrlRows.reduce((acc, row) => {
-        if (row.enterprise_id) acc[String(row.enterprise_id)] = row;
+
+    // ── Enterprise details ──
+    const dedupedEnterprises = Object.values(
+      enterpriseRows.reduce((acc, row) => {
+        if (row["dt.enterprise_id"]) acc[String(row["dt.enterprise_id"])] = row;
         return acc;
       }, {})
     );
-    db.prepare("DELETE FROM website_urls").run();
-    for (const row of dedupedEnterpriseUrls) {
-      insertEnterpriseUrlStmt.run({
-        enterpriseId: String(row.enterprise_id),
+    db.prepare("DELETE FROM enterprise_details").run();
+    for (const row of dedupedEnterprises) {
+      insertEnterpriseStmt.run({
+        enterpriseId: String(row["dt.enterprise_id"]),
         name:         row.name ?? null,
+        type:         row.type ?? null,
         websiteUrl:   row.website_url ?? null,
-        accountType:  row.type ?? null,
+        pocEmail:     row.email_id ?? null,
         syncedAt,
       });
     }
   })();
 
-  return { count: deduped.length, scoreCount: scoreRows.length, syncedAt };
+  return { count: dedupedVins.length, rooftopCount: rooftopRows.length, enterpriseCount: enterpriseRows.length, syncedAt };
 }
 
 // ─── Row serialiser ──────────────────────────────────────────────────────────
@@ -151,7 +150,44 @@ function toApiRow(r) {
   };
 }
 
-// ─── ensureData removed — data is only refreshed via manual POST /api/sync ───
+// ─── VIN query helpers ───────────────────────────────────────────────────────
+
+const VIN_FROM = `
+  FROM vins v
+  LEFT JOIN rooftop_details rd ON v.rooftop_id = rd.team_id
+  LEFT JOIN enterprise_details ed ON v.enterprise_id = ed.enterprise_id
+`;
+
+const VIN_SELECT = `
+  SELECT v.vin, v.dealer_vin_id, v.enterprise_id, v.rooftop_id,
+         v.status, v.after_24h, v.received_at, v.processed_at, v.synced_at,
+         rd.team_name AS rooftop, rd.team_type AS rooftop_type,
+         ed.name AS enterprise, ed.poc_email AS csm
+  ${VIN_FROM}
+`;
+
+function buildVinFilters(query) {
+  const { search, rooftop, rooftopId, rooftopType, csm, status, after24h, enterprise, enterpriseId } = query;
+  const conditions = [];
+  const params     = [];
+
+  if (search) {
+    conditions.push("(v.vin LIKE ? OR rd.team_name LIKE ? OR ed.poc_email LIKE ? OR ed.name LIKE ?)");
+    const s = `%${search}%`;
+    params.push(s, s, s, s);
+  }
+  if (enterpriseId) { conditions.push("v.enterprise_id = ?");  params.push(enterpriseId); }
+  if (rooftopId)    { conditions.push("v.rooftop_id = ?");     params.push(rooftopId); }
+  if (rooftop)      { conditions.push("rd.team_name = ?");     params.push(rooftop); }
+  if (rooftopType)  { conditions.push("rd.team_type = ?");     params.push(rooftopType); }
+  if (csm)          { conditions.push("ed.poc_email = ?");     params.push(csm); }
+  if (status)       { conditions.push("v.status = ?");         params.push(status); }
+  if (enterprise)   { conditions.push("ed.name = ?");          params.push(enterprise); }
+  if (after24h === "true"  || after24h === "1") { conditions.push("COALESCE(v.after_24h,0) = 1"); }
+  if (after24h === "false" || after24h === "0") { conditions.push("COALESCE(v.after_24h,0) = 0"); }
+
+  return { where: conditions.length ? `WHERE ${conditions.join(" AND ")}` : "", params };
+}
 
 // ─── GET /api/sync/status ────────────────────────────────────────────────────
 
@@ -256,46 +292,19 @@ app.get("/api/summary", async (_req, res) => {
   res.json({ lastSync: meta?.last_sync ?? null, totalRows: meta?.total_rows ?? 0, totals, byRooftop, byEnterprise, byCSM, byType });
 });
 
-app.get("/api/summary/totals",        async (_req, res) => { await ensureData(); res.json(toTotals(db.prepare("SELECT * FROM v_totals").get())); });
-app.get("/api/summary/by-rooftop",    async (_req, res) => { await ensureData(); res.json(db.prepare("SELECT * FROM v_by_rooftop").all().map(toRooftopRow)); });
-app.get("/api/summary/by-enterprise", async (_req, res) => { await ensureData(); res.json(db.prepare("SELECT * FROM v_by_enterprise").all().map(toEnterpriseRow)); });
-app.get("/api/summary/by-csm",        async (_req, res) => { await ensureData(); res.json(db.prepare("SELECT * FROM v_by_csm").all().map(toCsmRow)); });
-app.get("/api/summary/by-type",       async (_req, res) => { await ensureData(); res.json(db.prepare("SELECT * FROM v_by_type").all().map(toTypeRow)); });
-
 // ─── GET /api/vins ───────────────────────────────────────────────────────────
 
-app.get("/api/vins", async (req, res) => {
-
+app.get("/api/vins", (req, res) => {
   const page     = Math.max(1, parseInt(req.query.page)     || 1);
   const pageSize = Math.min(500, Math.max(10, parseInt(req.query.pageSize) || 50));
   const offset   = (page - 1) * pageSize;
 
-  const { search, rooftop, rooftopId, rooftopType, csm, status, after24h, enterprise, enterpriseId } = req.query;
+  const { where, params } = buildVinFilters(req.query);
 
-  const conditions = [];
-  const params     = [];
-
-  if (search) {
-    conditions.push("(vin LIKE ? OR rooftop LIKE ? OR csm LIKE ? OR enterprise LIKE ?)");
-    const s = `%${search}%`;
-    params.push(s, s, s, s);
-  }
-  if (enterpriseId) { conditions.push("enterprise_id = ?"); params.push(enterpriseId); }
-  if (rooftopId)    { conditions.push("rooftop_id = ?");    params.push(rooftopId); }
-  if (rooftop)      { conditions.push("rooftop = ?");       params.push(rooftop); }
-  if (rooftopType)  { conditions.push("rooftop_type = ?");  params.push(rooftopType); }
-  if (csm)          { conditions.push("csm = ?");           params.push(csm); }
-  if (status)       { conditions.push("status = ?");        params.push(status); }
-  if (enterprise)   { conditions.push("enterprise = ?");    params.push(enterprise); }
-  if (after24h === "true"  || after24h === "1") { conditions.push("COALESCE(after_24h,0) = 1"); }
-  if (after24h === "false" || after24h === "0") { conditions.push("COALESCE(after_24h,0) = 0"); }
-
-  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
-
-  const total = db.prepare(`SELECT COUNT(*) AS n FROM vins ${where}`).get(...params).n;
+  const total = db.prepare(`SELECT COUNT(*) AS n ${VIN_FROM} ${where}`).get(...params).n;
   const rows  = db.prepare(`
-    SELECT * FROM vins ${where}
-    ORDER BY received_at DESC NULLS LAST
+    ${VIN_SELECT} ${where}
+    ORDER BY v.received_at DESC NULLS LAST
     LIMIT ${pageSize} OFFSET ${offset}
   `).all(...params);
 
@@ -309,33 +318,12 @@ app.get("/api/vins/raw", (req, res) => {
 
 // ─── GET /api/vins/export ────────────────────────────────────────────────────
 
-app.get("/api/vins/export", async (req, res) => {
-
-  const { search, rooftop, rooftopId, rooftopType, csm, status, after24h, enterprise, enterpriseId } = req.query;
-
-  const conditions = [];
-  const params     = [];
-
-  if (search) {
-    conditions.push("(vin LIKE ? OR rooftop LIKE ? OR csm LIKE ? OR enterprise LIKE ?)");
-    const s = `%${search}%`;
-    params.push(s, s, s, s);
-  }
-  if (enterpriseId) { conditions.push("enterprise_id = ?"); params.push(enterpriseId); }
-  if (rooftopId)    { conditions.push("rooftop_id = ?");    params.push(rooftopId); }
-  if (rooftop)      { conditions.push("rooftop = ?");       params.push(rooftop); }
-  if (rooftopType)  { conditions.push("rooftop_type = ?");  params.push(rooftopType); }
-  if (csm)          { conditions.push("csm = ?");           params.push(csm); }
-  if (status)       { conditions.push("status = ?");        params.push(status); }
-  if (enterprise)   { conditions.push("enterprise = ?");    params.push(enterprise); }
-  if (after24h === "true"  || after24h === "1") { conditions.push("COALESCE(after_24h,0) = 1"); }
-  if (after24h === "false" || after24h === "0") { conditions.push("COALESCE(after_24h,0) = 0"); }
-
-  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+app.get("/api/vins/export", (req, res) => {
+  const { where, params } = buildVinFilters(req.query);
 
   const rows = db.prepare(`
-    SELECT * FROM vins ${where}
-    ORDER BY received_at DESC NULLS LAST
+    ${VIN_SELECT} ${where}
+    ORDER BY v.received_at DESC NULLS LAST
   `).all(...params);
 
   res.json({ data: rows.map(toApiRow) });

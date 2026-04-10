@@ -13,16 +13,20 @@ const db = new Database(DB_PATH);
 
 // ─── Schema ──────────────────────────────────────────────────────────────────
 
+// Drop legacy tables (renamed as part of schema normalization).
+db.exec(`DROP TABLE IF EXISTS website_scores`);
+db.exec(`DROP TABLE IF EXISTS website_urls`);
+
+// Recreate vins without denormalized columns — enterprise/rooftop details are
+// now joined at query time from rooftop_details and enterprise_details.
+db.exec(`DROP TABLE IF EXISTS vins`);
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS vins (
     vin             TEXT PRIMARY KEY,
     dealer_vin_id   TEXT,
     enterprise_id   TEXT,
-    enterprise      TEXT,
     rooftop_id      TEXT,
-    rooftop         TEXT,
-    rooftop_type    TEXT,
-    csm             TEXT,
     status          TEXT,
     after_24h       INTEGER,
     received_at     TEXT,
@@ -30,18 +34,19 @@ db.exec(`
     synced_at       TEXT
   );
 
-  CREATE INDEX IF NOT EXISTS idx_vins_rooftop       ON vins(rooftop);
+  CREATE INDEX IF NOT EXISTS idx_vins_rooftop_id    ON vins(rooftop_id);
   CREATE INDEX IF NOT EXISTS idx_vins_enterprise_id ON vins(enterprise_id);
-  CREATE INDEX IF NOT EXISTS idx_vins_csm           ON vins(csm);
   CREATE INDEX IF NOT EXISTS idx_vins_status        ON vins(status);
-  CREATE INDEX IF NOT EXISTS idx_vins_rooftop_type  ON vins(rooftop_type);
   CREATE INDEX IF NOT EXISTS idx_vins_received_at   ON vins(received_at);
 `);
 
+db.exec(`DROP TABLE IF EXISTS rooftop_details`);
 db.exec(`
-  CREATE TABLE IF NOT EXISTS website_scores (
+  CREATE TABLE IF NOT EXISTS rooftop_details (
     team_id              TEXT PRIMARY KEY,
     enterprise_id        TEXT,
+    team_name            TEXT,
+    team_type            TEXT,
     website_score        REAL,
     website_listing_url  TEXT,
     synced_at            TEXT
@@ -49,12 +54,13 @@ db.exec(`
 `);
 
 db.exec(`
-  CREATE TABLE IF NOT EXISTS website_urls (
-    enterprise_id TEXT PRIMARY KEY,
-    name          TEXT,
-    website_url   TEXT,
-    account_type  TEXT,
-    synced_at     TEXT
+  CREATE TABLE IF NOT EXISTS enterprise_details (
+    enterprise_id  TEXT PRIMARY KEY,
+    name           TEXT,
+    type           TEXT,
+    website_url    TEXT,
+    poc_email      TEXT,
+    synced_at      TEXT
   );
 `);
 
@@ -64,11 +70,11 @@ db.exec(`
   DROP VIEW IF EXISTS v_totals;
   CREATE VIEW v_totals AS
   SELECT
-    COUNT(*)                                                                          AS total,
-    SUM(CASE WHEN status = 'Delivered' THEN 1 ELSE 0 END)                            AS processed,
-    SUM(CASE WHEN status = 'Delivered' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END) AS processed_after_24h,
-    SUM(CASE WHEN status != 'Delivered' THEN 1 ELSE 0 END)                           AS not_processed,
-    SUM(CASE WHEN status != 'Delivered' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END) AS not_processed_after_24h
+    COUNT(*)                                                                              AS total,
+    SUM(CASE WHEN status = 'Delivered' THEN 1 ELSE 0 END)                                AS processed,
+    SUM(CASE WHEN status = 'Delivered' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)   AS processed_after_24h,
+    SUM(CASE WHEN status != 'Delivered' THEN 1 ELSE 0 END)                               AS not_processed,
+    SUM(CASE WHEN status != 'Delivered' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)  AS not_processed_after_24h
   FROM vins;
 `);
 
@@ -76,47 +82,43 @@ db.exec(`
   DROP VIEW IF EXISTS v_by_rooftop;
   CREATE VIEW v_by_rooftop AS
   SELECT
-    v.rooftop_id    AS rooftop_id,
-    v.rooftop       AS name,
-    v.rooftop_type  AS type,
-    v.csm,
+    v.rooftop_id,
     v.enterprise_id,
-    v.enterprise,
-    COUNT(*)                                                                            AS total,
-    SUM(CASE WHEN v.status = 'Delivered' THEN 1 ELSE 0 END)                            AS processed,
+    MAX(rd.team_name)            AS name,
+    MAX(rd.team_type)             AS type,
+    MAX(ed.poc_email)            AS csm,
+    MAX(ed.name)                 AS enterprise,
+    COUNT(*)                                                                                AS total,
+    SUM(CASE WHEN v.status = 'Delivered' THEN 1 ELSE 0 END)                                AS processed,
     SUM(CASE WHEN v.status = 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END) AS processed_after_24h,
-    SUM(CASE WHEN v.status != 'Delivered' THEN 1 ELSE 0 END)                           AS not_processed,
+    SUM(CASE WHEN v.status != 'Delivered' THEN 1 ELSE 0 END)                               AS not_processed,
     SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END) AS not_processed_after_24h,
-    MAX(ws.website_score)       AS website_score,
-    MAX(ws.website_listing_url) AS website_listing_url
+    MAX(rd.website_score)        AS website_score,
+    MAX(rd.website_listing_url)  AS website_listing_url
   FROM vins v
-  LEFT JOIN website_scores ws ON v.rooftop_id = ws.team_id
-  GROUP BY v.rooftop_id;
+  LEFT JOIN rooftop_details rd ON v.rooftop_id = rd.team_id
+  LEFT JOIN enterprise_details ed ON v.enterprise_id = ed.enterprise_id
+  GROUP BY v.rooftop_id, v.enterprise_id;
 `);
 
 db.exec(`
   DROP VIEW IF EXISTS v_by_enterprise;
   CREATE VIEW v_by_enterprise AS
   SELECT
-    v.enterprise_id AS id,
-    v.enterprise    AS name,
-    MIN(v.csm)      AS csm,
-    COUNT(*)                                                                            AS total,
-    SUM(CASE WHEN v.status = 'Delivered' THEN 1 ELSE 0 END)                            AS processed,
+    v.enterprise_id                   AS id,
+    MAX(ed.name)                      AS name,
+    MAX(ed.poc_email)                 AS csm,
+    COUNT(*)                                                                                AS total,
+    SUM(CASE WHEN v.status = 'Delivered' THEN 1 ELSE 0 END)                                AS processed,
     SUM(CASE WHEN v.status = 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END) AS processed_after_24h,
-    SUM(CASE WHEN v.status != 'Delivered' THEN 1 ELSE 0 END)                           AS not_processed,
+    SUM(CASE WHEN v.status != 'Delivered' THEN 1 ELSE 0 END)                               AS not_processed,
     SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END) AS not_processed_after_24h,
-    ws_avg.avg_score  AS avg_website_score,
-    wu.website_url    AS website_url,
-    wu.account_type   AS account_type
+    ROUND(AVG(rd.website_score), 2)   AS avg_website_score,
+    MAX(ed.website_url)               AS website_url,
+    MAX(ed.type)                      AS account_type
   FROM vins v
-  LEFT JOIN (
-    SELECT rv.enterprise_id, ROUND(AVG(ws.website_score), 2) AS avg_score
-    FROM (SELECT DISTINCT enterprise_id, rooftop_id FROM vins) rv
-    INNER JOIN website_scores ws ON rv.rooftop_id = ws.team_id
-    GROUP BY rv.enterprise_id
-  ) ws_avg ON v.enterprise_id = ws_avg.enterprise_id
-  LEFT JOIN website_urls wu ON v.enterprise_id = wu.enterprise_id
+  LEFT JOIN enterprise_details ed ON v.enterprise_id = ed.enterprise_id
+  LEFT JOIN rooftop_details rd ON v.rooftop_id = rd.team_id
   GROUP BY v.enterprise_id;
 `);
 
@@ -124,44 +126,35 @@ db.exec(`
   DROP VIEW IF EXISTS v_by_csm;
   CREATE VIEW v_by_csm AS
   SELECT
-    v.csm                     AS name,
-    COUNT(DISTINCT v.rooftop_id) AS rooftop_count,
-    COUNT(*)                                                                            AS total,
-    SUM(CASE WHEN v.status = 'Delivered' THEN 1 ELSE 0 END)                            AS processed,
+    ed.poc_email                  AS name,
+    COUNT(DISTINCT v.rooftop_id)  AS rooftop_count,
+    COUNT(*)                                                                                AS total,
+    SUM(CASE WHEN v.status = 'Delivered' THEN 1 ELSE 0 END)                                AS processed,
     SUM(CASE WHEN v.status = 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END) AS processed_after_24h,
-    SUM(CASE WHEN v.status != 'Delivered' THEN 1 ELSE 0 END)                           AS not_processed,
+    SUM(CASE WHEN v.status != 'Delivered' THEN 1 ELSE 0 END)                               AS not_processed,
     SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END) AS not_processed_after_24h,
-    ws_avg.avg_score AS avg_website_score
+    ROUND(AVG(rd.website_score), 2) AS avg_website_score
   FROM vins v
-  LEFT JOIN (
-    SELECT rv.csm, ROUND(AVG(ws.website_score), 2) AS avg_score
-    FROM (SELECT DISTINCT csm, rooftop_id FROM vins) rv
-    INNER JOIN website_scores ws ON rv.rooftop_id = ws.team_id
-    GROUP BY rv.csm
-  ) ws_avg ON v.csm = ws_avg.csm
-  GROUP BY v.csm
-  ORDER BY v.csm;
+  LEFT JOIN enterprise_details ed ON v.enterprise_id = ed.enterprise_id
+  LEFT JOIN rooftop_details rd ON v.rooftop_id = rd.team_id
+  GROUP BY ed.poc_email
+  ORDER BY ed.poc_email;
 `);
 
 db.exec(`
   DROP VIEW IF EXISTS v_by_type;
   CREATE VIEW v_by_type AS
   SELECT
-    rooftop_type            AS label,
-    COUNT(DISTINCT rooftop_id) AS rooftop_count,
-    COUNT(*)                                                                          AS total,
-    SUM(CASE WHEN status = 'Delivered' THEN 1 ELSE 0 END)                            AS processed,
-    SUM(CASE WHEN status = 'Delivered' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END) AS processed_after_24h,
-    SUM(CASE WHEN status != 'Delivered' THEN 1 ELSE 0 END)                           AS not_processed,
-    SUM(CASE WHEN status != 'Delivered' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END) AS not_processed_after_24h
-  FROM vins
-  GROUP BY rooftop_type;
+    rd.team_type                   AS label,
+    COUNT(DISTINCT v.rooftop_id)  AS rooftop_count,
+    COUNT(*)                                                                                AS total,
+    SUM(CASE WHEN v.status = 'Delivered' THEN 1 ELSE 0 END)                                AS processed,
+    SUM(CASE WHEN v.status = 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END) AS processed_after_24h,
+    SUM(CASE WHEN v.status != 'Delivered' THEN 1 ELSE 0 END)                               AS not_processed,
+    SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END) AS not_processed_after_24h
+  FROM vins v
+  LEFT JOIN rooftop_details rd ON v.rooftop_id = rd.team_id
+  GROUP BY rd.team_type;
 `);
-
-// ─── Migrations ──────────────────────────────────────────────────────────────
-
-try { db.exec(`ALTER TABLE vins ADD COLUMN dealer_vin_id TEXT`); } catch (_) { /* column already exists */ }
-try { db.exec(`ALTER TABLE website_scores ADD COLUMN website_listing_url TEXT`); } catch (_) { /* column already exists */ }
-try { db.exec(`ALTER TABLE website_urls ADD COLUMN account_type TEXT`); } catch (_) { /* column already exists */ }
 
 export default db;
