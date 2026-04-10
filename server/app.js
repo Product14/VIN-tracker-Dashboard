@@ -42,21 +42,39 @@ const insertEnterpriseStmt = db.prepare(`
   VALUES (@enterpriseId, @name, @type, @websiteUrl, @pocEmail, @syncedAt)
 `);
 
-export async function syncFromMetabase() {
-  // Fetch all three datasets in parallel
-  const [vinResponse, rooftopResponse, enterpriseResponse] = await Promise.all([
-    fetch(VIN_DETAILS_URL),
-    fetch(ROOFTOP_DETAILS_URL),
-    fetch(ENTERPRISE_DETAILS_URL),
-  ]);
-  if (!vinResponse.ok)        throw new Error(`Metabase VINs HTTP ${vinResponse.status}`);
-  if (!rooftopResponse.ok)    throw new Error(`Metabase rooftop details HTTP ${rooftopResponse.status}`);
-  if (!enterpriseResponse.ok) throw new Error(`Metabase enterprise details HTTP ${enterpriseResponse.status}`);
+// Fetch with timeout + retry. VIN_DETAILS consistently takes ~37s so we use a
+// 90s timeout. Retries up to 2 extra attempts on network/timeout errors.
+async function fetchWithRetry(url, label, { timeoutMs = 90_000, retries = 2 } = {}) {
+  let lastErr;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, { signal: controller.signal });
+      clearTimeout(timer);
+      if (!res.ok) throw new Error(`${label} HTTP ${res.status}`);
+      return await res.json();
+    } catch (err) {
+      clearTimeout(timer);
+      lastErr = err.name === "AbortError"
+        ? new Error(`${label} timed out after ${timeoutMs / 1000}s`)
+        : err;
+      if (attempt < retries) {
+        const delay = 2000 * (attempt + 1);
+        console.warn(`${label} failed (attempt ${attempt + 1}), retrying in ${delay}ms:`, lastErr.message);
+        await new Promise(r => setTimeout(r, delay));
+      }
+    }
+  }
+  throw lastErr;
+}
 
+export async function syncFromMetabase() {
+  // Fetch all three datasets in parallel (VIN_DETAILS can take 35–40s)
   const [vinRows, rooftopRows, enterpriseRows] = await Promise.all([
-    vinResponse.json(),
-    rooftopResponse.json(),
-    enterpriseResponse.json(),
+    fetchWithRetry(VIN_DETAILS_URL,        "VIN_DETAILS",        { timeoutMs: 90_000 }),
+    fetchWithRetry(ROOFTOP_DETAILS_URL,    "ROOFTOP_DETAILS",    { timeoutMs: 15_000 }),
+    fetchWithRetry(ENTERPRISE_DETAILS_URL, "ENTERPRISE_DETAILS", { timeoutMs: 15_000 }),
   ]);
 
   const syncedAt = new Date().toISOString();
@@ -199,11 +217,14 @@ app.get("/api/sync/status", (_req, res) => {
 // ─── POST /api/sync ──────────────────────────────────────────────────────────
 
 app.post("/api/sync", async (_req, res) => {
+  // VIN_DETAILS fetch takes ~37s — extend socket timeout to 3 minutes.
+  res.socket?.setTimeout(180_000);
   try {
     const { count, syncedAt } = await syncFromMetabase();
     const meta = db.prepare("SELECT MAX(synced_at) AS last_sync, COUNT(*) AS total_rows FROM vins").get();
     res.json({ synced: count, syncedAt, lastSync: meta?.last_sync ?? null, totalRows: meta?.total_rows ?? 0 });
   } catch (err) {
+    console.error("Sync failed:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
