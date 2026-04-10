@@ -122,7 +122,7 @@ function ClickableNum({ value, color, onClick, title = "" }) {
 function StatCard({ label, value, sub, color = "#6366f1", onClick }) {
   const interactive = !!onClick;
   return (
-    <div onClick={onClick} style={{ background: "#fff", borderRadius: 12, padding: "20px 24px", boxShadow: "0 1px 3px rgba(0,0,0,0.08)", border: "1px solid #e5e7eb", flex: 1, minWidth: 160, cursor: interactive ? "pointer" : "default", transition: "all 0.15s", ...(interactive ? {} : {}) }}
+    <div onClick={onClick} style={{ background: "#fff", borderRadius: 12, padding: "20px 24px", boxShadow: "0 1px 3px rgba(0,0,0,0.08)", border: "1px solid #e5e7eb", flex: 1, minWidth: 160, cursor: interactive ? "pointer" : "default", transition: "all 0.15s" }}
       onMouseEnter={e => { if (interactive) { e.currentTarget.style.boxShadow = "0 4px 12px rgba(0,0,0,0.12)"; e.currentTarget.style.transform = "translateY(-2px)"; } }}
       onMouseLeave={e => { if (interactive) { e.currentTarget.style.boxShadow = "0 1px 3px rgba(0,0,0,0.08)"; e.currentTarget.style.transform = "translateY(0)"; } }}>
       <div style={{ fontSize: 13, color: "#6b7280", fontWeight: 500, marginBottom: 4 }}>{label}</div>
@@ -1107,8 +1107,8 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
   );
 }
 
-function OverviewTab({ totals, byType, byCSM, onDrillDown, onRooftopDrillDown }) {
-  const activeBuckets = BUCKETS.filter(b => (totals[b.key] ?? 0) > 0);
+function OverviewTab({ totals, byType, byCSM, byBucket = [], onDrillDown, onRooftopDrillDown }) {
+  const activeBuckets = byBucket;
   return (
     <div>
       <div style={{ display: "flex", gap: 14, marginBottom: activeBuckets.length > 0 ? 10 : 28, flexWrap: "wrap" }}>
@@ -1120,12 +1120,12 @@ function OverviewTab({ totals, byType, byCSM, onDrillDown, onRooftopDrillDown })
       {activeBuckets.length > 0 && (
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 28, alignItems: "center" }}>
           <span style={{ fontSize: 11, fontWeight: 600, color: "#9ca3af", textTransform: "uppercase" as const, letterSpacing: 0.5, marginRight: 2 }}>Pending &gt;24h by reason:</span>
-          {activeBuckets.map(b => (
-            <span key={b.key} onClick={() => onDrillDown({ status: "Not Delivered", after24h: true, reasonBucket: b.label })}
+          {activeBuckets.map((b: { label: string; count: number }) => (
+            <span key={b.label} onClick={() => onDrillDown({ status: "Not Delivered", after24h: true, reasonBucket: b.label })}
               style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "3px 10px", borderRadius: 999, fontSize: 12, fontWeight: 600, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", cursor: "pointer", transition: "all 0.15s" }}
               onMouseEnter={e => { e.currentTarget.style.background = "#fee2e2"; e.currentTarget.style.borderColor = "#fca5a5"; }}
               onMouseLeave={e => { e.currentTarget.style.background = "#fef2f2"; e.currentTarget.style.borderColor = "#fecaca"; }}>
-              {b.label} <span style={{ fontWeight: 700, color: "#ef4444" }}>{(totals[b.key] ?? 0).toLocaleString()}</span>
+              {b.label} <span style={{ fontWeight: 700, color: "#ef4444" }}>{b.count.toLocaleString()}</span>
             </span>
           ))}
         </div>
@@ -1154,6 +1154,7 @@ const EMPTY_SUMMARY = {
   byEnterprise: [],
   byCSM:        [],
   byType:       [],
+  byBucket:     [],
 };
 
 export default function Dashboard() {
@@ -1334,7 +1335,7 @@ export default function Dashboard() {
         ))}
       </div>
 
-      {tab === "Overview" && <OverviewTab totals={s.totals} byType={s.byType} byCSM={s.byCSM} onDrillDown={handleDrillDown} onRooftopDrillDown={handleRooftopDrillDown} />}
+      {tab === "Overview" && <OverviewTab totals={s.totals} byType={s.byType} byCSM={s.byCSM} byBucket={s.byBucket ?? []} onDrillDown={handleDrillDown} onRooftopDrillDown={handleRooftopDrillDown} />}
       {tab === "Rooftop View" && <RooftopTab allRooftops={s.byRooftop} onDrillDown={handleDrillDown} filters={rooftopFilters} setFilters={setRooftopFilters} />}
       {tab === "Enterprise View" && <EnterpriseTab enterprises={s.byEnterprise} onDrillDown={handleDrillDown} filters={enterpriseFilters} setFilters={setEnterpriseFilters} />}
       {tab === "VIN Data" && (

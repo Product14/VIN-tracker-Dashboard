@@ -338,7 +338,22 @@ app.get("/api/summary", async (_req, res) => {
   const byEnterprise = db.prepare("SELECT * FROM v_by_enterprise").all().map(toEnterpriseRow);
   const byCSM        = db.prepare("SELECT * FROM v_by_csm").all().map(toCsmRow);
   const byType       = db.prepare("SELECT * FROM v_by_type").all().map(toTypeRow);
-  res.json({ lastSync: meta?.last_sync ?? null, totalRows: meta?.total_rows ?? 0, totals, byRooftop, byEnterprise, byCSM, byType });
+  const byBucket     = db.prepare(`
+    SELECT reason_bucket AS label, COUNT(*) AS count
+    FROM vins
+    WHERE status != 'Delivered' AND COALESCE(after_24h,0)=1
+      AND reason_bucket IS NOT NULL AND reason_bucket != ''
+    GROUP BY reason_bucket
+    ORDER BY
+      CASE reason_bucket
+        WHEN 'Processing Pending' THEN 1
+        WHEN 'Publishing Pending' THEN 2
+        WHEN 'QC Pending'         THEN 3
+        WHEN 'Sold'               THEN 4
+        ELSE 5
+      END, reason_bucket
+  `).all().map(r => ({ label: r.label, count: r.count }));
+  res.json({ lastSync: meta?.last_sync ?? null, totalRows: meta?.total_rows ?? 0, totals, byRooftop, byEnterprise, byCSM, byType, byBucket });
 });
 
 // ─── GET /api/vins ───────────────────────────────────────────────────────────
