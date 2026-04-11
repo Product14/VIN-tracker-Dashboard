@@ -1,4 +1,26 @@
 import React, { useState, useMemo, useCallback, useEffect, useRef } from "react";
+import ReactDOM from "react-dom";
+
+function InfoTooltip({ text }: { text: string }) {
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+  const iconRef = useRef<HTMLSpanElement>(null);
+  return (
+    <>
+      <span ref={iconRef}
+        style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 14, height: 14, borderRadius: "50%", background: "#e5e7eb", color: "#6b7280", fontSize: 10, fontWeight: 700, cursor: "default", flexShrink: 0 }}
+        onMouseEnter={() => { const r = iconRef.current?.getBoundingClientRect(); if (r) setPos({ top: r.bottom + 6, left: r.left + r.width / 2 }); }}
+        onMouseLeave={() => setPos(null)}>
+        i
+      </span>
+      {pos && ReactDOM.createPortal(
+        <div style={{ position: "fixed", top: pos.top, left: pos.left, transform: "translateX(-50%)", background: "#1f2937", color: "#fff", fontSize: 11, fontWeight: 400, padding: "6px 10px", borderRadius: 6, width: 230, lineHeight: 1.4, zIndex: 99999, pointerEvents: "none", boxShadow: "0 2px 8px rgba(0,0,0,0.25)", whiteSpace: "normal" }}>
+          {text}
+        </div>,
+        document.body
+      )}
+    </>
+  );
+}
 
 const SAMPLE_DATA = [
   { vin: "1HGCM82633A004352", enterpriseId: "ENT-001", enterprise: "Metro Auto Group", rooftopId: "RT-001", rooftop: "Downtown Auto", rooftopType: "Franchise", csm: "Sarah Miller", status: "Delivered", processedAt: "2026-04-06T10:30:00", receivedAt: "2026-04-06T08:00:00" },
@@ -1040,11 +1062,17 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
   const activeBuckets = BUCKETS.filter(b => rows.some(r => (r[b.key] ?? 0) > 0));
   const showIntegrated  = rows.some(r => (r.integratedCount ?? 0) > 0);
   const showPublishing  = rows.some(r => (r.publishingCount ?? 0) > 0);
+  const pendencyColSpan = 1 + activeBuckets.length;
+  const row1Ref = useRef<HTMLTableRowElement>(null);
+  const [row1H, setRow1H] = useState(0);
+  useEffect(() => {
+    if (row1Ref.current) setRow1H(row1Ref.current.getBoundingClientRect().height);
+  });
 
   const sorted = useMemo(() => {
     return [...rows].sort((a, b) => {
-      const va = sortCol === "rate" ? (a.total === 0 ? 0 : a.notProcessedAfter24 / a.total) : a[sortCol];
-      const vb = sortCol === "rate" ? (b.total === 0 ? 0 : b.notProcessedAfter24 / b.total) : b[sortCol];
+      const va = a[sortCol];
+      const vb = b[sortCol];
       if (va === null || va === undefined) return 1;
       if (vb === null || vb === undefined) return -1;
       if (typeof va === "string") return sortDir === "asc" ? va.localeCompare(vb) : vb.localeCompare(va);
@@ -1064,24 +1092,13 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
     return obj;
   }, { total: 0, processed: 0, processedAfter24: 0, notProcessed: 0, notProcessedAfter24: 0, rooftopCount: 0, integratedCount: 0, publishingCount: 0 } as any);
   const totRate = totRow.total === 0 ? 0 : (totRow.notProcessedAfter24 / totRow.total) * 100;
-  const nameCol = filterKey === "rooftopType" ? "Rooftop Type" : "CSM Name";
-  const td = { padding: "10px 14px", borderBottom: "1px solid #f3f4f6" };
-  const totTd = { padding: "10px 14px", background: "#f9fafb", fontWeight: 700, borderTop: "2px solid #e5e7eb" };
+  const nameCol = filterKey === "rooftopType" ? "Rooftop Type" : "CSM";
+  const td = { padding: "8px 10px", borderBottom: "1px solid #f3f4f6" };
+  const totTd = { padding: "8px 10px", background: "#f9fafb", fontWeight: 700, borderTop: "2px solid #e5e7eb" };
 
-  const cols = [
-    { key: "label",               label: nameCol,               numeric: false },
-    { key: "rooftopCount",        label: "Rooftops",            numeric: true  },
-    ...(showIntegrated  ? [{ key: "integratedCount", label: "Not Integrated",      numeric: true }] : []),
-    { key: "total",               label: "Total",               numeric: true  },
-    { key: "processed",           label: "Delivered",           numeric: true  },
-    { key: "processedAfter24",    label: "Delivered VINs >24h", numeric: true  },
-    { key: "notProcessed",        label: "Pending VINs",        numeric: true  },
-    { key: "notProcessedAfter24", label: "Pending VINs >24h",   numeric: true  },
-    { key: "rate",                label: "Pending VINs >24h %", numeric: true  },
-    ...activeBuckets.map(b => ({ key: b.key, label: b.label, numeric: true })),
-    ...(showPublishing  ? [{ key: "publishingCount", label: "Publishing Disabled", numeric: true }] : []),
-    ...(filterKey === "csm" ? [{ key: "avgWebsiteScore", label: "Avg Website Score", numeric: true }] : []),
-  ];
+  const thBase: React.CSSProperties = { padding: "5px 8px", fontSize: 11, fontWeight: 600, color: "#374151", boxShadow: "inset 0 -2px 0 #e5e7eb", background: "#f9fafb", position: "sticky", top: 0, zIndex: 3, whiteSpace: "nowrap" };
+  const thPend: React.CSSProperties = { padding: "5px 8px", fontSize: 11, fontWeight: 600, color: "#92400e", boxShadow: "inset 0 -2px 0 #e5e7eb", background: "#fffbeb", position: "sticky", top: row1H, zIndex: 3, whiteSpace: "nowrap", cursor: "pointer", userSelect: "none" };
+  const si = (key: string) => sortCol === key ? (sortDir === "asc" ? " ↑" : " ↓") : <span style={{ color: "#d1d5db" }}> ↕</span>;
 
   return (
     <div style={{ marginBottom: 28 }}>
@@ -1091,8 +1108,8 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
           {title}
         </h3>
         <DownloadButton onClick={() => {
-          const headers = [nameCol, "Rooftops", "Total", "Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h", "Pending VINs >24h %", ...activeBuckets.map(b => b.label), ...(showIntegrated ? ["Not Integrated"] : []), ...(showPublishing ? ["Publishing Disabled"] : []), ...(filterKey === "csm" ? ["Avg Website Score"] : [])];
-          const csvRows = sorted.map(r => [r.label, r.rooftopCount, r.total, r.processed, r.processedAfter24, r.notProcessed, r.notProcessedAfter24, r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0), ...activeBuckets.map(b => r[b.key] ?? 0), ...(showIntegrated ? [r.integratedCount ?? 0] : []), ...(showPublishing ? [r.publishingCount ?? 0] : []), ...(filterKey === "csm" ? [r.avgWebsiteScore !== null && r.avgWebsiteScore !== undefined ? Number(r.avgWebsiteScore).toFixed(1) : ""] : [])]);
+          const headers = [nameCol, "Rooftops", ...(showIntegrated ? ["Not Integrated"] : []), "Total", "Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h", "Pending VINs >24h %", ...activeBuckets.map(b => b.label), ...(showPublishing ? ["Publishing Disabled"] : []), ...(filterKey === "csm" ? ["Avg Website Score"] : [])];
+          const csvRows = sorted.map(r => [r.label, r.rooftopCount, ...(showIntegrated ? [r.integratedCount ?? 0] : []), r.total, r.processed, r.processedAfter24, r.notProcessed, r.notProcessedAfter24, r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0), ...activeBuckets.map(b => r[b.key] ?? 0), ...(showPublishing ? [r.publishingCount ?? 0] : []), ...(filterKey === "csm" ? [r.avgWebsiteScore !== null && r.avgWebsiteScore !== undefined ? Number(r.avgWebsiteScore).toFixed(1) : ""] : [])]);
           downloadCSV(`overview-${filterKey}.csv`, headers, csvRows);
         }} />
       </div>
@@ -1100,12 +1117,39 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
         <div style={{ maxHeight: "calc(100vh - 260px)", overflow: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
             <thead>
-              <tr style={{ background: "#f9fafb" }}>
-                <th style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2, width: 48, whiteSpace: "nowrap" }}>S. No.</th>
-                {cols.map(c => (
-                  <th key={c.key} onClick={() => handleSort(c.key)}
-                    style={{ padding: "10px 14px", textAlign: c.numeric ? "center" : "left", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", background: "#f9fafb", cursor: "pointer", userSelect: "none", position: "sticky", top: 0, zIndex: 2 }}>
-                    {c.label} {sortCol === c.key ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
+              {/* Row 1 — main column headers (rowSpan=2) + group label for pendency */}
+              <tr ref={row1Ref} style={{ background: "#f9fafb" }}>
+                <th rowSpan={2} style={{ ...thBase, textAlign: "center", width: 36 }}>#</th>
+                <th rowSpan={2} style={{ ...thBase, textAlign: "left", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("label")}>{nameCol}{si("label")}</th>
+                <th colSpan={pendencyColSpan} style={{ ...thBase, textAlign: "center", background: "#fffbeb", color: "#92400e", boxShadow: "inset 0 -1px 0 #fde68a", borderLeft: "2px solid #fcd34d", borderRight: "2px solid #fcd34d" }}>
+                  Pendency &gt;24h
+                </th>
+                <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("rooftopCount")}>Rooftops{si("rooftopCount")}</th>
+                {showIntegrated && (
+                  <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("integratedCount")}>
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                      Not Integrated
+                      <span onClick={e => e.stopPropagation()}>
+                        <InfoTooltip text="Inventory is not fully synced with IMS. Please enable draft creation in the input workflows." />
+                      </span>
+                    </span>
+                    {si("integratedCount")}
+                  </th>
+                )}
+                <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("total")}>Total{si("total")}</th>
+                <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("processed")}>Delivered{si("processed")}</th>
+                <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("notProcessed")}>Pending{si("notProcessed")}</th>
+                {showPublishing && <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("publishingCount")}>Pub. Disabled{si("publishingCount")}</th>}
+                {filterKey === "csm" && <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("avgWebsiteScore")}>Avg Score{si("avgWebsiteScore")}</th>}
+              </tr>
+              {/* Row 2 — pendency sub-headers */}
+              <tr style={{ background: "#fffbeb" }}>
+                <th style={{ ...thPend, textAlign: "center", borderLeft: "2px solid #fcd34d", ...(activeBuckets.length === 0 ? { borderRight: "2px solid #fcd34d" } : {}) }} onClick={() => handleSort("notProcessedAfter24")}>
+                  Total{si("notProcessedAfter24")}
+                </th>
+                {activeBuckets.map((b, idx) => (
+                  <th key={b.key} style={{ ...thPend, textAlign: "center", ...(idx === activeBuckets.length - 1 ? { borderRight: "2px solid #fcd34d" } : {}) }} onClick={() => handleSort(b.key)}>
+                    {b.label.replace(" Pending", "").replace("Others", "Other")}{si(b.key)}
                   </th>
                 ))}
               </tr>
@@ -1114,8 +1158,10 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
               {sorted.map((r, i) => {
                 const rate = r.total === 0 ? 0 : (r.notProcessedAfter24 / r.total) * 100;
                 const base = { [filterKey]: r.label };
+                const rowBg = i % 2 === 0 ? "#fff" : "#f9fafb";
+                const pendBg = rowBg;
                 return (
-                  <tr key={r.label} style={{ background: i % 2 === 0 ? "#fff" : "#f9fafb" }}>
+                  <tr key={r.label} style={{ background: rowBg }}>
                     <td style={{ ...td, textAlign: "center", color: "#9ca3af", fontSize: 12 }}>{i + 1}</td>
                     <td style={{ ...td, fontWeight: 600 }}>
                       <span onClick={() => onRooftopDrillDown({ [filterKey]: r.label })} title={r.label}
@@ -1124,6 +1170,22 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
                         {filterKey === "csm" ? fmtCsm(r.label) : r.label}
                       </span>
                     </td>
+                    {/* Pendency group: Total + % */}
+                    <td style={{ ...td, textAlign: "center", background: pendBg, borderLeft: "2px solid #fcd34d", ...(activeBuckets.length === 0 ? { borderRight: "2px solid #fcd34d" } : {}) }}>
+                      <div style={{ display: "flex", flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 5 }}>
+                        {r.notProcessedAfter24 > 0
+                          ? <span onClick={() => onDrillDown({ ...base, status: "Not Delivered", after24h: true })} style={{ cursor: "pointer" }}><Badge label={r.notProcessedAfter24} color="red" /></span>
+                          : <span>0</span>}
+                        <span style={{ fontSize: 11, color: "#6b7280" }}>{rate.toFixed(0)}%</span>
+                      </div>
+                    </td>
+                    {activeBuckets.map((b, idx) => (
+                      <td key={b.key} style={{ ...td, textAlign: "center", background: pendBg, ...(idx === activeBuckets.length - 1 ? { borderRight: "2px solid #fcd34d" } : {}) }}>
+                        {(r[b.key] ?? 0) > 0
+                          ? <span onClick={() => onDrillDown({ ...base, status: "Not Delivered", after24h: true, reasonBucket: b.label })} style={{ cursor: "pointer" }}><Badge label={r[b.key]} color="amber" /></span>
+                          : "0"}
+                      </td>
+                    ))}
                     <td style={{ ...td, textAlign: "center" }}><ClickableNum value={r.rooftopCount} color="#6b7280" onClick={() => onRooftopDrillDown({ [filterKey]: r.label })} /></td>
                     {showIntegrated && (
                       <td style={{ ...td, textAlign: "center" }}>
@@ -1134,32 +1196,7 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
                     )}
                     <td style={{ ...td, textAlign: "center" }}><ClickableNum value={r.total} color="#4f46e5" onClick={() => onDrillDown(base)} /></td>
                     <td style={{ ...td, textAlign: "center" }}><ClickableNum value={r.processed} color="#166534" onClick={() => onDrillDown({ ...base, status: "Delivered" })} /></td>
-                    <td style={{ ...td, textAlign: "center" }}>
-                      {r.processedAfter24 > 0
-                        ? <span onClick={() => onDrillDown({ ...base, status: "Delivered", after24h: true })} style={{ cursor: "pointer" }}><Badge label={r.processedAfter24} color="amber" /></span>
-                        : "0"}
-                    </td>
                     <td style={{ ...td, textAlign: "center" }}><ClickableNum value={r.notProcessed} color="#991b1b" onClick={() => onDrillDown({ ...base, status: "Not Delivered" })} /></td>
-                    <td style={{ ...td, textAlign: "center" }}>
-                      {r.notProcessedAfter24 > 0
-                        ? <span onClick={() => onDrillDown({ ...base, status: "Not Delivered", after24h: true })} style={{ cursor: "pointer" }}><Badge label={r.notProcessedAfter24} color="red" /></span>
-                        : "0"}
-                    </td>
-                    <td style={{ ...td, textAlign: "center" }}>
-                      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
-                        <div style={{ width: 80, height: 8, background: "#e5e7eb", borderRadius: 4, overflow: "hidden" }}>
-                          <div style={{ width: `${rate}%`, height: "100%", background: rate >= 30 ? "#ef4444" : rate >= 15 ? "#eab308" : "#22c55e", borderRadius: 4 }} />
-                        </div>
-                        <span style={{ fontSize: 12, fontWeight: 600, color: "#374151" }}>{rate.toFixed(0)}%</span>
-                      </div>
-                    </td>
-                    {activeBuckets.map(b => (
-                      <td key={b.key} style={{ ...td, textAlign: "center" }}>
-                        {(r[b.key] ?? 0) > 0
-                          ? <span onClick={() => onDrillDown({ ...base, status: "Not Delivered", after24h: true, reasonBucket: b.label })} style={{ cursor: "pointer" }}><Badge label={r[b.key]} color="amber" /></span>
-                          : "0"}
-                      </td>
-                    ))}
                     {showPublishing && (
                       <td style={{ ...td, textAlign: "center" }}>
                         {(r.publishingCount ?? 0) > 0
@@ -1184,26 +1221,25 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
               <tr>
                 <td style={{ ...totTd }} />
                 <td style={{ ...totTd }}>Total</td>
+                {/* Pendency total + % */}
+                <td style={{ ...totTd, textAlign: "center", borderLeft: "2px solid #fcd34d", ...(activeBuckets.length === 0 ? { borderRight: "2px solid #fcd34d" } : {}) }}>
+                  <div style={{ display: "flex", flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 5 }}>
+                    {totRow.notProcessedAfter24 > 0
+                      ? <span onClick={() => onDrillDown({ status: "Not Delivered", after24h: true })} style={{ cursor: "pointer" }}><Badge label={totRow.notProcessedAfter24} color="red" /></span>
+                      : <span>0</span>}
+                    <span style={{ fontSize: 11, color: "#6b7280" }}>{totRate.toFixed(0)}%</span>
+                  </div>
+                </td>
+                {activeBuckets.map((b, idx) => (
+                  <td key={b.key} style={{ ...totTd, textAlign: "center", ...(idx === activeBuckets.length - 1 ? { borderRight: "2px solid #fcd34d" } : {}) }}>
+                    {(totRow[b.key] ?? 0) > 0 ? <Badge label={totRow[b.key]} color="amber" /> : "0"}
+                  </td>
+                ))}
                 <td style={{ ...totTd, textAlign: "center", color: "#6b7280" }}>{totRow.rooftopCount?.toLocaleString()}</td>
                 {showIntegrated && <td style={{ ...totTd, textAlign: "center", fontWeight: 700, color: "#991b1b" }}>{(totRow.integratedCount ?? 0).toLocaleString()}</td>}
                 <td style={{ ...totTd, textAlign: "center" }}><ClickableNum value={totRow.total} color="#4f46e5" onClick={() => onDrillDown({})} /></td>
                 <td style={{ ...totTd, textAlign: "center" }}><ClickableNum value={totRow.processed} color="#166534" onClick={() => onDrillDown({ status: "Delivered" })} /></td>
-                <td style={{ ...totTd, textAlign: "center" }}>{totRow.processedAfter24 > 0 ? <Badge label={totRow.processedAfter24} color="amber" /> : "0"}</td>
                 <td style={{ ...totTd, textAlign: "center" }}><ClickableNum value={totRow.notProcessed} color="#991b1b" onClick={() => onDrillDown({ status: "Not Delivered" })} /></td>
-                <td style={{ ...totTd, textAlign: "center" }}>{totRow.notProcessedAfter24 > 0 ? <Badge label={totRow.notProcessedAfter24} color="red" /> : "0"}</td>
-                <td style={totTd}>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
-                    <div style={{ width: 80, height: 8, background: "#e5e7eb", borderRadius: 4, overflow: "hidden" }}>
-                      <div style={{ width: `${totRate}%`, height: "100%", background: totRate >= 30 ? "#ef4444" : totRate >= 15 ? "#eab308" : "#22c55e", borderRadius: 4 }} />
-                    </div>
-                    <span style={{ fontSize: 12, fontWeight: 700, color: "#374151" }}>{totRate.toFixed(0)}%</span>
-                  </div>
-                </td>
-                {activeBuckets.map(b => (
-                  <td key={b.key} style={{ ...totTd, textAlign: "center" }}>
-                    {(totRow[b.key] ?? 0) > 0 ? <Badge label={totRow[b.key]} color="amber" /> : "0"}
-                  </td>
-                ))}
                 {showPublishing && <td style={{ ...totTd, textAlign: "center", fontWeight: 700, color: "#991b1b" }}>{(totRow.publishingCount ?? 0).toLocaleString()}</td>}
                 {filterKey === "csm" && <td style={{ ...totTd, textAlign: "center", color: "#9ca3af" }}>—</td>}
               </tr>
