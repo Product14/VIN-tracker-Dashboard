@@ -17,10 +17,6 @@ const db = new Database(DB_PATH);
 db.exec(`DROP TABLE IF EXISTS website_scores`);
 db.exec(`DROP TABLE IF EXISTS website_urls`);
 
-// Recreate vins without denormalized columns — enterprise/rooftop details are
-// now joined at query time from rooftop_details and enterprise_details.
-db.exec(`DROP TABLE IF EXISTS vins`);
-
 db.exec(`
   CREATE TABLE IF NOT EXISTS vins (
     vin             TEXT PRIMARY KEY,
@@ -41,7 +37,6 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_vins_received_at   ON vins(received_at);
 `);
 
-db.exec(`DROP TABLE IF EXISTS rooftop_details`);
 db.exec(`
   CREATE TABLE IF NOT EXISTS rooftop_details (
     team_id                TEXT PRIMARY KEY,

@@ -42,26 +42,34 @@ const insertEnterpriseStmt = db.prepare(`
   VALUES (@enterpriseId, @name, @type, @websiteUrl, @pocEmail, @syncedAt)
 `);
 
-// Fetch with timeout + retry. VIN_DETAILS consistently takes ~37s so we use a
-// 90s timeout. Retries up to 2 extra attempts on network/timeout errors.
-async function fetchWithRetry(url, label, { timeoutMs = 90_000, retries = 2 } = {}) {
+// ─── Sync state ──────────────────────────────────────────────────────────────
+
+const syncState = {
+  running:     false,
+  startedAt:   null,
+  completedAt: null,
+  tables: {
+    vins:        { status: "idle", count: null, error: null, syncedAt: null },
+    rooftops:    { status: "idle", count: null, error: null, syncedAt: null },
+    enterprises: { status: "idle", count: null, error: null, syncedAt: null },
+  },
+};
+
+// Fetch from Metabase with no artificial timeout — wait as long as Metabase
+// needs. Retry on HTTP errors or network failures with exponential back-off.
+async function fetchFromMetabase(url, label, retries = 3) {
   let lastErr;
   for (let attempt = 0; attempt <= retries; attempt++) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const res = await fetch(url, { signal: controller.signal });
-      clearTimeout(timer);
-      if (!res.ok) throw new Error(`${label} HTTP ${res.status}`);
+      if (attempt > 0) console.log(`[sync:${label}] retry attempt ${attempt}/${retries}`);
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return await res.json();
     } catch (err) {
-      clearTimeout(timer);
-      lastErr = err.name === "AbortError"
-        ? new Error(`${label} timed out after ${timeoutMs / 1000}s`)
-        : err;
+      lastErr = err;
       if (attempt < retries) {
-        const delay = 2000 * (attempt + 1);
-        console.warn(`${label} failed (attempt ${attempt + 1}), retrying in ${delay}ms:`, lastErr.message);
+        const delay = 3000 * (attempt + 1);
+        console.warn(`[sync:${label}] failed, retrying in ${delay / 1000}s — ${err.message}`);
         await new Promise(r => setTimeout(r, delay));
       }
     }
@@ -69,86 +77,126 @@ async function fetchWithRetry(url, label, { timeoutMs = 90_000, retries = 2 } = 
   throw lastErr;
 }
 
-export async function syncFromMetabase() {
-  // Fetch all three datasets in parallel (VIN_DETAILS can take 35–40s)
-  const [vinRows, rooftopRows, enterpriseRows] = await Promise.all([
-    fetchWithRetry(VIN_DETAILS_URL,        "VIN_DETAILS",        { timeoutMs: 90_000 }),
-    fetchWithRetry(ROOFTOP_DETAILS_URL,    "ROOFTOP_DETAILS",    { timeoutMs: 15_000 }),
-    fetchWithRetry(ENTERPRISE_DETAILS_URL, "ENTERPRISE_DETAILS", { timeoutMs: 15_000 }),
-  ]);
+// Each table syncs independently — a failure in one does not affect the others.
 
-  const syncedAt = new Date().toISOString();
-
-  // Deduplicate by vin — Metabase sometimes returns the same VIN twice; keep last occurrence.
-  const dedupedVins = Object.values(
-    vinRows.reduce((acc, row) => { acc[row.vinName ?? ""] = row; return acc; }, {})
-  );
-
-  // Delete all existing rows and insert fresh — inside one transaction so the
-  // tables are never left empty if an insert fails partway through.
-  db.transaction(() => {
-    // ── VINs ──
-    db.prepare("DELETE FROM vins").run();
-    for (const row of dedupedVins) {
-      insertVinStmt.run({
-        vin:          row.vinName ?? "",
-        dealerVinId:  row["m.dealerVinId"] ?? null,
-        enterpriseId: row.enterpriseId ?? "",
-        rooftopId:    String(row.teamId ?? ""),
-        status:       row.status ?? "",
-        after24h:     cleanAfter24(row.after_24_hrs ?? row.after_24hrs ?? null),
-        receivedAt:   cleanDate(row.receivedAt),
-        processedAt:  cleanDate(row.sentAt),
-        reasonBucket: row.reason_bucket ?? "",
-        syncedAt,
-      });
-    }
-
-    // ── Rooftop details ──
-    const dedupedRooftops = Object.values(
-      rooftopRows.reduce((acc, row) => {
-        if (row.team_id) acc[String(row.team_id)] = row;
-        return acc;
-      }, {})
+async function syncVins() {
+  syncState.tables.vins = { status: "running", count: null, error: null, syncedAt: null };
+  try {
+    console.log("[sync:VIN_DETAILS] fetching…");
+    const rows = await fetchFromMetabase(VIN_DETAILS_URL, "VIN_DETAILS");
+    const syncedAt = new Date().toISOString();
+    const deduped = Object.values(
+      rows.reduce((acc, row) => { acc[row.vinName ?? ""] = row; return acc; }, {})
     );
-    db.prepare("DELETE FROM rooftop_details").run();
-    for (const row of dedupedRooftops) {
-      const score = row.overallScore !== null && row.overallScore !== undefined
-        ? Number(row.overallScore) : null;
-      insertRooftopStmt.run({
-        teamId:             String(row.team_id),
-        enterpriseId:       String(row["t.enterprise_id"] ?? ""),
-        teamName:           row.team_name ?? null,
-        teamType:           row.team_type ?? null,
-        websiteScore:           score,
-        websiteListingUrl:      row.website_listing_url ?? null,
-        imsIntegrationStatus:   row.ims_integration_status != null ? String(row.ims_integration_status) : null,
-        publishingStatus:       row.publishing_status != null ? String(row.publishing_status) : null,
-        syncedAt,
-      });
-    }
+    db.transaction(() => {
+      db.prepare("DELETE FROM vins").run();
+      for (const row of deduped) {
+        insertVinStmt.run({
+          vin:          row.vinName ?? "",
+          dealerVinId:  row["m.dealerVinId"] ?? null,
+          enterpriseId: row.enterpriseId ?? "",
+          rooftopId:    String(row.teamId ?? ""),
+          status:       row.status ?? "",
+          after24h:     cleanAfter24(row.after_24_hrs ?? row.after_24hrs ?? null),
+          receivedAt:   cleanDate(row.receivedAt),
+          processedAt:  cleanDate(row.sentAt),
+          reasonBucket: row.reason_bucket ?? "",
+          syncedAt,
+        });
+      }
+    })();
+    syncState.tables.vins = { status: "success", count: deduped.length, error: null, syncedAt };
+    console.log(`[sync:VIN_DETAILS] done — ${deduped.length} rows`);
+  } catch (err) {
+    console.error(`[sync:VIN_DETAILS] failed — ${err.message}`);
+    syncState.tables.vins = { status: "error", count: null, error: err.message, syncedAt: null };
+  }
+}
 
-    // ── Enterprise details ──
-    const dedupedEnterprises = Object.values(
-      enterpriseRows.reduce((acc, row) => {
-        if (row["dt.enterprise_id"]) acc[String(row["dt.enterprise_id"])] = row;
-        return acc;
-      }, {})
+async function syncRooftops() {
+  syncState.tables.rooftops = { status: "running", count: null, error: null, syncedAt: null };
+  try {
+    console.log("[sync:ROOFTOP_DETAILS] fetching…");
+    const rows = await fetchFromMetabase(ROOFTOP_DETAILS_URL, "ROOFTOP_DETAILS");
+    const syncedAt = new Date().toISOString();
+    const deduped = Object.values(
+      rows.reduce((acc, row) => { if (row.team_id) acc[String(row.team_id)] = row; return acc; }, {})
     );
-    db.prepare("DELETE FROM enterprise_details").run();
-    for (const row of dedupedEnterprises) {
-      insertEnterpriseStmt.run({
-        enterpriseId: String(row["dt.enterprise_id"]),
-        name:         row.name ?? null,
-        type:         row.type ?? null,
-        websiteUrl:   row.website_url ?? null,
-        pocEmail:     row.email_id ?? null,
-        syncedAt,
-      });
-    }
-  })();
+    db.transaction(() => {
+      db.prepare("DELETE FROM rooftop_details").run();
+      for (const row of deduped) {
+        insertRooftopStmt.run({
+          teamId:               String(row.team_id),
+          enterpriseId:         String(row["t.enterprise_id"] ?? ""),
+          teamName:             row.team_name ?? null,
+          teamType:             row.team_type ?? null,
+          websiteScore:         row.overallScore != null ? Number(row.overallScore) : null,
+          websiteListingUrl:    row.website_listing_url ?? null,
+          imsIntegrationStatus: row.ims_integration_status != null ? String(row.ims_integration_status) : null,
+          publishingStatus:     row.publishing_status != null ? String(row.publishing_status) : null,
+          syncedAt,
+        });
+      }
+    })();
+    syncState.tables.rooftops = { status: "success", count: deduped.length, error: null, syncedAt };
+    console.log(`[sync:ROOFTOP_DETAILS] done — ${deduped.length} rows`);
+  } catch (err) {
+    console.error(`[sync:ROOFTOP_DETAILS] failed — ${err.message}`);
+    syncState.tables.rooftops = { status: "error", count: null, error: err.message, syncedAt: null };
+  }
+}
 
-  return { count: dedupedVins.length, rooftopCount: rooftopRows.length, enterpriseCount: enterpriseRows.length, syncedAt };
+async function syncEnterprises() {
+  syncState.tables.enterprises = { status: "running", count: null, error: null, syncedAt: null };
+  try {
+    console.log("[sync:ENTERPRISE_DETAILS] fetching…");
+    const rows = await fetchFromMetabase(ENTERPRISE_DETAILS_URL, "ENTERPRISE_DETAILS");
+    const syncedAt = new Date().toISOString();
+    const deduped = Object.values(
+      rows.reduce((acc, row) => { if (row["dt.enterprise_id"]) acc[String(row["dt.enterprise_id"])] = row; return acc; }, {})
+    );
+    db.transaction(() => {
+      db.prepare("DELETE FROM enterprise_details").run();
+      for (const row of deduped) {
+        insertEnterpriseStmt.run({
+          enterpriseId: String(row["dt.enterprise_id"]),
+          name:         row.name ?? null,
+          type:         row.type ?? null,
+          websiteUrl:   row.website_url ?? null,
+          pocEmail:     row.email_id ?? null,
+          syncedAt,
+        });
+      }
+    })();
+    syncState.tables.enterprises = { status: "success", count: deduped.length, error: null, syncedAt };
+    console.log(`[sync:ENTERPRISE_DETAILS] done — ${deduped.length} rows`);
+  } catch (err) {
+    console.error(`[sync:ENTERPRISE_DETAILS] failed — ${err.message}`);
+    syncState.tables.enterprises = { status: "error", count: null, error: err.message, syncedAt: null };
+  }
+}
+
+// Runs all three table syncs in parallel. Returns immediately if already running.
+async function runSync() {
+  if (syncState.running) {
+    console.warn("[sync] already in progress — skipping duplicate request");
+    return;
+  }
+  syncState.running     = true;
+  syncState.startedAt   = new Date().toISOString();
+  syncState.completedAt = null;
+  for (const t of Object.keys(syncState.tables)) {
+    syncState.tables[t] = { status: "idle", count: null, error: null, syncedAt: null };
+  }
+
+  console.log("[sync] started — VINs, Rooftops, Enterprises running in parallel");
+  // allSettled so all three run to completion regardless of individual failures
+  await Promise.allSettled([syncVins(), syncRooftops(), syncEnterprises()]);
+
+  syncState.running     = false;
+  syncState.completedAt = new Date().toISOString();
+  const { vins, rooftops, enterprises } = syncState.tables;
+  console.log(`[sync] complete — vins:${vins.status}(${vins.count ?? "err"}) rooftops:${rooftops.status}(${rooftops.count ?? "err"}) enterprises:${enterprises.status}(${enterprises.count ?? "err"})`);
 }
 
 // ─── Row serialiser ──────────────────────────────────────────────────────────
@@ -216,22 +264,27 @@ function buildVinFilters(query) {
 
 app.get("/api/sync/status", (_req, res) => {
   const meta = db.prepare("SELECT MAX(synced_at) AS last_sync, COUNT(*) AS total_rows FROM vins").get();
-  res.json({ lastSync: meta?.last_sync ?? null, totalRows: meta?.total_rows ?? 0 });
+  res.json({
+    running:     syncState.running,
+    startedAt:   syncState.startedAt,
+    completedAt: syncState.completedAt,
+    tables:      syncState.tables,
+    lastSync:    meta?.last_sync ?? null,
+    totalRows:   meta?.total_rows ?? 0,
+  });
 });
 
 // ─── POST /api/sync ──────────────────────────────────────────────────────────
+// Fires sync in the background and returns 202 immediately.
+// Poll GET /api/sync/status to track progress.
 
-app.post("/api/sync", async (_req, res) => {
-  // VIN_DETAILS fetch takes ~37s — extend socket timeout to 3 minutes.
-  res.socket?.setTimeout(180_000);
-  try {
-    const { count, syncedAt } = await syncFromMetabase();
-    const meta = db.prepare("SELECT MAX(synced_at) AS last_sync, COUNT(*) AS total_rows FROM vins").get();
-    res.json({ synced: count, syncedAt, lastSync: meta?.last_sync ?? null, totalRows: meta?.total_rows ?? 0 });
-  } catch (err) {
-    console.error("Sync failed:", err.message);
-    res.status(500).json({ error: err.message });
+app.post("/api/sync", (_req, res) => {
+  if (syncState.running) {
+    return res.status(202).json({ status: "already_running", startedAt: syncState.startedAt });
   }
+  // Fire and forget — do NOT await
+  runSync().catch(err => console.error("[sync] unexpected error:", err.message));
+  res.status(202).json({ status: "started" });
 });
 
 // ─── Summary serialisers (snake_case DB → camelCase API) ─────────────────────

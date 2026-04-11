@@ -1361,21 +1361,38 @@ export default function Dashboard() {
       .catch(err => { setFetchError(err.message); setRawLoading(false); });
   }, []);
 
-  // On mount: load DB. If empty (fresh deployment), auto-sync once then load.
+  // On mount: load DB. If empty (fresh deployment), kick off an auto-sync.
   useEffect(() => {
     loadSummary()
       .then(data => {
         if (data) { setLoading(false); return; }
-        // DB is empty — auto-sync (happens after every new Vercel deployment)
+        // DB is empty — trigger background sync; polling effect will reload when done.
         setSyncing(true);
-        return fetch("/api/sync", { method: "POST" })
-          .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
-          .then(({ error }) => { if (error) throw new Error(error); return loadSummary(); })
-          .then(() => { setSyncing(false); setLoading(false); })
+        fetch("/api/sync", { method: "POST" })
           .catch(err => { setFetchError(err.message); setSyncing(false); setLoading(false); });
       })
       .catch(err => { setFetchError(err.message); setLoading(false); });
   }, []);
+
+  // While syncing, poll /api/sync/status every 2 s. Reload summary when done.
+  useEffect(() => {
+    if (!syncing) return;
+    const poll = setInterval(() => {
+      fetch("/api/sync/status")
+        .then(r => r.json())
+        .then(({ running, lastSync: ls }) => {
+          if (!running) {
+            clearInterval(poll);
+            setSyncing(false);
+            setLoading(false);
+            if (ls) setLastSync(ls);
+            loadSummary();
+          }
+        })
+        .catch(() => { /* keep polling on transient errors */ });
+    }, 2000);
+    return () => clearInterval(poll);
+  }, [syncing, loadSummary]);
 
   // Load raw page when switching to VIN Data tab or when filters/page change
   useEffect(() => {
@@ -1388,20 +1405,13 @@ export default function Dashboard() {
     return () => clearInterval(id);
   }, []);
 
-  // Sync from Metabase — keeps existing data visible until new data is ready
+  // Sync from Metabase — fires background sync, polling effect reloads when done
   const syncNow = useCallback(() => {
     setSyncing(true);
     setFetchError(null);
     fetch("/api/sync", { method: "POST" })
-      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
-      .then(({ error, syncedAt }) => {
-        if (error) throw new Error(error);
-        setLastSync(syncedAt);
-        return loadSummary(); // replaces summary only after new data is ready
-      })
-      .then(() => { setSyncing(false); })
       .catch(err => { setFetchError(err.message); setSyncing(false); });
-  }, [loadSummary]);
+  }, []);
 
   const s = summary ?? EMPTY_SUMMARY;
 
