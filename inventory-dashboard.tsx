@@ -59,6 +59,17 @@ function Badge({ label, color }) {
 }
 
 
+// Shows a colored status pill for boolean-like string values
+function StatusBadge({ value }: { value: string | null | undefined }) {
+  if (value == null) return <span style={{ color: "#9ca3af" }}>—</span>;
+  const positive = value === "true";
+  const label = positive ? "Yes" : "No";
+  const color  = positive ? "#166534" : "#6b7280";
+  const bg     = positive ? "#dcfce7" : "#f3f4f6";
+  const border = positive ? "#bbf7d0" : "#e5e7eb";
+  return <span style={{ display: "inline-block", padding: "2px 9px", borderRadius: 999, fontSize: 11, fontWeight: 600, background: bg, color, border: `1px solid ${border}` }}>{label}</span>;
+}
+
 // Strip @spyne.ai domain from CSM emails for display; show full email as tooltip
 function fmtCsm(email: string | null | undefined): string {
   if (!email) return "—";
@@ -483,6 +494,10 @@ function RooftopTab({ allRooftops, onDrillDown, filters, setFilters }) {
       if (filters.websiteScore === "Average (6–8)" && !(s !== null && s !== undefined && s >= 6 && s < 8)) return false;
       if (filters.websiteScore === "Good (8+)"     && !(s !== null && s !== undefined && s >= 8)) return false;
     }
+    if (filters.imsIntegration === "Yes" && r.imsIntegrationStatus !== "true") return false;
+    if (filters.imsIntegration === "No"  && r.imsIntegrationStatus === "true") return false;
+    if (filters.publishingStatus === "Yes" && r.publishingStatus !== "true") return false;
+    if (filters.publishingStatus === "No"  && r.publishingStatus === "true") return false;
     if (filters.search) {
       const s = filters.search.toLowerCase();
       if (!r.name.toLowerCase().includes(s) && !r.csm.toLowerCase().includes(s)) return false;
@@ -509,28 +524,30 @@ function RooftopTab({ allRooftops, onDrillDown, filters, setFilters }) {
   };
 
   const activeBuckets = BUCKETS.filter(b => allRooftops.some(r => (r[b.key] ?? 0) > 0));
-  const activeCount = [filters.rooftopType, filters.csm, filters.enterprise, filters.websiteScore].filter(Boolean).length;
+  const activeCount = [filters.rooftopType, filters.csm, filters.enterprise, filters.websiteScore, filters.imsIntegration, filters.publishingStatus].filter(Boolean).length;
   const cols = [
-    { key: "enterprise",          label: "Enterprise Name" },
-    { key: "name",                label: "Rooftop Name" },
-    { key: "type",                label: "Type" },
-    { key: "csm",                 label: "CSM" },
-    { key: "total",               label: "Total Inventory",     numeric: true },
-    { key: "processed",           label: "VINs Delivered",      numeric: true },
-    { key: "notProcessedAfter24", label: "Pending VINs >24h",   numeric: true },
-    { key: "rate",                label: "Pending VINs >24h %", numeric: true },
-    { key: "websiteScore",        label: "Website Score",       numeric: true },
+    { key: "enterprise",             label: "Enterprise Name" },
+    { key: "name",                   label: "Rooftop Name" },
+    { key: "type",                   label: "Type" },
+    { key: "csm",                    label: "CSM" },
+    { key: "imsIntegrationStatus",   label: "IMS Integration",  numeric: true, noSort: true },
+    { key: "publishingStatus",       label: "Publishing",       numeric: true, noSort: true },
+    { key: "total",                  label: "Total Inventory",  numeric: true },
+    { key: "processed",              label: "VINs Delivered",   numeric: true },
+    { key: "notProcessedAfter24",    label: "Pending VINs >24h",   numeric: true },
+    { key: "rate",                   label: "Pending VINs >24h %", numeric: true },
+    { key: "websiteScore",           label: "Website Score",       numeric: true },
     ...activeBuckets.map(b => ({ key: b.key, label: b.label, numeric: true })),
-    { key: "_links",              label: "Links",               numeric: true, noSort: true },
+    { key: "_links",                 label: "Links",               numeric: true, noSort: true },
   ];
 
   const tdStyle = { padding: "10px 14px", borderBottom: "1px solid #f3f4f6" };
 
   const handleDownload = () => {
-    const headers = ["Enterprise Name", "Rooftop Name", "Type", "CSM", "Total Inventory", "VINs Delivered", "Pending VINs >24h", "Pending VINs >24h %", "Website Score", ...activeBuckets.map(b => b.label)];
+    const headers = ["Enterprise Name", "Rooftop Name", "Type", "CSM", "IMS Integration", "Publishing", "Total Inventory", "VINs Delivered", "Pending VINs >24h", "Pending VINs >24h %", "Website Score", ...activeBuckets.map(b => b.label)];
     const rows = sorted.map(r => {
       const rate = r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0);
-      return [r.enterprise, r.name, r.type, r.csm, r.total, r.processed, r.notProcessedAfter24, rate, r.websiteScore !== null && r.websiteScore !== undefined ? Number(r.websiteScore).toFixed(1) : "", ...activeBuckets.map(b => r[b.key] ?? 0)];
+      return [r.enterprise, r.name, r.type, r.csm, r.imsIntegrationStatus ?? "", r.publishingStatus ?? "", r.total, r.processed, r.notProcessedAfter24, rate, r.websiteScore !== null && r.websiteScore !== undefined ? Number(r.websiteScore).toFixed(1) : "", ...activeBuckets.map(b => r[b.key] ?? 0)];
     });
     downloadCSV("rooftop-view.csv", headers, rows);
   };
@@ -568,6 +585,18 @@ function RooftopTab({ allRooftops, onDrillDown, filters, setFilters }) {
             options={SCORE_OPTIONS}
             placeholder="All Scores"
           />
+          <SearchableSelect
+            value={filters.imsIntegration}
+            onChange={v => setFilters(f => ({ ...f, imsIntegration: v }))}
+            options={["Yes", "No"]}
+            placeholder="IMS Integration"
+          />
+          <SearchableSelect
+            value={filters.publishingStatus}
+            onChange={v => setFilters(f => ({ ...f, publishingStatus: v }))}
+            options={["Yes", "No"]}
+            placeholder="Publishing"
+          />
           {activeCount > 0 && (
             <button onClick={() => setFilters(DEFAULT_ROOFTOP_FILTERS)}
               style={{ padding: "7px 14px", borderRadius: 8, border: "1px solid #fca5a5", background: "#fef2f2", color: "#dc2626", fontSize: 13, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>
@@ -581,6 +610,8 @@ function RooftopTab({ allRooftops, onDrillDown, filters, setFilters }) {
             {filters.csm && <Badge label={`CSM: ${filters.csm}`} color="blue" />}
             {filters.enterprise && <Badge label={`Enterprise: ${filters.enterprise}`} color="blue" />}
             {filters.websiteScore && <Badge label={`Score: ${filters.websiteScore}`} color="blue" />}
+            {filters.imsIntegration && <Badge label={`IMS: ${filters.imsIntegration}`} color="blue" />}
+            {filters.publishingStatus && <Badge label={`Publishing: ${filters.publishingStatus}`} color="blue" />}
           </div>
         )}
       </div>
@@ -609,6 +640,8 @@ function RooftopTab({ allRooftops, onDrillDown, filters, setFilters }) {
                   <td style={{ ...tdStyle, fontWeight: 600 }}><Truncated value={r.name} maxWidth={150} /></td>
                   <td style={tdStyle}><Badge label={r.type} color={r.type === "Franchise" ? "blue" : "gray"} /></td>
                   <td style={tdStyle}><Truncated value={fmtCsm(r.csm)} maxWidth={130} /></td>
+                  <td style={{ ...tdStyle, textAlign: "center" }}><StatusBadge value={r.imsIntegrationStatus} /></td>
+                  <td style={{ ...tdStyle, textAlign: "center" }}><StatusBadge value={r.publishingStatus} /></td>
                   <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.total} color="#4f46e5" onClick={() => onDrillDown({ rooftopId: r.rooftopId })} /></td>
                   <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.processed} color="#166534" onClick={() => onDrillDown({ rooftopId: r.rooftopId, status: "Delivered" })} /></td>
                   <td style={{ ...tdStyle, textAlign: "center" }}>
@@ -878,18 +911,47 @@ function CSMTab({ csms, onDrillDown }) {
   const tdStyle = { padding: "10px 14px", borderBottom: "1px solid #f3f4f6" };
   const activeBuckets = BUCKETS.filter(b => csms.some(r => (r[b.key] ?? 0) > 0));
 
+  const [imsFilter, setImsFilter] = useState(null);
+  const [pubFilter, setPubFilter] = useState(null);
+
+  const filtered = useMemo(() => csms.filter(r => {
+    if (imsFilter === "Has Integrated" && (r.integratedCount ?? 0) === 0) return false;
+    if (imsFilter === "None Integrated" && (r.integratedCount ?? 0) > 0) return false;
+    if (pubFilter === "Has Publishing" && (r.publishingCount ?? 0) === 0) return false;
+    if (pubFilter === "None Publishing" && (r.publishingCount ?? 0) > 0) return false;
+    return true;
+  }), [csms, imsFilter, pubFilter]);
+
+  const activeCount = [imsFilter, pubFilter].filter(Boolean).length;
+
   const handleDownload = () => {
-    const headers = ["CSM Name", "Total Inventory", "VIN Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h", "Pending VINs >24h %", ...activeBuckets.map(b => b.label)];
-    const rows = csms.map(r => [r.name, r.total, r.processed, r.processedAfter24, r.notProcessed, r.notProcessedAfter24, r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0), ...activeBuckets.map(b => r[b.key] ?? 0)]);
+    const headers = ["CSM Name", "Not Integrated Rooftops", "Publishing Disabled Rooftops", "Total Inventory", "VIN Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h", "Pending VINs >24h %", ...activeBuckets.map(b => b.label)];
+    const rows = filtered.map(r => [r.name, r.integratedCount ?? 0, r.publishingCount ?? 0, r.total, r.processed, r.processedAfter24, r.notProcessed, r.notProcessedAfter24, r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0), ...activeBuckets.map(b => r[b.key] ?? 0)]);
     downloadCSV("csm-view.csv", headers, rows);
   };
 
-  const baseHeaders = ["CSM Name", "Total Inventory", "VIN Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h", "Pending VINs >24h %"];
+  const baseHeaders = ["CSM Name", "Not Integrated", "Publishing Disabled", "Total Inventory", "VIN Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h", "Pending VINs >24h %"];
   const allHeaders = [...baseHeaders, ...activeBuckets.map(b => b.label)];
 
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <SearchableSelect value={imsFilter} onChange={setImsFilter} options={["Has Integrated", "None Integrated"]} placeholder="IMS Integration" />
+          <SearchableSelect value={pubFilter} onChange={setPubFilter} options={["Has Publishing", "None Publishing"]} placeholder="Publishing" />
+          {activeCount > 0 && (
+            <button onClick={() => { setImsFilter(null); setPubFilter(null); }}
+              style={{ padding: "7px 14px", borderRadius: 8, border: "1px solid #fca5a5", background: "#fef2f2", color: "#dc2626", fontSize: 13, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>
+              Clear {activeCount} filter{activeCount > 1 ? "s" : ""}
+            </button>
+          )}
+          {activeCount > 0 && (
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {imsFilter && <Badge label={`IMS: ${imsFilter}`} color="blue" />}
+              {pubFilter && <Badge label={`Publishing: ${pubFilter}`} color="blue" />}
+            </div>
+          )}
+        </div>
         <DownloadButton onClick={handleDownload} />
       </div>
       <div style={{ overflowX: "auto", borderRadius: 10, border: "1px solid #e5e7eb" }}>
@@ -902,11 +964,13 @@ function CSMTab({ csms, onDrillDown }) {
           </tr>
         </thead>
         <tbody>
-          {csms.map((r, i) => {
+          {filtered.map((r, i) => {
             const rate = r.total === 0 ? 0 : (r.notProcessedAfter24 / r.total) * 100;
             return (
               <tr key={r.name} style={{ background: i % 2 === 0 ? "#fff" : "#f9fafb" }}>
                 <td style={{ ...tdStyle, fontWeight: 600 }}><Truncated value={fmtCsm(r.name)} maxWidth={160} /></td>
+                <td style={{ ...tdStyle, textAlign: "center", fontWeight: 700, color: (r.integratedCount ?? 0) > 0 ? "#991b1b" : "#9ca3af" }}>{(r.integratedCount ?? 0).toLocaleString()}</td>
+                <td style={{ ...tdStyle, textAlign: "center", fontWeight: 700, color: (r.publishingCount ?? 0) > 0 ? "#991b1b" : "#9ca3af" }}>{(r.publishingCount ?? 0).toLocaleString()}</td>
                 <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.total} color="#4f46e5" onClick={() => onDrillDown({ csm: r.name })} /></td>
                 <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.processed} color="#166534" onClick={() => onDrillDown({ csm: r.name, status: "Delivered" })} /></td>
                 <td style={{ ...tdStyle, textAlign: "center" }}>
@@ -954,6 +1018,8 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
   };
 
   const activeBuckets = BUCKETS.filter(b => rows.some(r => (r[b.key] ?? 0) > 0));
+  const showIntegrated  = rows.some(r => (r.integratedCount ?? 0) > 0);
+  const showPublishing  = rows.some(r => (r.publishingCount ?? 0) > 0);
 
   const sorted = useMemo(() => {
     return [...rows].sort((a, b) => {
@@ -971,10 +1037,12 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
       total: t.total + r.total, processed: t.processed + r.processed, processedAfter24: t.processedAfter24 + r.processedAfter24,
       notProcessed: t.notProcessed + r.notProcessed, notProcessedAfter24: t.notProcessedAfter24 + r.notProcessedAfter24,
       rooftopCount: t.rooftopCount + r.rooftopCount,
+      integratedCount: (t.integratedCount ?? 0) + (r.integratedCount ?? 0),
+      publishingCount: (t.publishingCount ?? 0) + (r.publishingCount ?? 0),
     };
     BUCKETS.forEach(b => { obj[b.key] = (t[b.key] ?? 0) + (r[b.key] ?? 0); });
     return obj;
-  }, { total: 0, processed: 0, processedAfter24: 0, notProcessed: 0, notProcessedAfter24: 0, rooftopCount: 0 } as any);
+  }, { total: 0, processed: 0, processedAfter24: 0, notProcessed: 0, notProcessedAfter24: 0, rooftopCount: 0, integratedCount: 0, publishingCount: 0 } as any);
   const totRate = totRow.total === 0 ? 0 : (totRow.notProcessedAfter24 / totRow.total) * 100;
   const nameCol = filterKey === "rooftopType" ? "Rooftop Type" : "CSM Name";
   const td = { padding: "10px 14px", borderBottom: "1px solid #f3f4f6" };
@@ -983,6 +1051,7 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
   const cols = [
     { key: "label",               label: nameCol,               numeric: false },
     { key: "rooftopCount",        label: "Rooftops",            numeric: true  },
+    ...(showIntegrated  ? [{ key: "integratedCount", label: "Not Integrated",      numeric: true }] : []),
     { key: "total",               label: "Total",               numeric: true  },
     { key: "processed",           label: "Delivered",           numeric: true  },
     { key: "processedAfter24",    label: "Delivered VINs >24h", numeric: true  },
@@ -990,6 +1059,7 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
     { key: "notProcessedAfter24", label: "Pending VINs >24h",   numeric: true  },
     { key: "rate",                label: "Pending VINs >24h %", numeric: true  },
     ...activeBuckets.map(b => ({ key: b.key, label: b.label, numeric: true })),
+    ...(showPublishing  ? [{ key: "publishingCount", label: "Publishing Disabled", numeric: true }] : []),
     ...(filterKey === "csm" ? [{ key: "avgWebsiteScore", label: "Avg Website Score", numeric: true }] : []),
   ];
 
@@ -1001,8 +1071,8 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
           {title}
         </h3>
         <DownloadButton onClick={() => {
-          const headers = [nameCol, "Rooftops", "Total", "Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h", "Pending VINs >24h %", ...activeBuckets.map(b => b.label), ...(filterKey === "csm" ? ["Avg Website Score"] : [])];
-          const csvRows = sorted.map(r => [r.label, r.rooftopCount, r.total, r.processed, r.processedAfter24, r.notProcessed, r.notProcessedAfter24, r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0), ...activeBuckets.map(b => r[b.key] ?? 0), ...(filterKey === "csm" ? [r.avgWebsiteScore !== null && r.avgWebsiteScore !== undefined ? Number(r.avgWebsiteScore).toFixed(1) : ""] : [])]);
+          const headers = [nameCol, "Rooftops", "Total", "Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h", "Pending VINs >24h %", ...activeBuckets.map(b => b.label), ...(showIntegrated ? ["Not Integrated"] : []), ...(showPublishing ? ["Publishing Disabled"] : []), ...(filterKey === "csm" ? ["Avg Website Score"] : [])];
+          const csvRows = sorted.map(r => [r.label, r.rooftopCount, r.total, r.processed, r.processedAfter24, r.notProcessed, r.notProcessedAfter24, r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0), ...activeBuckets.map(b => r[b.key] ?? 0), ...(showIntegrated ? [r.integratedCount ?? 0] : []), ...(showPublishing ? [r.publishingCount ?? 0] : []), ...(filterKey === "csm" ? [r.avgWebsiteScore !== null && r.avgWebsiteScore !== undefined ? Number(r.avgWebsiteScore).toFixed(1) : ""] : [])]);
           downloadCSV(`overview-${filterKey}.csv`, headers, csvRows);
         }} />
       </div>
@@ -1035,6 +1105,13 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
                       </span>
                     </td>
                     <td style={{ ...td, textAlign: "center" }}><ClickableNum value={r.rooftopCount} color="#6b7280" onClick={() => onRooftopDrillDown({ [filterKey]: r.label })} /></td>
+                    {showIntegrated && (
+                      <td style={{ ...td, textAlign: "center" }}>
+                        {(r.integratedCount ?? 0) > 0
+                          ? <ClickableNum value={r.integratedCount} color="#991b1b" onClick={() => onRooftopDrillDown({ [filterKey]: r.label, imsIntegration: "No" })} title="View in Rooftop View" />
+                          : <span style={{ color: "#9ca3af" }}>0</span>}
+                      </td>
+                    )}
                     <td style={{ ...td, textAlign: "center" }}><ClickableNum value={r.total} color="#4f46e5" onClick={() => onDrillDown(base)} /></td>
                     <td style={{ ...td, textAlign: "center" }}><ClickableNum value={r.processed} color="#166534" onClick={() => onDrillDown({ ...base, status: "Delivered" })} /></td>
                     <td style={{ ...td, textAlign: "center" }}>
@@ -1058,9 +1135,18 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
                     </td>
                     {activeBuckets.map(b => (
                       <td key={b.key} style={{ ...td, textAlign: "center" }}>
-                        {(r[b.key] ?? 0) > 0 ? <Badge label={r[b.key]} color="amber" /> : "0"}
+                        {(r[b.key] ?? 0) > 0
+                          ? <span onClick={() => onDrillDown({ ...base, status: "Not Delivered", after24h: true, reasonBucket: b.label })} style={{ cursor: "pointer" }}><Badge label={r[b.key]} color="amber" /></span>
+                          : "0"}
                       </td>
                     ))}
+                    {showPublishing && (
+                      <td style={{ ...td, textAlign: "center" }}>
+                        {(r.publishingCount ?? 0) > 0
+                          ? <ClickableNum value={r.publishingCount} color="#991b1b" onClick={() => onRooftopDrillDown({ [filterKey]: r.label, publishingStatus: "No" })} title="View in Rooftop View" />
+                          : <span style={{ color: "#9ca3af" }}>0</span>}
+                      </td>
+                    )}
                     {filterKey === "csm" && (
                       <td style={{ ...td, textAlign: "center" }}>
                         {r.avgWebsiteScore !== null && r.avgWebsiteScore !== undefined
@@ -1079,6 +1165,7 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
                 <td style={{ ...totTd }} />
                 <td style={{ ...totTd }}>Total</td>
                 <td style={{ ...totTd, textAlign: "center", color: "#6b7280" }}>{totRow.rooftopCount?.toLocaleString()}</td>
+                {showIntegrated && <td style={{ ...totTd, textAlign: "center", fontWeight: 700, color: "#991b1b" }}>{(totRow.integratedCount ?? 0).toLocaleString()}</td>}
                 <td style={{ ...totTd, textAlign: "center" }}><ClickableNum value={totRow.total} color="#4f46e5" onClick={() => onDrillDown({})} /></td>
                 <td style={{ ...totTd, textAlign: "center" }}><ClickableNum value={totRow.processed} color="#166534" onClick={() => onDrillDown({ status: "Delivered" })} /></td>
                 <td style={{ ...totTd, textAlign: "center" }}>{totRow.processedAfter24 > 0 ? <Badge label={totRow.processedAfter24} color="amber" /> : "0"}</td>
@@ -1097,6 +1184,7 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
                     {(totRow[b.key] ?? 0) > 0 ? <Badge label={totRow[b.key]} color="amber" /> : "0"}
                   </td>
                 ))}
+                {showPublishing && <td style={{ ...totTd, textAlign: "center", fontWeight: 700, color: "#991b1b" }}>{(totRow.publishingCount ?? 0).toLocaleString()}</td>}
                 {filterKey === "csm" && <td style={{ ...totTd, textAlign: "center", color: "#9ca3af" }}>—</td>}
               </tr>
             </tfoot>
@@ -1145,7 +1233,7 @@ function timeAgo(isoString: string): string {
 }
 
 const DEFAULT_FILTERS = { search: "", enterpriseId: null, rooftop: null, rooftopId: null, rooftopType: null, csm: null, status: null, after24h: null, reasonBucket: null };
-const DEFAULT_ROOFTOP_FILTERS = { search: "", rooftopType: null, csm: null, enterprise: null, websiteScore: null };
+const DEFAULT_ROOFTOP_FILTERS = { search: "", rooftopType: null, csm: null, enterprise: null, websiteScore: null, imsIntegration: null, publishingStatus: null };
 const DEFAULT_ENTERPRISE_FILTERS = { search: "", csm: null, accountType: null, websiteScore: null };
 
 const EMPTY_SUMMARY = {

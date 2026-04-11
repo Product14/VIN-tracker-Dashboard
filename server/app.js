@@ -33,8 +33,8 @@ const insertVinStmt = db.prepare(`
 `);
 
 const insertRooftopStmt = db.prepare(`
-  INSERT INTO rooftop_details (team_id, enterprise_id, team_name, team_type, website_score, website_listing_url, synced_at)
-  VALUES (@teamId, @enterpriseId, @teamName, @teamType, @websiteScore, @websiteListingUrl, @syncedAt)
+  INSERT INTO rooftop_details (team_id, enterprise_id, team_name, team_type, website_score, website_listing_url, ims_integration_status, publishing_status, synced_at)
+  VALUES (@teamId, @enterpriseId, @teamName, @teamType, @websiteScore, @websiteListingUrl, @imsIntegrationStatus, @publishingStatus, @syncedAt)
 `);
 
 const insertEnterpriseStmt = db.prepare(`
@@ -120,8 +120,10 @@ export async function syncFromMetabase() {
         enterpriseId:       String(row["t.enterprise_id"] ?? ""),
         teamName:           row.team_name ?? null,
         teamType:           row.team_type ?? null,
-        websiteScore:       score,
-        websiteListingUrl:  row.website_listing_url ?? null,
+        websiteScore:           score,
+        websiteListingUrl:      row.website_listing_url ?? null,
+        imsIntegrationStatus:   row.ims_integration_status != null ? String(row.ims_integration_status) : null,
+        publishingStatus:       row.publishing_status != null ? String(row.publishing_status) : null,
         syncedAt,
       });
     }
@@ -264,6 +266,8 @@ function toRooftopRow(r) {
     notProcessedAfter24:  r.not_processed_after_24h,
     websiteScore:               r.website_score ?? null,
     websiteListingUrl:          r.website_listing_url ?? null,
+    imsIntegrationStatus:       r.ims_integration_status ?? null,
+    publishingStatus:           r.publishing_status ?? null,
     bucketProcessingPending:    r.bucket_processing_pending,
     bucketPublishingPending:    r.bucket_publishing_pending,
     bucketQcPending:            r.bucket_qc_pending,
@@ -304,6 +308,8 @@ function toCsmRow(r) {
     notProcessed:         r.not_processed,
     notProcessedAfter24:  r.not_processed_after_24h,
     avgWebsiteScore:            r.avg_website_score ?? null,
+    integratedCount:            r.integrated_count ?? 0,
+    publishingCount:            r.publishing_count ?? 0,
     bucketProcessingPending:    r.bucket_processing_pending,
     bucketPublishingPending:    r.bucket_publishing_pending,
     bucketQcPending:            r.bucket_qc_pending,
@@ -321,6 +327,8 @@ function toTypeRow(r) {
     processedAfter24:           r.processed_after_24h,
     notProcessed:               r.not_processed,
     notProcessedAfter24:        r.not_processed_after_24h,
+    integratedCount:            r.integrated_count ?? 0,
+    publishingCount:            r.publishing_count ?? 0,
     bucketProcessingPending:    r.bucket_processing_pending,
     bucketPublishingPending:    r.bucket_publishing_pending,
     bucketQcPending:            r.bucket_qc_pending,

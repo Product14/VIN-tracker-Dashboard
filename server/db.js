@@ -44,13 +44,15 @@ db.exec(`
 db.exec(`DROP TABLE IF EXISTS rooftop_details`);
 db.exec(`
   CREATE TABLE IF NOT EXISTS rooftop_details (
-    team_id              TEXT PRIMARY KEY,
-    enterprise_id        TEXT,
-    team_name            TEXT,
-    team_type            TEXT,
-    website_score        REAL,
-    website_listing_url  TEXT,
-    synced_at            TEXT
+    team_id                TEXT PRIMARY KEY,
+    enterprise_id          TEXT,
+    team_name              TEXT,
+    team_type              TEXT,
+    website_score          REAL,
+    website_listing_url    TEXT,
+    ims_integration_status TEXT,
+    publishing_status      TEXT,
+    synced_at              TEXT
   );
 `);
 
@@ -99,8 +101,10 @@ db.exec(`
     SUM(CASE WHEN v.status = 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END) AS processed_after_24h,
     SUM(CASE WHEN v.status != 'Delivered' THEN 1 ELSE 0 END)                               AS not_processed,
     SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END) AS not_processed_after_24h,
-    MAX(rd.website_score)        AS website_score,
-    MAX(rd.website_listing_url)  AS website_listing_url,
+    MAX(rd.website_score)             AS website_score,
+    MAX(rd.website_listing_url)       AS website_listing_url,
+    MAX(rd.ims_integration_status)    AS ims_integration_status,
+    MAX(rd.publishing_status)         AS publishing_status,
     SUM(CASE WHEN v.reason_bucket = 'Processing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END) AS bucket_processing_pending,
     SUM(CASE WHEN v.reason_bucket = 'Publishing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END) AS bucket_publishing_pending,
     SUM(CASE WHEN v.reason_bucket = 'QC Pending' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END) AS bucket_qc_pending,
@@ -150,6 +154,8 @@ db.exec(`
     SUM(CASE WHEN v.status != 'Delivered' THEN 1 ELSE 0 END)                               AS not_processed,
     SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END) AS not_processed_after_24h,
     ROUND(AVG(rd.website_score), 2) AS avg_website_score,
+    COUNT(DISTINCT CASE WHEN rd.ims_integration_status = 'false' THEN v.rooftop_id END) AS integrated_count,
+    COUNT(DISTINCT CASE WHEN rd.publishing_status = 'false' THEN v.rooftop_id END) AS publishing_count,
     SUM(CASE WHEN v.reason_bucket = 'Processing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END) AS bucket_processing_pending,
     SUM(CASE WHEN v.reason_bucket = 'Publishing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END) AS bucket_publishing_pending,
     SUM(CASE WHEN v.reason_bucket = 'QC Pending' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END) AS bucket_qc_pending,
@@ -173,6 +179,8 @@ db.exec(`
     SUM(CASE WHEN v.status = 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END) AS processed_after_24h,
     SUM(CASE WHEN v.status != 'Delivered' THEN 1 ELSE 0 END)                               AS not_processed,
     SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END) AS not_processed_after_24h,
+    COUNT(DISTINCT CASE WHEN rd.ims_integration_status = 'false' THEN v.rooftop_id END) AS integrated_count,
+    COUNT(DISTINCT CASE WHEN rd.publishing_status = 'false' THEN v.rooftop_id END) AS publishing_count,
     SUM(CASE WHEN v.reason_bucket = 'Processing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END) AS bucket_processing_pending,
     SUM(CASE WHEN v.reason_bucket = 'Publishing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END) AS bucket_publishing_pending,
     SUM(CASE WHEN v.reason_bucket = 'QC Pending' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END) AS bucket_qc_pending,
