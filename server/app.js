@@ -222,6 +222,27 @@ function toApiRow(r) {
 
 // ─── VIN query helpers ───────────────────────────────────────────────────────
 
+// Whitelist map: frontend column key → DB expression (prevents SQL injection)
+const SORT_MAP = {
+  enterprise:   "ed.name",
+  rooftop:      "rd.team_name",
+  rooftopType:  "rd.team_type",
+  csm:          "ed.poc_email",
+  vin:          "v.vin",
+  dealerVinId:  "v.dealer_vin_id",
+  status:       "v.status",
+  after24h:     "v.after_24h",
+  receivedAt:   "v.received_at",
+  processedAt:  "v.processed_at",
+  reasonBucket: "v.reason_bucket",
+};
+
+function buildVinSort({ sortBy, sortDir } = {}) {
+  const col = SORT_MAP[sortBy];
+  if (!col) return "v.received_at DESC NULLS LAST";
+  return `${col} ${sortDir === "asc" ? "ASC" : "DESC"} NULLS LAST`;
+}
+
 const VIN_FROM = `
   FROM vins v
   LEFT JOIN rooftop_details rd ON v.rooftop_id = rd.team_id
@@ -428,11 +449,12 @@ app.get("/api/vins", (req, res) => {
   const offset   = (page - 1) * pageSize;
 
   const { where, params } = buildVinFilters(req.query);
+  const orderBy = buildVinSort(req.query);
 
   const total = db.prepare(`SELECT COUNT(*) AS n ${VIN_FROM} ${where}`).get(...params).n;
   const rows  = db.prepare(`
     ${VIN_SELECT} ${where}
-    ORDER BY v.received_at DESC NULLS LAST
+    ORDER BY ${orderBy}
     LIMIT ${pageSize} OFFSET ${offset}
   `).all(...params);
 
@@ -448,10 +470,11 @@ app.get("/api/vins/raw", (req, res) => {
 
 app.get("/api/vins/export", (req, res) => {
   const { where, params } = buildVinFilters(req.query);
+  const orderBy = buildVinSort(req.query);
 
   const rows = db.prepare(`
     ${VIN_SELECT} ${where}
-    ORDER BY v.received_at DESC NULLS LAST
+    ORDER BY ${orderBy}
   `).all(...params);
 
   res.json({ data: rows.map(toApiRow) });

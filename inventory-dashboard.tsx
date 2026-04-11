@@ -353,27 +353,13 @@ function FilterBar({ filters, setFilters, rooftopOptions = [], typeOptions = [],
   );
 }
 
-function RawTab({ data, filters, setFilters, total, page, pageCount, onPageChange, rooftopOptions, typeOptions, csmOptions, enterpriseObjects = [] }) {
-  const [sortCol, setSortCol] = useState(null);
-  const [sortDir, setSortDir] = useState("asc");
+function RawTab({ data, filters, setFilters, total, page, pageCount, onPageChange, rooftopOptions, typeOptions, csmOptions, enterpriseObjects = [], sortCol, sortDir, onSortChange }) {
   const [downloading, setDownloading] = useState(false);
 
-  const sorted = useMemo(() => {
-    if (!sortCol) return data;
-    return [...data].sort((a, b) => {
-      let va = a[sortCol], vb = b[sortCol];
-      if (sortCol === "after24h") { va = isAfter24h(a); vb = isAfter24h(b); }
-      if (va === null || va === undefined) return 1;
-      if (vb === null || vb === undefined) return -1;
-      if (typeof va === "string") return sortDir === "asc" ? va.localeCompare(vb) : vb.localeCompare(va);
-      return sortDir === "asc" ? (va > vb ? 1 : -1) : (va < vb ? 1 : -1);
-    });
-  }, [data, sortCol, sortDir]);
-
   const handleSort = (col) => {
-    if (sortCol !== col) { setSortCol(col); setSortDir("asc"); }
-    else if (sortDir === "asc") { setSortDir("desc"); }
-    else { setSortCol(null); setSortDir("asc"); }
+    if (sortCol !== col) { onSortChange(col, "asc"); }
+    else if (sortDir === "asc") { onSortChange(col, "desc"); }
+    else { onSortChange(null, "asc"); }
   };
 
   const cols = [
@@ -402,6 +388,7 @@ function RawTab({ data, filters, setFilters, total, page, pageCount, onPageChang
     if (filters.status)       params.set("status",       filters.status);
     if (filters.after24h !== null) params.set("after24h", filters.after24h ? "true" : "false");
     if (filters.reasonBucket)      params.set("reasonBucket", filters.reasonBucket);
+    if (sortCol) { params.set("sortBy", sortCol); params.set("sortDir", sortDir); }
     try {
       const res = await fetch(`/api/vins/export?${params}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -440,10 +427,10 @@ function RawTab({ data, filters, setFilters, total, page, pageCount, onPageChang
             </tr>
           </thead>
           <tbody>
-            {sorted.length === 0 && (
+            {data.length === 0 && (
               <tr><td colSpan={12} style={{ padding: 40, textAlign: "center", color: "#9ca3af", fontSize: 14 }}>No records match the current filters.</td></tr>
             )}
-            {sorted.map((d, i) => (
+            {data.map((d, i) => (
               <tr key={d.vin} style={{ background: i % 2 === 0 ? "#fff" : "#f9fafb" }}>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6", textAlign: "center", color: "#9ca3af", fontSize: 12 }}>{i + 1}</td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}><Truncated value={d.enterprise} maxWidth={180} /></td>
@@ -1321,6 +1308,8 @@ export default function Dashboard() {
   const [rawPageCount, setRawPageCount] = useState(1);
   const [rawTotal, setRawTotal] = useState(0);
   const [rawLoading, setRawLoading] = useState(false);
+  const [rawSortCol, setRawSortCol] = useState<string | null>(null);
+  const [rawSortDir, setRawSortDir] = useState<"asc" | "desc">("asc");
 
   const tabs = ["Overview", "Enterprise View", "Rooftop View", "VIN Data"];
 
@@ -1337,7 +1326,7 @@ export default function Dashboard() {
   }, []);
 
   // Fetch paginated raw VIN rows
-  const loadRawPage = useCallback((page: number, filters: any) => {
+  const loadRawPage = useCallback((page: number, filters: any, sortCol: string | null = null, sortDir: string = "asc") => {
     setRawLoading(true);
     const params = new URLSearchParams({ page: String(page), pageSize: "50" });
     if (filters.search)       params.set("search",       filters.search);
@@ -1349,6 +1338,7 @@ export default function Dashboard() {
     if (filters.status)       params.set("status",       filters.status);
     if (filters.after24h !== null) params.set("after24h", filters.after24h ? "true" : "false");
     if (filters.reasonBucket)      params.set("reasonBucket", filters.reasonBucket);
+    if (sortCol) { params.set("sortBy", sortCol); params.set("sortDir", sortDir); }
 
     fetch(`/api/vins?${params}`)
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
@@ -1394,15 +1384,22 @@ export default function Dashboard() {
     return () => clearInterval(poll);
   }, [syncing, loadSummary]);
 
-  // Load raw page when switching to VIN Data tab or when filters/page change
+  // Load raw page when switching to VIN Data tab or when filters/page/sort change
   useEffect(() => {
-    if (tab === "VIN Data") loadRawPage(rawPage, rawFilters);
-  }, [tab, rawPage, rawFilters]);
+    if (tab === "VIN Data") loadRawPage(rawPage, rawFilters, rawSortCol, rawSortDir);
+  }, [tab, rawPage, rawFilters, rawSortCol, rawSortDir]);
 
   // Tick every 30s so relative "synced X ago" label stays fresh
   useEffect(() => {
     const id = setInterval(() => setTick(n => n + 1), 30000);
     return () => clearInterval(id);
+  }, []);
+
+  // Sort change for VIN Data — resets to page 1 and re-fetches from server
+  const handleRawSort = useCallback((col: string | null, dir: "asc" | "desc") => {
+    setRawSortCol(col);
+    setRawSortDir(dir);
+    setRawPage(1);
   }, []);
 
   // Sync from Metabase — fires background sync, polling effect reloads when done
@@ -1505,6 +1502,9 @@ export default function Dashboard() {
           typeOptions={typeOptions}
           csmOptions={csmOptions}
           enterpriseObjects={enterpriseObjects}
+          sortCol={rawSortCol}
+          sortDir={rawSortDir}
+          onSortChange={handleRawSort}
         />
       )}
       </div>
