@@ -712,11 +712,16 @@ function EnterpriseTab({ enterprises, onDrillDown, filters = DEFAULT_ENTERPRISE_
   const SCORE_OPTIONS = ["Poor (<6)", "Average (6–8)", "Good (8+)"];
 
   const activeBuckets = BUCKETS.filter(b => enterprises.some(r => (r[b.key] ?? 0) > 0));
+  const showNotIntegrated      = enterprises.some(r => (r.notIntegratedCount ?? 0) > 0);
+  const showPublishingDisabled = enterprises.some(r => (r.publishingDisabledCount ?? 0) > 0);
   const cols = [
     { key: "id",                  label: "Enterprise ID" },
     { key: "name",                label: "Enterprise Name" },
     { key: "accountType",         label: "Account Type" },
     { key: "csm",                 label: "CSM" },
+    { key: "rooftopCount",        label: "Rooftops",            numeric: true },
+    ...(showNotIntegrated      ? [{ key: "notIntegratedCount",      label: "Not Integrated",      numeric: true }] : []),
+    ...(showPublishingDisabled ? [{ key: "publishingDisabledCount", label: "Publishing Disabled", numeric: true }] : []),
     { key: "total",               label: "Total Inventory",     numeric: true },
     { key: "processed",           label: "VIN Delivered",       numeric: true },
     { key: "processedAfter24",    label: "Delivered VINs >24h", numeric: true },
@@ -767,8 +772,8 @@ function EnterpriseTab({ enterprises, onDrillDown, filters = DEFAULT_ENTERPRISE_
   }, [filtered, sortCol, sortDir]);
 
   const handleDownload = () => {
-    const headers = ["Enterprise ID", "Enterprise Name", "Account Type", "CSM", "Total Inventory", "VIN Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h", "Pending VINs >24h %", "Avg Website Score", ...activeBuckets.map(b => b.label)];
-    const rows = sorted.map(r => [r.id, r.name, r.accountType ?? "", r.csm ?? "", r.total, r.processed, r.processedAfter24, r.notProcessed, r.notProcessedAfter24, r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0), r.avgWebsiteScore !== null && r.avgWebsiteScore !== undefined ? Number(r.avgWebsiteScore).toFixed(1) : "", ...activeBuckets.map(b => r[b.key] ?? 0)]);
+    const headers = ["Enterprise ID", "Enterprise Name", "Account Type", "CSM", "Rooftops", ...(showNotIntegrated ? ["Not Integrated"] : []), ...(showPublishingDisabled ? ["Publishing Disabled"] : []), "Total Inventory", "VIN Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h", "Pending VINs >24h %", "Avg Website Score", ...activeBuckets.map(b => b.label)];
+    const rows = sorted.map(r => [r.id, r.name, r.accountType ?? "", r.csm ?? "", r.rooftopCount ?? 0, ...(showNotIntegrated ? [r.notIntegratedCount ?? 0] : []), ...(showPublishingDisabled ? [r.publishingDisabledCount ?? 0] : []), r.total, r.processed, r.processedAfter24, r.notProcessed, r.notProcessedAfter24, r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0), r.avgWebsiteScore !== null && r.avgWebsiteScore !== undefined ? Number(r.avgWebsiteScore).toFixed(1) : "", ...activeBuckets.map(b => r[b.key] ?? 0)]);
     downloadCSV("enterprise-view.csv", headers, rows);
   };
 
@@ -842,6 +847,21 @@ function EnterpriseTab({ enterprises, onDrillDown, filters = DEFAULT_ENTERPRISE_
                   <td style={{ ...tdStyle, fontWeight: 600 }}><Truncated value={r.name} maxWidth={180} /></td>
                   <td style={tdStyle}>{r.accountType ? <Badge label={r.accountType} color="blue" /> : <span style={{ color: "#9ca3af" }}>—</span>}</td>
                   <td style={tdStyle}><Truncated value={fmtCsm(r.csm)} maxWidth={130} /></td>
+                  <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.rooftopCount} color="#6b7280" onClick={() => onDrillDown({ enterpriseId: r.id })} /></td>
+                  {showNotIntegrated && (
+                    <td style={{ ...tdStyle, textAlign: "center" }}>
+                      {(r.notIntegratedCount ?? 0) > 0
+                        ? <ClickableNum value={r.notIntegratedCount} color="#991b1b" onClick={() => onDrillDown({ enterpriseId: r.id })} title="Rooftops not integrated" />
+                        : <span style={{ color: "#9ca3af" }}>0</span>}
+                    </td>
+                  )}
+                  {showPublishingDisabled && (
+                    <td style={{ ...tdStyle, textAlign: "center" }}>
+                      {(r.publishingDisabledCount ?? 0) > 0
+                        ? <ClickableNum value={r.publishingDisabledCount} color="#991b1b" onClick={() => onDrillDown({ enterpriseId: r.id })} title="Rooftops with publishing disabled" />
+                        : <span style={{ color: "#9ca3af" }}>0</span>}
+                    </td>
+                  )}
                   <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.total} color="#4f46e5" onClick={() => onDrillDown({ enterpriseId: r.id })} /></td>
                   <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.processed} color="#166534" onClick={() => onDrillDown({ enterpriseId: r.id, status: "Delivered" })} /></td>
                   <td style={{ ...tdStyle, textAlign: "center" }}>
