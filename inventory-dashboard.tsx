@@ -1351,36 +1351,45 @@ export default function Dashboard() {
       .catch(err => { setFetchError(err.message); setRawLoading(false); });
   }, []);
 
-  // On mount: load DB. If empty (fresh deployment), kick off an auto-sync.
+  // On mount: load DB. Always clear loading after the check.
+  // If DB is empty, kick off a background sync — the syncing banner takes over.
   useEffect(() => {
     loadSummary()
       .then(data => {
-        if (data) { setLoading(false); return; }
-        // DB is empty — trigger background sync; polling effect will reload when done.
-        setSyncing(true);
-        fetch("/api/sync", { method: "POST" })
-          .catch(err => { setFetchError(err.message); setSyncing(false); setLoading(false); });
+        setLoading(false);
+        if (!data) {
+          setSyncing(true);
+          fetch("/api/sync", { method: "POST" })
+            .catch(err => { setFetchError(err.message); setSyncing(false); });
+        }
       })
       .catch(err => { setFetchError(err.message); setLoading(false); });
   }, []);
 
-  // While syncing, poll /api/sync/status every 2 s. Reload summary when done.
+  // While syncing, poll /api/sync/status every 3s. Stop after 8 minutes.
   useEffect(() => {
     if (!syncing) return;
+    const TIMEOUT_MS = 8 * 60 * 1000;
+    const startedAt = Date.now();
     const poll = setInterval(() => {
+      if (Date.now() - startedAt > TIMEOUT_MS) {
+        clearInterval(poll);
+        setSyncing(false);
+        loadSummary().catch(() => {});
+        return;
+      }
       fetch("/api/sync/status")
         .then(r => r.json())
         .then(({ running, lastSync: ls }) => {
           if (!running) {
             clearInterval(poll);
             setSyncing(false);
-            setLoading(false);
             if (ls) setLastSync(ls);
-            loadSummary();
+            loadSummary().catch(() => {});
           }
         })
-        .catch(() => { /* keep polling on transient errors */ });
-    }, 2000);
+        .catch(() => { /* keep polling on transient network errors */ });
+    }, 3000);
     return () => clearInterval(poll);
   }, [syncing, loadSummary]);
 
