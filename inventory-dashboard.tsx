@@ -503,12 +503,8 @@ function RawTab({ data, loading, filters, setFilters, total, page, pageCount, on
   );
 }
 
-function RooftopTab({ allRooftops, rows, total, page, pageCount, loading, onPageChange, onDrillDown, filters, setFilters, sortCol, sortDir, onSortChange }) {
+function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterpriseOptions = [], bucketFlags = {}, rows, total, page, pageCount, loading, onPageChange, onDrillDown, filters, setFilters, sortCol, sortDir, onSortChange }) {
   const [downloading, setDownloading] = useState(false);
-
-  const types = [...new Set(allRooftops.map(r => r.type))].sort();
-  const csms = [...new Set(allRooftops.map(r => r.csm))].sort();
-  const enterpriseOptions = [...new Set(allRooftops.map(r => r.enterprise).filter(Boolean))].sort();
 
   const SCORE_OPTIONS = ["Poor (<6)", "Average (6–8)", "Good (8+)"];
 
@@ -518,7 +514,7 @@ function RooftopTab({ allRooftops, rows, total, page, pageCount, loading, onPage
     else { onSortChange(null, "asc"); }
   };
 
-  const activeBuckets = BUCKETS.filter(b => allRooftops.some(r => (r[b.key] ?? 0) > 0));
+  const activeBuckets = BUCKETS.filter(b => bucketFlags[b.key]);
   const activeCount = [filters.rooftopType, filters.csm, filters.enterprise, filters.websiteScore, filters.imsIntegration, filters.publishingStatus].filter(Boolean).length;
   const cols = [
     { key: "enterprise",             label: "Enterprise Name" },
@@ -734,18 +730,16 @@ function RooftopTab({ allRooftops, rows, total, page, pageCount, loading, onPage
   );
 }
 
-function EnterpriseTab({ enterprises, rows, total, page, pageCount, loading, onPageChange, onDrillDown, filters = DEFAULT_ENTERPRISE_FILTERS, setFilters = (_f) => {}, sortCol, sortDir, onSortChange }) {
+function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = false, hasPublishingDisabled = false, bucketFlags = {}, rows, total, page, pageCount, loading, onPageChange, onDrillDown, filters = DEFAULT_ENTERPRISE_FILTERS, setFilters = (_f) => {}, sortCol, sortDir, onSortChange }) {
   const [downloading, setDownloading] = useState(false);
 
   const tdStyle = { padding: "10px 14px", borderBottom: "1px solid #f3f4f6" };
 
-  const csmOptions = useMemo(() => [...new Set(enterprises.map((r: any) => r.csm).filter(Boolean))].sort() as string[], [enterprises]);
-  const typeOptions = useMemo(() => [...new Set(enterprises.map((r: any) => r.accountType).filter(Boolean))].sort() as string[], [enterprises]);
   const SCORE_OPTIONS = ["Poor (<6)", "Average (6–8)", "Good (8+)"];
 
-  const activeBuckets = BUCKETS.filter(b => enterprises.some((r: any) => (r[b.key] ?? 0) > 0));
-  const showNotIntegrated      = enterprises.some((r: any) => (r.notIntegratedCount ?? 0) > 0);
-  const showPublishingDisabled = enterprises.some((r: any) => (r.publishingDisabledCount ?? 0) > 0);
+  const activeBuckets = BUCKETS.filter(b => bucketFlags[b.key]);
+  const showNotIntegrated      = hasNotIntegrated;
+  const showPublishingDisabled = hasPublishingDisabled;
   const cols = [
     { key: "id",                  label: "Enterprise ID" },
     { key: "name",                label: "Enterprise Name" },
@@ -1308,12 +1302,10 @@ const DEFAULT_ROOFTOP_FILTERS = { search: "", rooftopType: null, csm: null, ente
 const DEFAULT_ENTERPRISE_FILTERS = { search: "", csm: null, accountType: null, websiteScore: null };
 
 const EMPTY_SUMMARY = {
-  totals:       { total: 0, processed: 0, notProcessed: 0, processedAfter24: 0, notProcessedAfter24: 0, bucketProcessingPending: 0, bucketPublishingPending: 0, bucketQcPending: 0, bucketSold: 0, bucketOthers: 0 },
-  byRooftop:    [],
-  byEnterprise: [],
-  byCSM:        [],
-  byType:       [],
-  byBucket:     [],
+  totals:   { total: 0, processed: 0, notProcessed: 0, processedAfter24: 0, notProcessedAfter24: 0, bucketProcessingPending: 0, bucketPublishingPending: 0, bucketQcPending: 0, bucketSold: 0, bucketOthers: 0 },
+  byCSM:    [],
+  byType:   [],
+  byBucket: [],
 };
 
 export default function Dashboard() {
@@ -1329,6 +1321,7 @@ export default function Dashboard() {
   const [syncing, setSyncing] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [lastSync, setLastSync] = useState<string | null>(null);
+  const [filterOptions, setFilterOptions] = useState<any>(null);
 
   // Raw paginated data — sourced from /api/vins, only used in VIN Data tab
   const [rawData, setRawData] = useState<any[]>([]);
@@ -1369,6 +1362,13 @@ export default function Dashboard() {
         setLastSync(json.lastSync);
         return json;
       });
+  }, []);
+
+  // Fetch lightweight filter dropdown options (distinct values + column flags)
+  const loadFilterOptions = useCallback(() => {
+    return fetch(`${API_BASE}/api/filter-options`)
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+      .then(json => setFilterOptions(json));
   }, []);
 
   // Fetch paginated rooftop rows
@@ -1439,6 +1439,7 @@ export default function Dashboard() {
   // On mount: load DB. If empty, run a full sync (awaited — POST /api/sync blocks
   // until Metabase fetch + DB insert are complete, then we reload summary).
   useEffect(() => {
+    loadFilterOptions().catch(() => {});
     loadSummary()
       .then(data => {
         setLoading(false);
@@ -1446,7 +1447,7 @@ export default function Dashboard() {
           setSyncing(true);
           fetch(`${API_BASE}/api/sync`, { method: "POST" })
             .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
-            .then(() => loadSummary())
+            .then(() => Promise.all([loadSummary(), loadFilterOptions()]))
             .then(() => setSyncing(false))
             .catch(err => { setFetchError(err.message); setSyncing(false); });
         }
@@ -1492,24 +1493,25 @@ export default function Dashboard() {
     setEnterpriseSortDir(dir);
   }, []);
 
-  // Sync from Metabase — awaits full sync, then reloads summary
+  // Sync from Metabase — awaits full sync, then reloads summary and filter options
   const syncNow = useCallback(() => {
     setSyncing(true);
     setFetchError(null);
     fetch(`${API_BASE}/api/sync`, { method: "POST" })
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
-      .then(() => loadSummary())
+      .then(() => Promise.all([loadSummary(), loadFilterOptions()]))
       .then(() => setSyncing(false))
       .catch(err => { setFetchError(err.message); setSyncing(false); });
-  }, [loadSummary]);
+  }, [loadSummary, loadFilterOptions]);
 
   const s = summary ?? EMPTY_SUMMARY;
 
-  // Derive filter dropdown options from summary data (full dataset)
-  const rooftopOptions    = useMemo(() => [...new Set((s.byRooftop ?? []).map((r: any) => r.name))].sort() as string[], [s.byRooftop]);
-  const typeOptions       = useMemo(() => [...new Set((s.byRooftop ?? []).map((r: any) => r.type))].sort() as string[], [s.byRooftop]);
-  const csmOptions        = useMemo(() => [...new Set((s.byCSM     ?? []).map((r: any) => r.name))].sort() as string[], [s.byCSM]);
-  const enterpriseObjects = useMemo(() => (s.byEnterprise ?? []).filter((r: any) => r.name).sort((a: any, b: any) => a.name.localeCompare(b.name)), [s.byEnterprise]);
+  // Derive filter dropdown options from /api/filter-options (lightweight distinct-value queries)
+  const fo = filterOptions ?? {};
+  const rooftopOptions    = (fo.rooftopNames    ?? []) as string[];
+  const typeOptions       = (fo.rooftopTypes    ?? []) as string[];
+  const csmOptions        = useMemo(() => [...new Set((s.byCSM ?? []).map((r: any) => r.name))].sort() as string[], [s.byCSM]);
+  const enterpriseObjects = (fo.enterprises     ?? []) as { id: string; name: string }[];
 
   const handleDrillDown = useCallback((filters) => {
     setRawFilters({ ...DEFAULT_FILTERS, ...filters });
@@ -1610,7 +1612,10 @@ export default function Dashboard() {
       {tab === "Overview" && <OverviewTab totals={s.totals} byType={s.byType} byCSM={s.byCSM} byBucket={s.byBucket ?? []} onDrillDown={handleDrillDown} onRooftopDrillDown={handleRooftopDrillDown} />}
       {tab === "Rooftop View" && (
         <RooftopTab
-          allRooftops={s.byRooftop}
+          typeOptions={fo.rooftopTypes ?? []}
+          csmOptions={fo.rooftopCSMs ?? []}
+          enterpriseOptions={(fo.enterprises ?? []).map((e: any) => e.name)}
+          bucketFlags={fo.bucketFlags ?? {}}
           rows={rooftopRows}
           total={rooftopTotal}
           page={rooftopPage}
@@ -1627,7 +1632,11 @@ export default function Dashboard() {
       )}
       {tab === "Enterprise View" && (
         <EnterpriseTab
-          enterprises={s.byEnterprise}
+          csmOptions={fo.enterpriseCSMs ?? []}
+          typeOptions={fo.enterpriseTypes ?? []}
+          hasNotIntegrated={fo.hasNotIntegrated ?? false}
+          hasPublishingDisabled={fo.hasPublishingDisabled ?? false}
+          bucketFlags={fo.bucketFlags ?? {}}
           rows={enterpriseRows}
           total={enterpriseTotal}
           page={enterprisePage}

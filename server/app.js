@@ -447,11 +447,9 @@ app.post("/api/sync", async (_req, res) => {
 // ─── GET /api/summary ─────────────────────────────────────────────────────────
 
 app.get("/api/summary", async (_req, res) => {
-  const [metaRes, totalsRes, byRooftopRes, byEnterpriseRes, byCsmRes, byTypeRes, byBucketRes] = await Promise.all([
+  const [metaRes, totalsRes, byCsmRes, byTypeRes, byBucketRes] = await Promise.all([
     query("SELECT MAX(synced_at) AS last_sync, COUNT(*)::int AS total_rows FROM vins"),
     query("SELECT * FROM v_totals"),
-    query("SELECT * FROM v_by_rooftop"),
-    query("SELECT * FROM v_by_enterprise"),
     query("SELECT * FROM v_by_csm"),
     query("SELECT * FROM v_by_type"),
     query(`
@@ -473,14 +471,69 @@ app.get("/api/summary", async (_req, res) => {
 
   const meta = metaRes.rows[0];
   res.json({
-    lastSync:    meta?.last_sync  ?? null,
-    totalRows:   meta?.total_rows ?? 0,
-    totals:      toTotals(totalsRes.rows[0]),
-    byRooftop:   byRooftopRes.rows.map(toRooftopRow),
-    byEnterprise: byEnterpriseRes.rows.map(toEnterpriseRow),
-    byCSM:       byCsmRes.rows.map(toCsmRow),
-    byType:      byTypeRes.rows.map(toTypeRow),
-    byBucket:    byBucketRes.rows.map(r => ({ label: r.label, count: r.count })),
+    lastSync:  meta?.last_sync  ?? null,
+    totalRows: meta?.total_rows ?? 0,
+    totals:    toTotals(totalsRes.rows[0]),
+    byCSM:     byCsmRes.rows.map(toCsmRow),
+    byType:    byTypeRes.rows.map(toTypeRow),
+    byBucket:  byBucketRes.rows.map(r => ({ label: r.label, count: r.count })),
+  });
+});
+
+// ─── GET /api/filter-options ──────────────────────────────────────────────────
+
+app.get("/api/filter-options", async (_req, res) => {
+  const [
+    rooftopNamesRes,
+    rooftopTypesRes,
+    rooftopCSMsRes,
+    enterprisesRes,
+    enterpriseCSMsRes,
+    enterpriseTypesRes,
+    rooftopBucketFlagsRes,
+    enterpriseColFlagsRes,
+  ] = await Promise.all([
+    query("SELECT DISTINCT name FROM v_by_rooftop WHERE name IS NOT NULL ORDER BY name"),
+    query("SELECT DISTINCT type FROM v_by_rooftop WHERE type IS NOT NULL ORDER BY type"),
+    query("SELECT DISTINCT csm  FROM v_by_rooftop WHERE csm  IS NOT NULL ORDER BY csm"),
+    query("SELECT DISTINCT enterprise_id AS id, enterprise AS name FROM v_by_rooftop WHERE enterprise IS NOT NULL ORDER BY enterprise"),
+    query("SELECT DISTINCT csm  FROM v_by_enterprise WHERE csm  IS NOT NULL ORDER BY csm"),
+    query("SELECT DISTINCT account_type FROM v_by_enterprise WHERE account_type IS NOT NULL ORDER BY account_type"),
+    query(`
+      SELECT
+        BOOL_OR(bucket_processing_pending > 0) AS bucket_processing_pending,
+        BOOL_OR(bucket_publishing_pending > 0) AS bucket_publishing_pending,
+        BOOL_OR(bucket_qc_pending         > 0) AS bucket_qc_pending,
+        BOOL_OR(bucket_sold               > 0) AS bucket_sold,
+        BOOL_OR(bucket_others             > 0) AS bucket_others
+      FROM v_by_rooftop
+    `),
+    query(`
+      SELECT
+        BOOL_OR(not_integrated_count      > 0) AS has_not_integrated,
+        BOOL_OR(publishing_disabled_count > 0) AS has_publishing_disabled
+      FROM v_by_enterprise
+    `),
+  ]);
+
+  const bf = rooftopBucketFlagsRes.rows[0] ?? {};
+  const cf = enterpriseColFlagsRes.rows[0]  ?? {};
+  res.json({
+    rooftopNames:    rooftopNamesRes.rows.map(r => r.name),
+    rooftopTypes:    rooftopTypesRes.rows.map(r => r.type),
+    rooftopCSMs:     rooftopCSMsRes.rows.map(r => r.csm),
+    enterprises:     enterprisesRes.rows,
+    enterpriseCSMs:  enterpriseCSMsRes.rows.map(r => r.csm),
+    enterpriseTypes: enterpriseTypesRes.rows.map(r => r.account_type),
+    bucketFlags: {
+      bucketProcessingPending: bf.bucket_processing_pending ?? false,
+      bucketPublishingPending: bf.bucket_publishing_pending ?? false,
+      bucketQcPending:         bf.bucket_qc_pending         ?? false,
+      bucketSold:              bf.bucket_sold               ?? false,
+      bucketOthers:            bf.bucket_others             ?? false,
+    },
+    hasNotIntegrated:      cf.has_not_integrated      ?? false,
+    hasPublishingDisabled: cf.has_publishing_disabled ?? false,
   });
 });
 
