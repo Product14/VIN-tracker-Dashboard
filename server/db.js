@@ -4,10 +4,11 @@ import { dirname, join } from "path";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// On Vercel the main filesystem is read-only; use /tmp instead.
-const DB_PATH = process.env.VERCEL
-  ? "/tmp/vins.db"
-  : join(__dirname, "vins.db");
+// DB_PATH env var takes priority (e.g. /data/vins.db on Render persistent disk).
+// Falls back to /tmp on Vercel (ephemeral) or local server/vins.db in dev.
+const DB_PATH =
+  process.env.DB_PATH ??
+  (process.env.VERCEL ? "/tmp/vins.db" : join(__dirname, "vins.db"));
 
 const db = new Database(DB_PATH);
 

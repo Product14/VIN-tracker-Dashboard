@@ -1,6 +1,8 @@
 import React, { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import ReactDOM from "react-dom";
 
+const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
+
 function InfoTooltip({ text }: { text: string }) {
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
   const iconRef = useRef<HTMLSpanElement>(null);
@@ -390,7 +392,7 @@ function RawTab({ data, filters, setFilters, total, page, pageCount, onPageChang
     if (filters.reasonBucket)      params.set("reasonBucket", filters.reasonBucket);
     if (sortCol) { params.set("sortBy", sortCol); params.set("sortDir", sortDir); }
     try {
-      const res = await fetch(`/api/vins/export?${params}`);
+      const res = await fetch(`${API_BASE}/api/vins/export?${params}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const { data } = await res.json();
       const headers = ["Enterprise Name", "Rooftop Name", "Type", "CSM", "VIN", "Dealer VIN ID", "Status", "After 24h?", "Received", "Delivered", "Reason Bucket"];
@@ -1315,7 +1317,7 @@ export default function Dashboard() {
 
   // Fetch summary data from DB views
   const loadSummary = useCallback(() => {
-    return fetch("/api/summary")
+    return fetch(`${API_BASE}/api/summary`)
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
       .then(json => {
         if (json.totalRows === 0) return null; // DB empty
@@ -1340,7 +1342,7 @@ export default function Dashboard() {
     if (filters.reasonBucket)      params.set("reasonBucket", filters.reasonBucket);
     if (sortCol) { params.set("sortBy", sortCol); params.set("sortDir", sortDir); }
 
-    fetch(`/api/vins?${params}`)
+    fetch(`${API_BASE}/api/vins?${params}`)
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
       .then(({ data, total, pageCount }) => {
         setRawData(data);
@@ -1359,7 +1361,7 @@ export default function Dashboard() {
         setLoading(false);
         if (!data) {
           setSyncing(true);
-          fetch("/api/sync", { method: "POST" })
+          fetch(`${API_BASE}/api/sync`, { method: "POST" })
             .catch(err => { setFetchError(err.message); setSyncing(false); });
         }
       })
@@ -1378,7 +1380,7 @@ export default function Dashboard() {
         loadSummary().catch(() => {});
         return;
       }
-      fetch("/api/sync/status")
+      fetch(`${API_BASE}/api/sync/status`)
         .then(r => r.json())
         .then(({ running, lastSync: ls }) => {
           if (!running) {
@@ -1415,7 +1417,7 @@ export default function Dashboard() {
   const syncNow = useCallback(() => {
     setSyncing(true);
     setFetchError(null);
-    fetch("/api/sync", { method: "POST" })
+    fetch(`${API_BASE}/api/sync`, { method: "POST" })
       .catch(err => { setFetchError(err.message); setSyncing(false); });
   }, []);
 
