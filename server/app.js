@@ -1,6 +1,6 @@
 import express from "express";
 import cors from "cors";
-import db from "./db.js";
+import { query, getClient } from "./db.js";
 
 const app = express();
 app.use(cors());
@@ -25,36 +25,6 @@ const cleanAfter24 = (v) => {
   return v ? 1 : 0;
 };
 
-const insertVinStmt = db.prepare(`
-  INSERT INTO vins
-    (vin, dealer_vin_id, enterprise_id, rooftop_id, status, after_24h, received_at, processed_at, reason_bucket, synced_at)
-  VALUES
-    (@vin, @dealerVinId, @enterpriseId, @rooftopId, @status, @after24h, @receivedAt, @processedAt, @reasonBucket, @syncedAt)
-`);
-
-const insertRooftopStmt = db.prepare(`
-  INSERT INTO rooftop_details (team_id, enterprise_id, team_name, team_type, website_score, website_listing_url, ims_integration_status, publishing_status, synced_at)
-  VALUES (@teamId, @enterpriseId, @teamName, @teamType, @websiteScore, @websiteListingUrl, @imsIntegrationStatus, @publishingStatus, @syncedAt)
-`);
-
-const insertEnterpriseStmt = db.prepare(`
-  INSERT INTO enterprise_details (enterprise_id, name, type, website_url, poc_email, synced_at)
-  VALUES (@enterpriseId, @name, @type, @websiteUrl, @pocEmail, @syncedAt)
-`);
-
-// ─── Sync state ──────────────────────────────────────────────────────────────
-
-const syncState = {
-  running:     false,
-  startedAt:   null,
-  completedAt: null,
-  tables: {
-    vins:        { status: "idle", count: null, error: null, syncedAt: null },
-    rooftops:    { status: "idle", count: null, error: null, syncedAt: null },
-    enterprises: { status: "idle", count: null, error: null, syncedAt: null },
-  },
-};
-
 // Fetch from Metabase with no artificial timeout — wait as long as Metabase
 // needs. Retry on HTTP errors or network failures with exponential back-off.
 async function fetchFromMetabase(url, label, retries = 3) {
@@ -77,129 +47,183 @@ async function fetchFromMetabase(url, label, retries = 3) {
   throw lastErr;
 }
 
-// Each table syncs independently — a failure in one does not affect the others.
+// ─── Per-table sync functions ─────────────────────────────────────────────────
+// Each syncs independently — a failure in one does not affect the others.
+// Uses UNNEST bulk-insert for efficiency (single query vs N queries per row).
 
 async function syncVins() {
-  syncState.tables.vins = { status: "running", count: null, error: null, syncedAt: null };
-  try {
-    console.log("[sync:VIN_DETAILS] fetching…");
-    const rows = await fetchFromMetabase(VIN_DETAILS_URL, "VIN_DETAILS");
-    const syncedAt = new Date().toISOString();
-    const deduped = Object.values(
-      rows.reduce((acc, row) => { acc[row.vinName ?? ""] = row; return acc; }, {})
-    );
-    db.transaction(() => {
-      db.prepare("DELETE FROM vins").run();
-      for (const row of deduped) {
-        insertVinStmt.run({
-          vin:          row.vinName ?? "",
-          dealerVinId:  row["m.dealerVinId"] ?? null,
-          enterpriseId: row.enterpriseId ?? "",
-          rooftopId:    String(row.teamId ?? ""),
-          status:       row.status ?? "",
-          after24h:     cleanAfter24(row.after_24_hrs ?? row.after_24hrs ?? null),
-          receivedAt:   cleanDate(row.receivedAt),
-          processedAt:  cleanDate(row.sentAt),
-          reasonBucket: row.reason_bucket ?? "",
-          syncedAt,
-        });
-      }
-    })();
-    syncState.tables.vins = { status: "success", count: deduped.length, error: null, syncedAt };
-    console.log(`[sync:VIN_DETAILS] done — ${deduped.length} rows`);
-  } catch (err) {
-    console.error(`[sync:VIN_DETAILS] failed — ${err.message}`);
-    syncState.tables.vins = { status: "error", count: null, error: err.message, syncedAt: null };
+  console.log("[sync:VIN_DETAILS] fetching…");
+  const rows    = await fetchFromMetabase(VIN_DETAILS_URL, "VIN_DETAILS");
+  const syncedAt = new Date().toISOString();
+  const deduped = Object.values(
+    rows.reduce((acc, row) => { acc[row.vinName ?? ""] = row; return acc; }, {})
+  );
+
+  const vins = [], dealerVinIds = [], enterpriseIds = [], rooftopIds = [];
+  const statuses = [], after24hs = [], receivedAts = [], processedAts = [];
+  const reasonBuckets = [], syncedAts = [];
+
+  for (const row of deduped) {
+    vins.push(row.vinName ?? "");
+    dealerVinIds.push(row["m.dealerVinId"] ?? null);
+    enterpriseIds.push(row.enterpriseId ?? "");
+    rooftopIds.push(String(row.teamId ?? ""));
+    statuses.push(row.status ?? "");
+    after24hs.push(cleanAfter24(row.after_24_hrs ?? row.after_24hrs ?? null));
+    receivedAts.push(cleanDate(row.receivedAt));
+    processedAts.push(cleanDate(row.sentAt));
+    reasonBuckets.push(row.reason_bucket ?? "");
+    syncedAts.push(syncedAt);
   }
+
+  const client = await getClient();
+  try {
+    await client.query("BEGIN");
+    await client.query("DELETE FROM vins");
+    if (deduped.length > 0) {
+      await client.query(`
+        INSERT INTO vins
+          (vin, dealer_vin_id, enterprise_id, rooftop_id, status, after_24h, received_at, processed_at, reason_bucket, synced_at)
+        SELECT
+          UNNEST($1::text[]), UNNEST($2::text[]), UNNEST($3::text[]), UNNEST($4::text[]),
+          UNNEST($5::text[]), UNNEST($6::smallint[]), UNNEST($7::text[]), UNNEST($8::text[]),
+          UNNEST($9::text[]), UNNEST($10::text[])
+      `, [vins, dealerVinIds, enterpriseIds, rooftopIds, statuses, after24hs, receivedAts, processedAts, reasonBuckets, syncedAts]);
+    }
+    await client.query("COMMIT");
+  } catch (e) {
+    await client.query("ROLLBACK");
+    throw e;
+  } finally {
+    client.release();
+  }
+
+  console.log(`[sync:VIN_DETAILS] done — ${deduped.length} rows`);
 }
 
 async function syncRooftops() {
-  syncState.tables.rooftops = { status: "running", count: null, error: null, syncedAt: null };
-  try {
-    console.log("[sync:ROOFTOP_DETAILS] fetching…");
-    const rows = await fetchFromMetabase(ROOFTOP_DETAILS_URL, "ROOFTOP_DETAILS");
-    const syncedAt = new Date().toISOString();
-    const deduped = Object.values(
-      rows.reduce((acc, row) => { if (row.team_id) acc[String(row.team_id)] = row; return acc; }, {})
-    );
-    db.transaction(() => {
-      db.prepare("DELETE FROM rooftop_details").run();
-      for (const row of deduped) {
-        insertRooftopStmt.run({
-          teamId:               String(row.team_id),
-          enterpriseId:         String(row["t.enterprise_id"] ?? ""),
-          teamName:             row.team_name ?? null,
-          teamType:             row.team_type ?? null,
-          websiteScore:         row.overallScore != null ? Number(row.overallScore) : null,
-          websiteListingUrl:    row.website_listing_url ?? null,
-          imsIntegrationStatus: row.ims_integration_status != null ? String(row.ims_integration_status) : null,
-          publishingStatus:     row.publishing_status != null ? String(row.publishing_status) : null,
-          syncedAt,
-        });
-      }
-    })();
-    syncState.tables.rooftops = { status: "success", count: deduped.length, error: null, syncedAt };
-    console.log(`[sync:ROOFTOP_DETAILS] done — ${deduped.length} rows`);
-  } catch (err) {
-    console.error(`[sync:ROOFTOP_DETAILS] failed — ${err.message}`);
-    syncState.tables.rooftops = { status: "error", count: null, error: err.message, syncedAt: null };
+  console.log("[sync:ROOFTOP_DETAILS] fetching…");
+  const rows    = await fetchFromMetabase(ROOFTOP_DETAILS_URL, "ROOFTOP_DETAILS");
+  const syncedAt = new Date().toISOString();
+  const deduped = Object.values(
+    rows.reduce((acc, row) => { if (row.team_id) acc[String(row.team_id)] = row; return acc; }, {})
+  );
+
+  const teamIds = [], enterpriseIds = [], teamNames = [], teamTypes = [];
+  const websiteScores = [], websiteListingUrls = [], imsStatuses = [], publishingStatuses = [], syncedAts = [];
+
+  for (const row of deduped) {
+    teamIds.push(String(row.team_id));
+    enterpriseIds.push(String(row["t.enterprise_id"] ?? ""));
+    teamNames.push(row.team_name ?? null);
+    teamTypes.push(row.team_type ?? null);
+    websiteScores.push(row.overallScore != null ? Number(row.overallScore) : null);
+    websiteListingUrls.push(row.website_listing_url ?? null);
+    imsStatuses.push(row.ims_integration_status != null ? String(row.ims_integration_status) : null);
+    publishingStatuses.push(row.publishing_status != null ? String(row.publishing_status) : null);
+    syncedAts.push(syncedAt);
   }
+
+  const client = await getClient();
+  try {
+    await client.query("BEGIN");
+    await client.query("DELETE FROM rooftop_details");
+    if (deduped.length > 0) {
+      await client.query(`
+        INSERT INTO rooftop_details
+          (team_id, enterprise_id, team_name, team_type, website_score, website_listing_url, ims_integration_status, publishing_status, synced_at)
+        SELECT
+          UNNEST($1::text[]), UNNEST($2::text[]), UNNEST($3::text[]), UNNEST($4::text[]),
+          UNNEST($5::real[]), UNNEST($6::text[]), UNNEST($7::text[]), UNNEST($8::text[]),
+          UNNEST($9::text[])
+      `, [teamIds, enterpriseIds, teamNames, teamTypes, websiteScores, websiteListingUrls, imsStatuses, publishingStatuses, syncedAts]);
+    }
+    await client.query("COMMIT");
+  } catch (e) {
+    await client.query("ROLLBACK");
+    throw e;
+  } finally {
+    client.release();
+  }
+
+  console.log(`[sync:ROOFTOP_DETAILS] done — ${deduped.length} rows`);
 }
 
 async function syncEnterprises() {
-  syncState.tables.enterprises = { status: "running", count: null, error: null, syncedAt: null };
-  try {
-    console.log("[sync:ENTERPRISE_DETAILS] fetching…");
-    const rows = await fetchFromMetabase(ENTERPRISE_DETAILS_URL, "ENTERPRISE_DETAILS");
-    const syncedAt = new Date().toISOString();
-    const deduped = Object.values(
-      rows.reduce((acc, row) => { if (row["dt.enterprise_id"]) acc[String(row["dt.enterprise_id"])] = row; return acc; }, {})
-    );
-    db.transaction(() => {
-      db.prepare("DELETE FROM enterprise_details").run();
-      for (const row of deduped) {
-        insertEnterpriseStmt.run({
-          enterpriseId: String(row["dt.enterprise_id"]),
-          name:         row.name ?? null,
-          type:         row.type ?? null,
-          websiteUrl:   row.website_url ?? null,
-          pocEmail:     row.email_id ?? null,
-          syncedAt,
-        });
-      }
-    })();
-    syncState.tables.enterprises = { status: "success", count: deduped.length, error: null, syncedAt };
-    console.log(`[sync:ENTERPRISE_DETAILS] done — ${deduped.length} rows`);
-  } catch (err) {
-    console.error(`[sync:ENTERPRISE_DETAILS] failed — ${err.message}`);
-    syncState.tables.enterprises = { status: "error", count: null, error: err.message, syncedAt: null };
+  console.log("[sync:ENTERPRISE_DETAILS] fetching…");
+  const rows    = await fetchFromMetabase(ENTERPRISE_DETAILS_URL, "ENTERPRISE_DETAILS");
+  const syncedAt = new Date().toISOString();
+  const deduped = Object.values(
+    rows.reduce((acc, row) => { if (row["dt.enterprise_id"]) acc[String(row["dt.enterprise_id"])] = row; return acc; }, {})
+  );
+
+  const enterpriseIds = [], names = [], types = [], websiteUrls = [], pocEmails = [], syncedAts = [];
+
+  for (const row of deduped) {
+    enterpriseIds.push(String(row["dt.enterprise_id"]));
+    names.push(row.name ?? null);
+    types.push(row.type ?? null);
+    websiteUrls.push(row.website_url ?? null);
+    pocEmails.push(row.email_id ?? null);
+    syncedAts.push(syncedAt);
   }
+
+  const client = await getClient();
+  try {
+    await client.query("BEGIN");
+    await client.query("DELETE FROM enterprise_details");
+    if (deduped.length > 0) {
+      await client.query(`
+        INSERT INTO enterprise_details
+          (enterprise_id, name, type, website_url, poc_email, synced_at)
+        SELECT
+          UNNEST($1::text[]), UNNEST($2::text[]), UNNEST($3::text[]),
+          UNNEST($4::text[]), UNNEST($5::text[]), UNNEST($6::text[])
+      `, [enterpriseIds, names, types, websiteUrls, pocEmails, syncedAts]);
+    }
+    await client.query("COMMIT");
+  } catch (e) {
+    await client.query("ROLLBACK");
+    throw e;
+  } finally {
+    client.release();
+  }
+
+  console.log(`[sync:ENTERPRISE_DETAILS] done — ${deduped.length} rows`);
 }
 
-// Runs all three table syncs in parallel. Returns immediately if already running.
+// Atomically claims a sync lock in the DB, runs all three syncs in parallel,
+// then releases the lock. Returns { skipped: true } if already running.
 async function runSync() {
-  if (syncState.running) {
+  // Atomic claim: only one instance wins this UPDATE at a time.
+  const { rows } = await query(`
+    UPDATE sync_state
+       SET running = TRUE, started_at = NOW(), completed_at = NULL
+     WHERE id = 'global' AND running = FALSE
+    RETURNING id
+  `);
+
+  if (rows.length === 0) {
     console.warn("[sync] already in progress — skipping duplicate request");
-    return;
-  }
-  syncState.running     = true;
-  syncState.startedAt   = new Date().toISOString();
-  syncState.completedAt = null;
-  for (const t of Object.keys(syncState.tables)) {
-    syncState.tables[t] = { status: "idle", count: null, error: null, syncedAt: null };
+    return { skipped: true };
   }
 
   console.log("[sync] started — VINs, Rooftops, Enterprises running in parallel");
-  // allSettled so all three run to completion regardless of individual failures
-  await Promise.allSettled([syncVins(), syncRooftops(), syncEnterprises()]);
+  try {
+    // allSettled so all three run to completion regardless of individual failures
+    const results = await Promise.allSettled([syncVins(), syncRooftops(), syncEnterprises()]);
+    for (const r of results) {
+      if (r.status === "rejected") console.error("[sync] table sync failed:", r.reason?.message);
+    }
+  } finally {
+    await query(`UPDATE sync_state SET running = FALSE, completed_at = NOW() WHERE id = 'global'`);
+  }
 
-  syncState.running     = false;
-  syncState.completedAt = new Date().toISOString();
-  const { vins, rooftops, enterprises } = syncState.tables;
-  console.log(`[sync] complete — vins:${vins.status}(${vins.count ?? "err"}) rooftops:${rooftops.status}(${rooftops.count ?? "err"}) enterprises:${enterprises.status}(${enterprises.count ?? "err"})`);
+  console.log("[sync] complete");
+  return { skipped: false };
 }
 
-// ─── Row serialiser ──────────────────────────────────────────────────────────
+// ─── Row serialisers ──────────────────────────────────────────────────────────
 
 function toApiRow(r) {
   return {
@@ -220,7 +244,111 @@ function toApiRow(r) {
   };
 }
 
-// ─── VIN query helpers ───────────────────────────────────────────────────────
+function toTotals(r) {
+  return {
+    total:                   r.total,
+    processed:               r.processed,
+    processedAfter24:        r.processed_after_24h,
+    notProcessed:            r.not_processed,
+    notProcessedAfter24:     r.not_processed_after_24h,
+    bucketProcessingPending: r.bucket_processing_pending,
+    bucketPublishingPending: r.bucket_publishing_pending,
+    bucketQcPending:         r.bucket_qc_pending,
+    bucketSold:              r.bucket_sold,
+    bucketOthers:            r.bucket_others,
+  };
+}
+
+function toRooftopRow(r) {
+  return {
+    rooftopId:                r.rooftop_id,
+    name:                     r.name,
+    type:                     r.type,
+    csm:                      r.csm,
+    enterpriseId:             r.enterprise_id,
+    enterprise:               r.enterprise,
+    total:                    r.total,
+    processed:                r.processed,
+    processedAfter24:         r.processed_after_24h,
+    notProcessed:             r.not_processed,
+    notProcessedAfter24:      r.not_processed_after_24h,
+    websiteScore:             r.website_score ?? null,
+    websiteListingUrl:        r.website_listing_url ?? null,
+    imsIntegrationStatus:     r.ims_integration_status ?? null,
+    publishingStatus:         r.publishing_status ?? null,
+    bucketProcessingPending:  r.bucket_processing_pending,
+    bucketPublishingPending:  r.bucket_publishing_pending,
+    bucketQcPending:          r.bucket_qc_pending,
+    bucketSold:               r.bucket_sold,
+    bucketOthers:             r.bucket_others,
+  };
+}
+
+function toEnterpriseRow(r) {
+  return {
+    id:                       r.id,
+    name:                     r.name,
+    csm:                      r.csm ?? null,
+    total:                    r.total,
+    processed:                r.processed,
+    processedAfter24:         r.processed_after_24h,
+    notProcessed:             r.not_processed,
+    notProcessedAfter24:      r.not_processed_after_24h,
+    rooftopCount:             r.rooftop_count ?? 0,
+    notIntegratedCount:       r.not_integrated_count ?? 0,
+    publishingDisabledCount:  r.publishing_disabled_count ?? 0,
+    avgWebsiteScore:          r.avg_website_score ?? null,
+    websiteUrl:               r.website_url ?? null,
+    accountType:              r.account_type ?? null,
+    bucketProcessingPending:  r.bucket_processing_pending,
+    bucketPublishingPending:  r.bucket_publishing_pending,
+    bucketQcPending:          r.bucket_qc_pending,
+    bucketSold:               r.bucket_sold,
+    bucketOthers:             r.bucket_others,
+  };
+}
+
+function toCsmRow(r) {
+  return {
+    name:                     r.name,
+    label:                    r.name,
+    rooftopCount:             r.rooftop_count,
+    total:                    r.total,
+    processed:                r.processed,
+    processedAfter24:         r.processed_after_24h,
+    notProcessed:             r.not_processed,
+    notProcessedAfter24:      r.not_processed_after_24h,
+    avgWebsiteScore:          r.avg_website_score ?? null,
+    integratedCount:          r.integrated_count ?? 0,
+    publishingCount:          r.publishing_count ?? 0,
+    bucketProcessingPending:  r.bucket_processing_pending,
+    bucketPublishingPending:  r.bucket_publishing_pending,
+    bucketQcPending:          r.bucket_qc_pending,
+    bucketSold:               r.bucket_sold,
+    bucketOthers:             r.bucket_others,
+  };
+}
+
+function toTypeRow(r) {
+  return {
+    label:                    r.label,
+    rooftopCount:             r.rooftop_count,
+    total:                    r.total,
+    processed:                r.processed,
+    processedAfter24:         r.processed_after_24h,
+    notProcessed:             r.not_processed,
+    notProcessedAfter24:      r.not_processed_after_24h,
+    integratedCount:          r.integrated_count ?? 0,
+    publishingCount:          r.publishing_count ?? 0,
+    bucketProcessingPending:  r.bucket_processing_pending,
+    bucketPublishingPending:  r.bucket_publishing_pending,
+    bucketQcPending:          r.bucket_qc_pending,
+    bucketSold:               r.bucket_sold,
+    bucketOthers:             r.bucket_others,
+  };
+}
+
+// ─── VIN query helpers ────────────────────────────────────────────────────────
 
 // Whitelist map: frontend column key → DB expression (prevents SQL injection)
 const SORT_MAP = {
@@ -257,193 +385,108 @@ const VIN_SELECT = `
   ${VIN_FROM}
 `;
 
-function buildVinFilters(query) {
-  const { search, rooftop, rooftopId, rooftopType, csm, status, after24h, enterprise, enterpriseId, reasonBucket } = query;
+// Builds a WHERE clause with PostgreSQL positional params ($1, $2, …).
+// Returns { where: string, params: any[] }.
+function buildVinFilters(queryParams) {
+  const { search, rooftop, rooftopId, rooftopType, csm, status, after24h, enterprise, enterpriseId, reasonBucket } = queryParams;
   const conditions = [];
-  const params     = [];
+  const params = [];
+
+  // Helper: push value to params array, return its $N placeholder
+  const p = (val) => { params.push(val); return `$${params.length}`; };
 
   if (search) {
-    conditions.push("(v.vin LIKE ? OR rd.team_name LIKE ? OR ed.poc_email LIKE ? OR ed.name LIKE ?)");
     const s = `%${search}%`;
-    params.push(s, s, s, s);
+    conditions.push(`(v.vin ILIKE ${p(s)} OR rd.team_name ILIKE ${p(s)} OR ed.poc_email ILIKE ${p(s)} OR ed.name ILIKE ${p(s)})`);
   }
-  if (enterpriseId) { conditions.push("v.enterprise_id = ?");  params.push(enterpriseId); }
-  if (rooftopId)    { conditions.push("v.rooftop_id = ?");     params.push(rooftopId); }
-  if (rooftop)      { conditions.push("rd.team_name = ?");     params.push(rooftop); }
-  if (rooftopType)  { conditions.push("rd.team_type = ?");     params.push(rooftopType); }
-  if (csm)          { conditions.push("ed.poc_email = ?");     params.push(csm); }
-  if (status)       { conditions.push("v.status = ?");         params.push(status); }
-  if (enterprise)   { conditions.push("ed.name = ?");          params.push(enterprise); }
-  if (after24h === "true"  || after24h === "1") { conditions.push("COALESCE(v.after_24h,0) = 1"); }
-  if (after24h === "false" || after24h === "0") { conditions.push("COALESCE(v.after_24h,0) = 0"); }
-  if (reasonBucket) { conditions.push("v.reason_bucket = ?"); params.push(reasonBucket); }
+  if (enterpriseId) conditions.push(`v.enterprise_id = ${p(enterpriseId)}`);
+  if (rooftopId)    conditions.push(`v.rooftop_id = ${p(rooftopId)}`);
+  if (rooftop)      conditions.push(`rd.team_name = ${p(rooftop)}`);
+  if (rooftopType)  conditions.push(`rd.team_type = ${p(rooftopType)}`);
+  if (csm)          conditions.push(`ed.poc_email = ${p(csm)}`);
+  if (status)       conditions.push(`v.status = ${p(status)}`);
+  if (enterprise)   conditions.push(`ed.name = ${p(enterprise)}`);
+  if (after24h === "true"  || after24h === "1") conditions.push("COALESCE(v.after_24h, 0) = 1");
+  if (after24h === "false" || after24h === "0") conditions.push("COALESCE(v.after_24h, 0) = 0");
+  if (reasonBucket) conditions.push(`v.reason_bucket = ${p(reasonBucket)}`);
 
   return { where: conditions.length ? `WHERE ${conditions.join(" AND ")}` : "", params };
 }
 
-// ─── GET /api/sync/status ────────────────────────────────────────────────────
+// ─── GET /api/sync/status ─────────────────────────────────────────────────────
 
-app.get("/api/sync/status", (_req, res) => {
-  const meta = db.prepare("SELECT MAX(synced_at) AS last_sync, COUNT(*) AS total_rows FROM vins").get();
+app.get("/api/sync/status", async (_req, res) => {
+  const [metaRes, stateRes] = await Promise.all([
+    query("SELECT MAX(synced_at) AS last_sync, COUNT(*)::int AS total_rows FROM vins"),
+    query("SELECT running, started_at, completed_at FROM sync_state WHERE id = 'global'"),
+  ]);
+  const meta  = metaRes.rows[0];
+  const state = stateRes.rows[0];
   res.json({
-    running:     syncState.running,
-    startedAt:   syncState.startedAt,
-    completedAt: syncState.completedAt,
-    tables:      syncState.tables,
-    lastSync:    meta?.last_sync ?? null,
-    totalRows:   meta?.total_rows ?? 0,
+    running:     state?.running    ?? false,
+    startedAt:   state?.started_at ?? null,
+    completedAt: state?.completed_at ?? null,
+    lastSync:    meta?.last_sync   ?? null,
+    totalRows:   meta?.total_rows  ?? 0,
   });
 });
 
-// ─── POST /api/sync ──────────────────────────────────────────────────────────
-// Fires sync in the background and returns 202 immediately.
-// Poll GET /api/sync/status to track progress.
+// ─── POST /api/sync ───────────────────────────────────────────────────────────
+// Synchronous — awaits the full sync before responding.
+// maxDuration: 300 is set in vercel.json to allow up to 5 minutes.
 
-app.post("/api/sync", (_req, res) => {
-  if (syncState.running) {
-    return res.status(202).json({ status: "already_running", startedAt: syncState.startedAt });
+app.post("/api/sync", async (_req, res) => {
+  const result = await runSync();
+  if (result.skipped) {
+    const { rows } = await query("SELECT started_at FROM sync_state WHERE id = 'global'");
+    return res.status(202).json({ status: "already_running", startedAt: rows[0]?.started_at });
   }
-  // Fire and forget — do NOT await
-  runSync().catch(err => console.error("[sync] unexpected error:", err.message));
-  res.status(202).json({ status: "started" });
+  res.json({ status: "completed" });
 });
 
-// ─── Summary serialisers (snake_case DB → camelCase API) ─────────────────────
-
-function toTotals(r) {
-  return {
-    total:                      r.total,
-    processed:                  r.processed,
-    processedAfter24:           r.processed_after_24h,
-    notProcessed:               r.not_processed,
-    notProcessedAfter24:        r.not_processed_after_24h,
-    bucketProcessingPending:    r.bucket_processing_pending,
-    bucketPublishingPending:    r.bucket_publishing_pending,
-    bucketQcPending:            r.bucket_qc_pending,
-    bucketSold:                 r.bucket_sold,
-    bucketOthers:               r.bucket_others,
-  };
-}
-
-function toRooftopRow(r) {
-  return {
-    rooftopId:            r.rooftop_id,
-    name:                 r.name,
-    type:                 r.type,
-    csm:                  r.csm,
-    enterpriseId:         r.enterprise_id,
-    enterprise:           r.enterprise,
-    total:                r.total,
-    processed:            r.processed,
-    processedAfter24:     r.processed_after_24h,
-    notProcessed:         r.not_processed,
-    notProcessedAfter24:  r.not_processed_after_24h,
-    websiteScore:               r.website_score ?? null,
-    websiteListingUrl:          r.website_listing_url ?? null,
-    imsIntegrationStatus:       r.ims_integration_status ?? null,
-    publishingStatus:           r.publishing_status ?? null,
-    bucketProcessingPending:    r.bucket_processing_pending,
-    bucketPublishingPending:    r.bucket_publishing_pending,
-    bucketQcPending:            r.bucket_qc_pending,
-    bucketSold:                 r.bucket_sold,
-    bucketOthers:               r.bucket_others,
-  };
-}
-
-function toEnterpriseRow(r) {
-  return {
-    id:                   r.id,
-    name:                 r.name,
-    csm:                  r.csm ?? null,
-    total:                r.total,
-    processed:            r.processed,
-    processedAfter24:     r.processed_after_24h,
-    notProcessed:         r.not_processed,
-    notProcessedAfter24:  r.not_processed_after_24h,
-    rooftopCount:               r.rooftop_count ?? 0,
-    notIntegratedCount:         r.not_integrated_count ?? 0,
-    publishingDisabledCount:    r.publishing_disabled_count ?? 0,
-    avgWebsiteScore:            r.avg_website_score ?? null,
-    websiteUrl:                 r.website_url ?? null,
-    accountType:                r.account_type ?? null,
-    bucketProcessingPending:    r.bucket_processing_pending,
-    bucketPublishingPending:    r.bucket_publishing_pending,
-    bucketQcPending:            r.bucket_qc_pending,
-    bucketSold:                 r.bucket_sold,
-    bucketOthers:               r.bucket_others,
-  };
-}
-
-function toCsmRow(r) {
-  return {
-    name:                 r.name,
-    label:                r.name,   // OverviewTab uses `label` for this field
-    rooftopCount:         r.rooftop_count,
-    total:                r.total,
-    processed:            r.processed,
-    processedAfter24:     r.processed_after_24h,
-    notProcessed:         r.not_processed,
-    notProcessedAfter24:  r.not_processed_after_24h,
-    avgWebsiteScore:            r.avg_website_score ?? null,
-    integratedCount:            r.integrated_count ?? 0,
-    publishingCount:            r.publishing_count ?? 0,
-    bucketProcessingPending:    r.bucket_processing_pending,
-    bucketPublishingPending:    r.bucket_publishing_pending,
-    bucketQcPending:            r.bucket_qc_pending,
-    bucketSold:                 r.bucket_sold,
-    bucketOthers:               r.bucket_others,
-  };
-}
-
-function toTypeRow(r) {
-  return {
-    label:                      r.label,
-    rooftopCount:               r.rooftop_count,
-    total:                      r.total,
-    processed:                  r.processed,
-    processedAfter24:           r.processed_after_24h,
-    notProcessed:               r.not_processed,
-    notProcessedAfter24:        r.not_processed_after_24h,
-    integratedCount:            r.integrated_count ?? 0,
-    publishingCount:            r.publishing_count ?? 0,
-    bucketProcessingPending:    r.bucket_processing_pending,
-    bucketPublishingPending:    r.bucket_publishing_pending,
-    bucketQcPending:            r.bucket_qc_pending,
-    bucketSold:                 r.bucket_sold,
-    bucketOthers:               r.bucket_others,
-  };
-}
-
-// ─── GET /api/summary ────────────────────────────────────────────────────────
+// ─── GET /api/summary ─────────────────────────────────────────────────────────
 
 app.get("/api/summary", async (_req, res) => {
-  const meta         = db.prepare("SELECT MAX(synced_at) AS last_sync, COUNT(*) AS total_rows FROM vins").get();
-  const totals       = toTotals(db.prepare("SELECT * FROM v_totals").get());
-  const byRooftop    = db.prepare("SELECT * FROM v_by_rooftop").all().map(toRooftopRow);
-  const byEnterprise = db.prepare("SELECT * FROM v_by_enterprise").all().map(toEnterpriseRow);
-  const byCSM        = db.prepare("SELECT * FROM v_by_csm").all().map(toCsmRow);
-  const byType       = db.prepare("SELECT * FROM v_by_type").all().map(toTypeRow);
-  const byBucket     = db.prepare(`
-    SELECT reason_bucket AS label, COUNT(*) AS count
-    FROM vins
-    WHERE status != 'Delivered' AND COALESCE(after_24h,0)=1
-      AND reason_bucket IS NOT NULL AND reason_bucket != ''
-    GROUP BY reason_bucket
-    ORDER BY
-      CASE reason_bucket
-        WHEN 'Processing Pending' THEN 1
-        WHEN 'Publishing Pending' THEN 2
-        WHEN 'QC Pending'         THEN 3
-        WHEN 'Sold'               THEN 4
-        ELSE 5
-      END, reason_bucket
-  `).all().map(r => ({ label: r.label, count: r.count }));
-  res.json({ lastSync: meta?.last_sync ?? null, totalRows: meta?.total_rows ?? 0, totals, byRooftop, byEnterprise, byCSM, byType, byBucket });
+  const [metaRes, totalsRes, byRooftopRes, byEnterpriseRes, byCsmRes, byTypeRes, byBucketRes] = await Promise.all([
+    query("SELECT MAX(synced_at) AS last_sync, COUNT(*)::int AS total_rows FROM vins"),
+    query("SELECT * FROM v_totals"),
+    query("SELECT * FROM v_by_rooftop"),
+    query("SELECT * FROM v_by_enterprise"),
+    query("SELECT * FROM v_by_csm"),
+    query("SELECT * FROM v_by_type"),
+    query(`
+      SELECT reason_bucket AS label, COUNT(*)::int AS count
+      FROM vins
+      WHERE status != 'Delivered' AND COALESCE(after_24h,0)=1
+        AND reason_bucket IS NOT NULL AND reason_bucket != ''
+      GROUP BY reason_bucket
+      ORDER BY
+        CASE reason_bucket
+          WHEN 'Processing Pending' THEN 1
+          WHEN 'Publishing Pending' THEN 2
+          WHEN 'QC Pending'         THEN 3
+          WHEN 'Sold'               THEN 4
+          ELSE 5
+        END, reason_bucket
+    `),
+  ]);
+
+  const meta = metaRes.rows[0];
+  res.json({
+    lastSync:    meta?.last_sync  ?? null,
+    totalRows:   meta?.total_rows ?? 0,
+    totals:      toTotals(totalsRes.rows[0]),
+    byRooftop:   byRooftopRes.rows.map(toRooftopRow),
+    byEnterprise: byEnterpriseRes.rows.map(toEnterpriseRow),
+    byCSM:       byCsmRes.rows.map(toCsmRow),
+    byType:      byTypeRes.rows.map(toTypeRow),
+    byBucket:    byBucketRes.rows.map(r => ({ label: r.label, count: r.count })),
+  });
 });
 
-// ─── GET /api/vins ───────────────────────────────────────────────────────────
+// ─── GET /api/vins ────────────────────────────────────────────────────────────
 
-app.get("/api/vins", (req, res) => {
+app.get("/api/vins", async (req, res) => {
   const page     = Math.max(1, parseInt(req.query.page)     || 1);
   const pageSize = Math.min(500, Math.max(10, parseInt(req.query.pageSize) || 50));
   const offset   = (page - 1) * pageSize;
@@ -451,14 +494,14 @@ app.get("/api/vins", (req, res) => {
   const { where, params } = buildVinFilters(req.query);
   const orderBy = buildVinSort(req.query);
 
-  const total = db.prepare(`SELECT COUNT(*) AS n ${VIN_FROM} ${where}`).get(...params).n;
-  const rows  = db.prepare(`
-    ${VIN_SELECT} ${where}
-    ORDER BY ${orderBy}
-    LIMIT ${pageSize} OFFSET ${offset}
-  `).all(...params);
+  const [countRes, rowsRes] = await Promise.all([
+    query(`SELECT COUNT(*)::int AS n ${VIN_FROM} ${where}`, params),
+    query(`${VIN_SELECT} ${where} ORDER BY ${orderBy} LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+      [...params, pageSize, offset]),
+  ]);
 
-  res.json({ data: rows.map(toApiRow), total, page, pageSize, pageCount: Math.ceil(total / pageSize) });
+  const total = countRes.rows[0].n;
+  res.json({ data: rowsRes.rows.map(toApiRow), total, page, pageSize, pageCount: Math.ceil(total / pageSize) });
 });
 
 // Keep old path as alias
@@ -466,17 +509,12 @@ app.get("/api/vins/raw", (req, res) => {
   res.redirect(307, `/api/vins?${new URLSearchParams(req.query)}`);
 });
 
-// ─── GET /api/vins/export ────────────────────────────────────────────────────
+// ─── GET /api/vins/export ─────────────────────────────────────────────────────
 
-app.get("/api/vins/export", (req, res) => {
+app.get("/api/vins/export", async (req, res) => {
   const { where, params } = buildVinFilters(req.query);
   const orderBy = buildVinSort(req.query);
-
-  const rows = db.prepare(`
-    ${VIN_SELECT} ${where}
-    ORDER BY ${orderBy}
-  `).all(...params);
-
+  const { rows } = await query(`${VIN_SELECT} ${where} ORDER BY ${orderBy}`, params);
   res.json({ data: rows.map(toApiRow) });
 });
 

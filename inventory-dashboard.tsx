@@ -1353,8 +1353,8 @@ export default function Dashboard() {
       .catch(err => { setFetchError(err.message); setRawLoading(false); });
   }, []);
 
-  // On mount: load DB. Always clear loading after the check.
-  // If DB is empty, kick off a background sync — the syncing banner takes over.
+  // On mount: load DB. If empty, run a full sync (awaited — POST /api/sync blocks
+  // until Metabase fetch + DB insert are complete, then we reload summary).
   useEffect(() => {
     loadSummary()
       .then(data => {
@@ -1362,38 +1362,14 @@ export default function Dashboard() {
         if (!data) {
           setSyncing(true);
           fetch(`${API_BASE}/api/sync`, { method: "POST" })
+            .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+            .then(() => loadSummary())
+            .then(() => setSyncing(false))
             .catch(err => { setFetchError(err.message); setSyncing(false); });
         }
       })
       .catch(err => { setFetchError(err.message); setLoading(false); });
   }, []);
-
-  // While syncing, poll /api/sync/status every 3s. Stop after 8 minutes.
-  useEffect(() => {
-    if (!syncing) return;
-    const TIMEOUT_MS = 8 * 60 * 1000;
-    const startedAt = Date.now();
-    const poll = setInterval(() => {
-      if (Date.now() - startedAt > TIMEOUT_MS) {
-        clearInterval(poll);
-        setSyncing(false);
-        loadSummary().catch(() => {});
-        return;
-      }
-      fetch(`${API_BASE}/api/sync/status`)
-        .then(r => r.json())
-        .then(({ running, lastSync: ls }) => {
-          if (!running) {
-            clearInterval(poll);
-            setSyncing(false);
-            if (ls) setLastSync(ls);
-            loadSummary().catch(() => {});
-          }
-        })
-        .catch(() => { /* keep polling on transient network errors */ });
-    }, 3000);
-    return () => clearInterval(poll);
-  }, [syncing, loadSummary]);
 
   // Load raw page when switching to VIN Data tab or when filters/page/sort change
   useEffect(() => {
@@ -1413,13 +1389,16 @@ export default function Dashboard() {
     setRawPage(1);
   }, []);
 
-  // Sync from Metabase — fires background sync, polling effect reloads when done
+  // Sync from Metabase — awaits full sync, then reloads summary
   const syncNow = useCallback(() => {
     setSyncing(true);
     setFetchError(null);
     fetch(`${API_BASE}/api/sync`, { method: "POST" })
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+      .then(() => loadSummary())
+      .then(() => setSyncing(false))
       .catch(err => { setFetchError(err.message); setSyncing(false); });
-  }, []);
+  }, [loadSummary]);
 
   const s = summary ?? EMPTY_SUMMARY;
 
