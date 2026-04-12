@@ -505,6 +505,9 @@ function RawTab({ data, loading, filters, setFilters, total, page, pageCount, on
 
 function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterpriseOptions = [], bucketFlags = {}, rows, total, page, pageCount, loading, onPageChange, onDrillDown, filters, setFilters, sortCol, sortDir, onSortChange }) {
   const [downloading, setDownloading] = useState(false);
+  const row1Ref = useRef<HTMLTableRowElement>(null);
+  const [row1H, setRow1H] = useState(0);
+  useEffect(() => { if (row1Ref.current) setRow1H(row1Ref.current.getBoundingClientRect().height); });
 
   const SCORE_OPTIONS = ["Poor (<6)", "Average (6–8)", "Good (8+)"];
 
@@ -515,6 +518,7 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
   };
 
   const activeBuckets = BUCKETS.filter(b => bucketFlags[b.key]);
+  const pendencyColSpan = 1 + activeBuckets.length;
   const activeCount = [filters.rooftopType, filters.csm, filters.enterprise, filters.websiteScore, filters.imsIntegration, filters.publishingStatus].filter(Boolean).length;
   const cols = [
     { key: "enterprise",             label: "Enterprise Name" },
@@ -526,9 +530,8 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
     { key: "total",                  label: "Total Inventory",  numeric: true },
     { key: "processed",              label: "VINs Delivered",   numeric: true },
     { key: "notProcessedAfter24",    label: "Pending VINs >24h",   numeric: true },
-    { key: "rate",                   label: "Pending VINs >24h %", numeric: true },
-    { key: "websiteScore",           label: "Website Score",       numeric: true },
     ...activeBuckets.map(b => ({ key: b.key, label: b.label, numeric: true })),
+    { key: "websiteScore",           label: "Website Score",       numeric: true },
     { key: "_links",                 label: "Links",               numeric: true, noSort: true },
   ];
 
@@ -633,11 +636,54 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
       <div style={{ maxHeight: "calc(100vh - 260px)", overflow: "auto", borderRadius: 10, border: "1px solid #e5e7eb" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
           <thead>
-            <tr style={{ background: "#f9fafb" }}>
-              <th style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2, width: 48, whiteSpace: "nowrap" }}>S. No.</th>
-              {cols.map(c => (
-                <th key={c.key} onClick={() => !c.noSort && handleSort(c.key)} style={{ padding: "10px 14px", textAlign: c.numeric ? "center" : "left", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: c.noSort ? "default" : "pointer", userSelect: "none", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
-                  {c.label} {!c.noSort && (sortCol === c.key ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>)}
+            {/* Row 1 — main column headers (rowSpan=2) + pendency group label */}
+            <tr ref={row1Ref} style={{ background: "#f9fafb" }}>
+              <th rowSpan={2} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2, width: 48, whiteSpace: "nowrap" }}>S. No.</th>
+              {[
+                { key: "enterprise", label: "Enterprise Name" },
+                { key: "name", label: "Rooftop Name" },
+                { key: "type", label: "Type" },
+                { key: "csm", label: "CSM" },
+              ].map(c => (
+                <th key={c.key} rowSpan={2} onClick={() => handleSort(c.key)} style={{ padding: "10px 14px", textAlign: "left", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "pointer", userSelect: "none", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
+                  {c.label} {sortCol === c.key ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
+                </th>
+              ))}
+              {[
+                { key: "imsIntegrationStatus", label: "IMS Integration" },
+                { key: "publishingStatus", label: "Publishing" },
+              ].map(c => (
+                <th key={c.key} rowSpan={2} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "default", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
+                  {c.label}
+                </th>
+              ))}
+              {[
+                { key: "total", label: "Total Inventory" },
+                { key: "processed", label: "VINs Delivered" },
+              ].map(c => (
+                <th key={c.key} rowSpan={2} onClick={() => handleSort(c.key)} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "pointer", userSelect: "none", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
+                  {c.label} {sortCol === c.key ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
+                </th>
+              ))}
+              {/* Pendency group header */}
+              <th colSpan={pendencyColSpan} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#92400e", background: "#fffbeb", position: "sticky", top: 0, zIndex: 2, borderLeft: "2px solid #fcd34d", borderRight: "2px solid #fcd34d", boxShadow: "inset 0 -1px 0 #fde68a", whiteSpace: "nowrap" }}>
+                Pendency &gt;24h
+              </th>
+              <th rowSpan={2} onClick={() => handleSort("websiteScore")} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "pointer", userSelect: "none", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
+                Website Score {sortCol === "websiteScore" ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
+              </th>
+              <th rowSpan={2} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "default", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
+                Links
+              </th>
+            </tr>
+            {/* Row 2 — pendency sub-headers */}
+            <tr style={{ background: "#fffbeb" }}>
+              <th onClick={() => handleSort("notProcessedAfter24")} style={{ padding: "5px 8px", fontSize: 11, fontWeight: 600, color: "#92400e", background: "#fffbeb", position: "sticky", top: row1H, zIndex: 3, whiteSpace: "nowrap", cursor: "pointer", userSelect: "none", textAlign: "center", borderLeft: "2px solid #fcd34d", boxShadow: "inset 0 -2px 0 #e5e7eb", ...(activeBuckets.length === 0 ? { borderRight: "2px solid #fcd34d" } : {}) }}>
+                Total {sortCol === "notProcessedAfter24" ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
+              </th>
+              {activeBuckets.map((b, idx) => (
+                <th key={b.key} onClick={() => handleSort(b.key)} style={{ padding: "5px 8px", fontSize: 11, fontWeight: 600, color: "#92400e", background: "#fffbeb", position: "sticky", top: row1H, zIndex: 3, whiteSpace: "nowrap", cursor: "pointer", userSelect: "none", textAlign: "center", boxShadow: "inset 0 -2px 0 #e5e7eb", ...(idx === activeBuckets.length - 1 ? { borderRight: "2px solid #fcd34d" } : {}) }}>
+                  {b.label.replace(" Pending", "").replace("Others", "Other")} {sortCol === b.key ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
                 </th>
               ))}
             </tr>
@@ -660,19 +706,21 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
                   <td style={{ ...tdStyle, textAlign: "center" }}><StatusBadge value={r.publishingStatus} /></td>
                   <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.total} color="#4f46e5" onClick={() => onDrillDown({ rooftopId: r.rooftopId })} /></td>
                   <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.processed} color="#166534" onClick={() => onDrillDown({ rooftopId: r.rooftopId, status: "Delivered" })} /></td>
-                  <td style={{ ...tdStyle, textAlign: "center" }}>
-                    {r.notProcessedAfter24 > 0
-                      ? <span onClick={() => onDrillDown({ rooftopId: r.rooftopId, status: "Not Delivered", after24h: true })} style={{ cursor: "pointer" }}><Badge label={r.notProcessedAfter24} color="red" /></span>
-                      : <span style={{ color: "#9ca3af" }}>0</span>}
-                  </td>
-                  <td style={{ ...tdStyle, textAlign: "center" }}>
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
-                      <div style={{ width: 60, height: 8, background: "#e5e7eb", borderRadius: 4, overflow: "hidden" }}>
-                        <div style={{ width: `${rate}%`, height: "100%", background: rate >= 30 ? "#ef4444" : rate >= 15 ? "#eab308" : "#22c55e", borderRadius: 4 }} />
-                      </div>
-                      <span style={{ fontSize: 12, fontWeight: 600, color: "#374151" }}>{rate.toFixed(0)}%</span>
+                  {/* Pendency group: Total (count + %) */}
+                  <td style={{ ...tdStyle, textAlign: "center", borderLeft: "2px solid #fcd34d", ...(activeBuckets.length === 0 ? { borderRight: "2px solid #fcd34d" } : {}) }}>
+                    <div style={{ display: "flex", flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 5 }}>
+                      {r.notProcessedAfter24 > 0
+                        ? <span onClick={() => onDrillDown({ rooftopId: r.rooftopId, status: "Not Delivered", after24h: true })} style={{ cursor: "pointer" }}><Badge label={r.notProcessedAfter24} color="red" /></span>
+                        : <span style={{ color: "#9ca3af" }}>0</span>}
+                      <span style={{ fontSize: 11, color: "#6b7280" }}>{rate.toFixed(0)}%</span>
                     </div>
                   </td>
+                  {/* Pendency group: bucket split columns */}
+                  {activeBuckets.map((b, idx) => (
+                    <td key={b.key} style={{ ...tdStyle, textAlign: "center", ...(idx === activeBuckets.length - 1 ? { borderRight: "2px solid #fcd34d" } : {}) }}>
+                      {(r[b.key] ?? 0) > 0 ? <Badge label={r[b.key]} color="amber" /> : <span style={{ color: "#9ca3af" }}>0</span>}
+                    </td>
+                  ))}
                   <td style={{ ...tdStyle, textAlign: "center" }}>
                     {r.websiteScore !== null && r.websiteScore !== undefined
                       ? <span style={{ fontWeight: 700, color: r.websiteScore >= 8 ? "#166534" : r.websiteScore >= 6 ? "#92400e" : "#991b1b" }}>
@@ -680,11 +728,6 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
                         </span>
                       : <span style={{ color: "#9ca3af" }}>—</span>}
                   </td>
-                  {activeBuckets.map(b => (
-                    <td key={b.key} style={{ ...tdStyle, textAlign: "center" }}>
-                      {(r[b.key] ?? 0) > 0 ? <Badge label={r[b.key]} color="amber" /> : <span style={{ color: "#9ca3af" }}>0</span>}
-                    </td>
-                  ))}
                   <td style={{ ...tdStyle, textAlign: "center" }}>
                     <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
                       <a href={`https://console.spyne.ai/home?enterprise_id=${r.enterpriseId}&team_id=${r.rooftopId}`} target="_blank" rel="noreferrer" title="Open in Console"
@@ -732,12 +775,16 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
 
 function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = false, hasPublishingDisabled = false, bucketFlags = {}, rows, total, page, pageCount, loading, onPageChange, onDrillDown, filters = DEFAULT_ENTERPRISE_FILTERS, setFilters = (_f) => {}, sortCol, sortDir, onSortChange }) {
   const [downloading, setDownloading] = useState(false);
+  const row1Ref = useRef<HTMLTableRowElement>(null);
+  const [row1H, setRow1H] = useState(0);
+  useEffect(() => { if (row1Ref.current) setRow1H(row1Ref.current.getBoundingClientRect().height); });
 
   const tdStyle = { padding: "10px 14px", borderBottom: "1px solid #f3f4f6" };
 
   const SCORE_OPTIONS = ["Poor (<6)", "Average (6–8)", "Good (8+)"];
 
   const activeBuckets = BUCKETS.filter(b => bucketFlags[b.key]);
+  const pendencyColSpan = 1 + activeBuckets.length;
   const showNotIntegrated      = hasNotIntegrated;
   const showPublishingDisabled = hasPublishingDisabled;
   const cols = [
@@ -753,9 +800,8 @@ function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = f
     { key: "processedAfter24",    label: "Delivered VINs >24h", numeric: true },
     { key: "notProcessed",        label: "Pending VINs",        numeric: true },
     { key: "notProcessedAfter24", label: "Pending VINs >24h",   numeric: true },
-    { key: "rate",                label: "Pending VINs >24h %", numeric: true },
-    { key: "avgWebsiteScore",     label: "Avg Website Score",   numeric: true },
     ...activeBuckets.map(b => ({ key: b.key, label: b.label, numeric: true })),
+    { key: "avgWebsiteScore",     label: "Avg Website Score",   numeric: true },
     { key: "_links",              label: "Links",               numeric: true, noSort: true },
   ];
 
@@ -841,12 +887,51 @@ function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = f
       <div style={{ maxHeight: "calc(100vh - 260px)", overflow: "auto", borderRadius: 10, border: "1px solid #e5e7eb" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
           <thead>
-            <tr style={{ background: "#f9fafb" }}>
-              <th style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2, width: 48, whiteSpace: "nowrap" }}>S. No.</th>
-              {cols.map(c => (
-                <th key={c.key} onClick={() => !c.noSort && handleSort(c.key)}
-                  style={{ padding: "10px 14px", textAlign: c.numeric ? "center" : "left", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: c.noSort ? "default" : "pointer", userSelect: "none", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
-                  {c.label} {!c.noSort && (sortCol === c.key ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>)}
+            {/* Row 1 — main column headers (rowSpan=2) + pendency group label */}
+            <tr ref={row1Ref} style={{ background: "#f9fafb" }}>
+              <th rowSpan={2} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2, width: 48, whiteSpace: "nowrap" }}>S. No.</th>
+              {[
+                { key: "id", label: "Enterprise ID", numeric: false },
+                { key: "name", label: "Enterprise Name", numeric: false },
+                { key: "accountType", label: "Account Type", numeric: false },
+                { key: "csm", label: "CSM", numeric: false },
+              ].map(c => (
+                <th key={c.key} rowSpan={2} onClick={() => handleSort(c.key)} style={{ padding: "10px 14px", textAlign: "left", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "pointer", userSelect: "none", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
+                  {c.label} {sortCol === c.key ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
+                </th>
+              ))}
+              {[
+                { key: "rooftopCount", label: "Rooftops" },
+                ...(showNotIntegrated      ? [{ key: "notIntegratedCount",      label: "Not Integrated" }]      : []),
+                ...(showPublishingDisabled ? [{ key: "publishingDisabledCount", label: "Publishing Disabled" }] : []),
+                { key: "total",            label: "Total Inventory" },
+                { key: "processed",        label: "VIN Delivered" },
+                { key: "processedAfter24", label: "Delivered VINs >24h" },
+                { key: "notProcessed",     label: "Pending VINs" },
+              ].map(c => (
+                <th key={c.key} rowSpan={2} onClick={() => handleSort(c.key)} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "pointer", userSelect: "none", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
+                  {c.label} {sortCol === c.key ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
+                </th>
+              ))}
+              {/* Pendency group header */}
+              <th colSpan={pendencyColSpan} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#92400e", background: "#fffbeb", position: "sticky", top: 0, zIndex: 2, borderLeft: "2px solid #fcd34d", borderRight: "2px solid #fcd34d", boxShadow: "inset 0 -1px 0 #fde68a", whiteSpace: "nowrap" }}>
+                Pendency &gt;24h
+              </th>
+              <th rowSpan={2} onClick={() => handleSort("avgWebsiteScore")} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "pointer", userSelect: "none", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
+                Avg Website Score {sortCol === "avgWebsiteScore" ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
+              </th>
+              <th rowSpan={2} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "default", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
+                Links
+              </th>
+            </tr>
+            {/* Row 2 — pendency sub-headers */}
+            <tr style={{ background: "#fffbeb" }}>
+              <th onClick={() => handleSort("notProcessedAfter24")} style={{ padding: "5px 8px", fontSize: 11, fontWeight: 600, color: "#92400e", background: "#fffbeb", position: "sticky", top: row1H, zIndex: 3, whiteSpace: "nowrap", cursor: "pointer", userSelect: "none", textAlign: "center", borderLeft: "2px solid #fcd34d", boxShadow: "inset 0 -2px 0 #e5e7eb", ...(activeBuckets.length === 0 ? { borderRight: "2px solid #fcd34d" } : {}) }}>
+                Total {sortCol === "notProcessedAfter24" ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
+              </th>
+              {activeBuckets.map((b, idx) => (
+                <th key={b.key} onClick={() => handleSort(b.key)} style={{ padding: "5px 8px", fontSize: 11, fontWeight: 600, color: "#92400e", background: "#fffbeb", position: "sticky", top: row1H, zIndex: 3, whiteSpace: "nowrap", cursor: "pointer", userSelect: "none", textAlign: "center", boxShadow: "inset 0 -2px 0 #e5e7eb", ...(idx === activeBuckets.length - 1 ? { borderRight: "2px solid #fcd34d" } : {}) }}>
+                  {b.label.replace(" Pending", "").replace("Others", "Other")} {sortCol === b.key ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
                 </th>
               ))}
             </tr>
@@ -888,19 +973,21 @@ function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = f
                       : <span style={{ color: "#9ca3af" }}>0</span>}
                   </td>
                   <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.notProcessed} color="#991b1b" onClick={() => onDrillDown({ enterpriseId: r.id, status: "Not Delivered" })} /></td>
-                  <td style={{ ...tdStyle, textAlign: "center" }}>
-                    {r.notProcessedAfter24 > 0
-                      ? <span onClick={() => onDrillDown({ enterpriseId: r.id, status: "Not Delivered", after24h: true })} style={{ cursor: "pointer" }}><Badge label={r.notProcessedAfter24} color="red" /></span>
-                      : <span style={{ color: "#9ca3af" }}>0</span>}
-                  </td>
-                  <td style={{ ...tdStyle, textAlign: "center" }}>
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
-                      <div style={{ width: 80, height: 8, background: "#e5e7eb", borderRadius: 4, overflow: "hidden" }}>
-                        <div style={{ width: `${rate}%`, height: "100%", background: rate >= 30 ? "#ef4444" : rate >= 15 ? "#eab308" : "#22c55e", borderRadius: 4 }} />
-                      </div>
-                      <span style={{ fontSize: 12, fontWeight: 600, color: "#374151" }}>{rate.toFixed(0)}%</span>
+                  {/* Pendency group: Total (count + %) */}
+                  <td style={{ ...tdStyle, textAlign: "center", borderLeft: "2px solid #fcd34d", ...(activeBuckets.length === 0 ? { borderRight: "2px solid #fcd34d" } : {}) }}>
+                    <div style={{ display: "flex", flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 5 }}>
+                      {r.notProcessedAfter24 > 0
+                        ? <span onClick={() => onDrillDown({ enterpriseId: r.id, status: "Not Delivered", after24h: true })} style={{ cursor: "pointer" }}><Badge label={r.notProcessedAfter24} color="red" /></span>
+                        : <span style={{ color: "#9ca3af" }}>0</span>}
+                      <span style={{ fontSize: 11, color: "#6b7280" }}>{rate.toFixed(0)}%</span>
                     </div>
                   </td>
+                  {/* Pendency group: bucket split columns */}
+                  {activeBuckets.map((b, idx) => (
+                    <td key={b.key} style={{ ...tdStyle, textAlign: "center", ...(idx === activeBuckets.length - 1 ? { borderRight: "2px solid #fcd34d" } : {}) }}>
+                      {(r[b.key] ?? 0) > 0 ? <Badge label={r[b.key]} color="amber" /> : <span style={{ color: "#9ca3af" }}>0</span>}
+                    </td>
+                  ))}
                   <td style={{ ...tdStyle, textAlign: "center" }}>
                     {r.avgWebsiteScore !== null && r.avgWebsiteScore !== undefined
                       ? <span style={{ fontWeight: 700, color: r.avgWebsiteScore >= 8 ? "#166534" : r.avgWebsiteScore >= 6 ? "#92400e" : "#991b1b" }}>
@@ -908,11 +995,6 @@ function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = f
                         </span>
                       : <span style={{ color: "#9ca3af" }}>—</span>}
                   </td>
-                  {activeBuckets.map(b => (
-                    <td key={b.key} style={{ ...tdStyle, textAlign: "center" }}>
-                      {(r[b.key] ?? 0) > 0 ? <Badge label={r[b.key]} color="amber" /> : <span style={{ color: "#9ca3af" }}>0</span>}
-                    </td>
-                  ))}
                   <td style={{ ...tdStyle, textAlign: "center" }}>
                     <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
                       <a href={`https://console.spyne.ai/home?enterprise_id=${r.id}`} target="_blank" rel="noreferrer" title="Open in Console"
