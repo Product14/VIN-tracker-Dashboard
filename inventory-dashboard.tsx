@@ -355,12 +355,29 @@ function FilterBar({ filters, setFilters, rooftopOptions = [], typeOptions = [],
   );
 }
 
-function RawTab({ data, filters, setFilters, total, page, pageCount, onPageChange, rooftopOptions, typeOptions, csmOptions, enterpriseObjects = [], sortCol, sortDir, onSortChange }) {
+function TableShimmer({ cols, rows = 10 }: { cols: number; rows?: number }) {
+  const widths = [55, 80, 40, 65, 50, 45, 70, 35, 60, 75, 48, 42];
+  return (
+    <>
+      {Array.from({ length: rows }).map((_, i) => (
+        <tr key={i} style={{ background: i % 2 === 0 ? "#fff" : "#f9fafb" }}>
+          {Array.from({ length: cols }).map((_, j) => (
+            <td key={j} style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}>
+              <div className="shimmer-cell" style={{ height: 13, borderRadius: 4, width: `${widths[j % widths.length]}%` }} />
+            </td>
+          ))}
+        </tr>
+      ))}
+    </>
+  );
+}
+
+function RawTab({ data, loading, filters, setFilters, total, page, pageCount, onPageChange, rooftopOptions, typeOptions, csmOptions, enterpriseObjects = [], sortCol, sortDir, onSortChange }) {
   const [downloading, setDownloading] = useState(false);
 
   const handleSort = (col) => {
-    if (sortCol !== col) { onSortChange(col, "asc"); }
-    else if (sortDir === "asc") { onSortChange(col, "desc"); }
+    if (sortCol !== col) { onSortChange(col, "desc"); }
+    else if (sortDir === "desc") { onSortChange(col, "asc"); }
     else { onSortChange(null, "asc"); }
   };
 
@@ -428,8 +445,9 @@ function RawTab({ data, filters, setFilters, total, page, pageCount, onPageChang
               ))}
             </tr>
           </thead>
-          <tbody>
-            {data.length === 0 && (
+          <tbody className={loading && data.length > 0 ? "tbody-loading" : ""}>
+            {loading && data.length === 0 && <TableShimmer cols={12} />}
+            {!loading && data.length === 0 && (
               <tr><td colSpan={12} style={{ padding: 40, textAlign: "center", color: "#9ca3af", fontSize: 14 }}>No records match the current filters.</td></tr>
             )}
             {data.map((d, i) => (
@@ -485,9 +503,8 @@ function RawTab({ data, filters, setFilters, total, page, pageCount, onPageChang
   );
 }
 
-function RooftopTab({ allRooftops, onDrillDown, filters, setFilters }) {
-  const [sortCol, setSortCol] = useState("notProcessedAfter24");
-  const [sortDir, setSortDir] = useState("desc");
+function RooftopTab({ allRooftops, rows, total, page, pageCount, loading, onPageChange, onDrillDown, filters, setFilters, sortCol, sortDir, onSortChange }) {
+  const [downloading, setDownloading] = useState(false);
 
   const types = [...new Set(allRooftops.map(r => r.type))].sort();
   const csms = [...new Set(allRooftops.map(r => r.csm))].sort();
@@ -495,43 +512,10 @@ function RooftopTab({ allRooftops, onDrillDown, filters, setFilters }) {
 
   const SCORE_OPTIONS = ["Poor (<6)", "Average (6–8)", "Good (8+)"];
 
-  const filtered = useMemo(() => allRooftops.filter(r => {
-    if (filters.rooftopType && r.type !== filters.rooftopType) return false;
-    if (filters.csm && r.csm !== filters.csm) return false;
-    if (filters.enterprise && r.enterprise !== filters.enterprise) return false;
-    if (filters.websiteScore) {
-      const s = r.websiteScore;
-      if (filters.websiteScore === "Poor (<6)"     && !(s !== null && s !== undefined && s < 6))  return false;
-      if (filters.websiteScore === "Average (6–8)" && !(s !== null && s !== undefined && s >= 6 && s < 8)) return false;
-      if (filters.websiteScore === "Good (8+)"     && !(s !== null && s !== undefined && s >= 8)) return false;
-    }
-    if (filters.imsIntegration === "Yes" && r.imsIntegrationStatus !== "true") return false;
-    if (filters.imsIntegration === "No"  && r.imsIntegrationStatus === "true") return false;
-    if (filters.publishingStatus === "Yes" && r.publishingStatus !== "true") return false;
-    if (filters.publishingStatus === "No"  && r.publishingStatus === "true") return false;
-    if (filters.search) {
-      const s = filters.search.toLowerCase();
-      if (!r.name.toLowerCase().includes(s) && !r.csm.toLowerCase().includes(s)) return false;
-    }
-    return true;
-  }), [allRooftops, filters]);
-
-  const sorted = useMemo(() => {
-    if (!sortCol) return filtered;
-    return [...filtered].sort((a, b) => {
-      const va = sortCol === "rate" ? (a.total === 0 ? 0 : a.notProcessedAfter24 / a.total) : a[sortCol];
-      const vb = sortCol === "rate" ? (b.total === 0 ? 0 : b.notProcessedAfter24 / b.total) : b[sortCol];
-      if (va === null || va === undefined) return 1;
-      if (vb === null || vb === undefined) return -1;
-      if (typeof va === "string") return sortDir === "asc" ? va.localeCompare(vb) : vb.localeCompare(va);
-      return sortDir === "asc" ? (va > vb ? 1 : -1) : (va < vb ? 1 : -1);
-    });
-  }, [filtered, sortCol, sortDir]);
-
   const handleSort = col => {
-    if (sortCol !== col) { setSortCol(col); setSortDir("asc"); }
-    else if (sortDir === "asc") { setSortDir("desc"); }
-    else { setSortCol(null); setSortDir("asc"); }
+    if (sortCol !== col) { onSortChange(col, "desc"); }
+    else if (sortDir === "desc") { onSortChange(col, "asc"); }
+    else { onSortChange(null, "asc"); }
   };
 
   const activeBuckets = BUCKETS.filter(b => allRooftops.some(r => (r[b.key] ?? 0) > 0));
@@ -554,19 +538,43 @@ function RooftopTab({ allRooftops, onDrillDown, filters, setFilters }) {
 
   const tdStyle = { padding: "10px 14px", borderBottom: "1px solid #f3f4f6" };
 
-  const handleDownload = () => {
-    const headers = ["Enterprise Name", "Rooftop Name", "Type", "CSM", "IMS Integration", "Publishing", "Total Inventory", "VINs Delivered", "Pending VINs >24h", "Pending VINs >24h %", "Website Score", ...activeBuckets.map(b => b.label)];
-    const rows = sorted.map(r => {
-      const rate = r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0);
-      return [r.enterprise, r.name, r.type, r.csm, r.imsIntegrationStatus ?? "", r.publishingStatus ?? "", r.total, r.processed, r.notProcessedAfter24, rate, r.websiteScore !== null && r.websiteScore !== undefined ? Number(r.websiteScore).toFixed(1) : "", ...activeBuckets.map(b => r[b.key] ?? 0)];
-    });
-    downloadCSV("rooftop-view.csv", headers, rows);
+  const handleDownload = async () => {
+    setDownloading(true);
+    const params = new URLSearchParams();
+    if (filters.search)           params.set("search",          filters.search);
+    if (filters.rooftopType)      params.set("type",            filters.rooftopType);
+    if (filters.csm)              params.set("csm",             filters.csm);
+    if (filters.enterprise)       params.set("enterprise",      filters.enterprise);
+    if (filters.imsIntegration)   params.set("imsIntegration",  filters.imsIntegration);
+    if (filters.publishingStatus) params.set("publishingStatus", filters.publishingStatus);
+    if (filters.websiteScore)     params.set("websiteScore",    filters.websiteScore);
+    if (sortCol) { params.set("sortBy", sortCol); params.set("sortDir", sortDir); }
+    try {
+      const res = await fetch(`${API_BASE}/api/rooftops/export?${params}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const { data } = await res.json();
+      const headers = ["Enterprise Name", "Rooftop Name", "Type", "CSM", "IMS Integration", "Publishing", "Total Inventory", "VINs Delivered", "Pending VINs >24h", "Pending VINs >24h %", "Website Score", ...activeBuckets.map(b => b.label)];
+      const csvRows = data.map(r => {
+        const rate = r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0);
+        return [r.enterprise, r.name, r.type, r.csm, r.imsIntegrationStatus ?? "", r.publishingStatus ?? "", r.total, r.processed, r.notProcessedAfter24, rate, r.websiteScore !== null && r.websiteScore !== undefined ? Number(r.websiteScore).toFixed(1) : "", ...activeBuckets.map(b => r[b.key] ?? 0)];
+      });
+      downloadCSV("rooftop-view.csv", headers, csvRows);
+    } catch (err) {
+      console.error("Export failed:", err);
+    } finally {
+      setDownloading(false);
+    }
   };
 
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
-        <DownloadButton onClick={handleDownload} />
+        <button onClick={handleDownload} disabled={downloading} title="Download as CSV"
+          style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 14px", borderRadius: 8, border: "1px solid #d1d5db", background: downloading ? "#f3f4f6" : "#fff", fontSize: 13, fontWeight: 600, cursor: downloading ? "not-allowed" : "pointer", color: downloading ? "#9ca3af" : "#374151", transition: "all 0.15s" }}
+          onMouseEnter={e => { if (!downloading) { e.currentTarget.style.background = "#f9fafb"; e.currentTarget.style.borderColor = "#9ca3af"; } }}
+          onMouseLeave={e => { if (!downloading) { e.currentTarget.style.background = "#fff"; e.currentTarget.style.borderColor = "#d1d5db"; } }}>
+          {downloading ? "⟳ Downloading…" : "↓ Download CSV"}
+        </button>
       </div>
       <div style={{ marginBottom: 16 }}>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
@@ -638,15 +646,16 @@ function RooftopTab({ allRooftops, onDrillDown, filters, setFilters }) {
               ))}
             </tr>
           </thead>
-          <tbody>
-            {sorted.length === 0 && (
+          <tbody className={loading && rows.length > 0 ? "tbody-loading" : ""}>
+            {loading && rows.length === 0 && <TableShimmer cols={cols.length + 1} />}
+            {!loading && rows.length === 0 && (
               <tr><td colSpan={cols.length + 1} style={{ padding: 40, textAlign: "center", color: "#9ca3af", fontSize: 14 }}>No records match the current filters.</td></tr>
             )}
-            {sorted.map((r, i) => {
+            {rows.map((r, i) => {
               const rate = r.total === 0 ? 0 : (r.notProcessedAfter24 / r.total) * 100;
               return (
                 <tr key={r.rooftopId || r.name} style={{ background: i % 2 === 0 ? "#fff" : "#f9fafb" }}>
-                  <td style={{ ...tdStyle, textAlign: "center", color: "#9ca3af", fontSize: 12 }}>{i + 1}</td>
+                  <td style={{ ...tdStyle, textAlign: "center", color: "#9ca3af", fontSize: 12 }}>{(page - 1) * 50 + i + 1}</td>
                   <td style={tdStyle}><Truncated value={r.enterprise} maxWidth={180} /></td>
                   <td style={{ ...tdStyle, fontWeight: 600 }}><Truncated value={r.name} maxWidth={150} /></td>
                   <td style={tdStyle}><Badge label={r.type} color={r.type === "Franchise" ? "blue" : "gray"} /></td>
@@ -707,24 +716,36 @@ function RooftopTab({ allRooftops, onDrillDown, filters, setFilters }) {
           </tbody>
         </table>
       </div>
-      <div style={{ marginTop: 10, fontSize: 12, color: "#9ca3af" }}>Showing {sorted.length} of {allRooftops.length} rooftops</div>
+      <div style={{ marginTop: 10, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+        <span style={{ fontSize: 12, color: "#9ca3af" }}>Showing {rows.length} of {total.toLocaleString()} rooftops</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <button onClick={() => onPageChange(page - 1)} disabled={page <= 1}
+            style={{ padding: "5px 12px", borderRadius: 7, border: "1px solid #d1d5db", background: page <= 1 ? "#f3f4f6" : "#fff", fontSize: 13, fontWeight: 600, cursor: page <= 1 ? "not-allowed" : "pointer", color: page <= 1 ? "#9ca3af" : "#374151" }}>
+            ← Prev
+          </button>
+          <span style={{ fontSize: 12, color: "#6b7280" }}>Page {page} of {pageCount}</span>
+          <button onClick={() => onPageChange(page + 1)} disabled={page >= pageCount}
+            style={{ padding: "5px 12px", borderRadius: 7, border: "1px solid #d1d5db", background: page >= pageCount ? "#f3f4f6" : "#fff", fontSize: 13, fontWeight: 600, cursor: page >= pageCount ? "not-allowed" : "pointer", color: page >= pageCount ? "#9ca3af" : "#374151" }}>
+            Next →
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
 
-function EnterpriseTab({ enterprises, onDrillDown, filters = DEFAULT_ENTERPRISE_FILTERS, setFilters = (_f) => {} }) {
-  const [sortCol, setSortCol] = useState("notProcessedAfter24");
-  const [sortDir, setSortDir] = useState("desc");
+function EnterpriseTab({ enterprises, rows, total, page, pageCount, loading, onPageChange, onDrillDown, filters = DEFAULT_ENTERPRISE_FILTERS, setFilters = (_f) => {}, sortCol, sortDir, onSortChange }) {
+  const [downloading, setDownloading] = useState(false);
 
   const tdStyle = { padding: "10px 14px", borderBottom: "1px solid #f3f4f6" };
 
-  const csmOptions = useMemo(() => [...new Set(enterprises.map(r => r.csm).filter(Boolean))].sort() as string[], [enterprises]);
-  const typeOptions = useMemo(() => [...new Set(enterprises.map(r => r.accountType).filter(Boolean))].sort() as string[], [enterprises]);
+  const csmOptions = useMemo(() => [...new Set(enterprises.map((r: any) => r.csm).filter(Boolean))].sort() as string[], [enterprises]);
+  const typeOptions = useMemo(() => [...new Set(enterprises.map((r: any) => r.accountType).filter(Boolean))].sort() as string[], [enterprises]);
   const SCORE_OPTIONS = ["Poor (<6)", "Average (6–8)", "Good (8+)"];
 
-  const activeBuckets = BUCKETS.filter(b => enterprises.some(r => (r[b.key] ?? 0) > 0));
-  const showNotIntegrated      = enterprises.some(r => (r.notIntegratedCount ?? 0) > 0);
-  const showPublishingDisabled = enterprises.some(r => (r.publishingDisabledCount ?? 0) > 0);
+  const activeBuckets = BUCKETS.filter(b => enterprises.some((r: any) => (r[b.key] ?? 0) > 0));
+  const showNotIntegrated      = enterprises.some((r: any) => (r.notIntegratedCount ?? 0) > 0);
+  const showPublishingDisabled = enterprises.some((r: any) => (r.publishingDisabledCount ?? 0) > 0);
   const cols = [
     { key: "id",                  label: "Enterprise ID" },
     { key: "name",                label: "Enterprise Name" },
@@ -745,47 +766,33 @@ function EnterpriseTab({ enterprises, onDrillDown, filters = DEFAULT_ENTERPRISE_
   ];
 
   const handleSort = col => {
-    if (sortCol !== col) { setSortCol(col); setSortDir("asc"); }
-    else if (sortDir === "asc") { setSortDir("desc"); }
-    else { setSortCol(null); setSortDir("asc"); }
+    if (sortCol !== col) { onSortChange(col, "desc"); }
+    else if (sortDir === "desc") { onSortChange(col, "asc"); }
+    else { onSortChange(null, "asc"); }
   };
 
   const activeCount = [filters.csm, filters.accountType, filters.websiteScore].filter(Boolean).length;
 
-  const filtered = useMemo(() => {
-    return enterprises.filter(r => {
-      if (filters.csm && r.csm !== filters.csm) return false;
-      if (filters.accountType && r.accountType !== filters.accountType) return false;
-      if (filters.websiteScore) {
-        const s = r.avgWebsiteScore;
-        if (filters.websiteScore === "Poor (<6)"    && !(s !== null && s !== undefined && s < 6))  return false;
-        if (filters.websiteScore === "Average (6–8)" && !(s !== null && s !== undefined && s >= 6 && s < 8)) return false;
-        if (filters.websiteScore === "Good (8+)"    && !(s !== null && s !== undefined && s >= 8)) return false;
-      }
-      if (filters.search) {
-        const s = filters.search.toLowerCase();
-        if (!r.name.toLowerCase().includes(s) && !(r.id || "").toLowerCase().includes(s) && !(r.csm || "").toLowerCase().includes(s)) return false;
-      }
-      return true;
-    });
-  }, [enterprises, filters.search, filters.csm, filters.accountType, filters.websiteScore]);
-
-  const sorted = useMemo(() => {
-    if (!sortCol) return filtered;
-    return [...filtered].sort((a, b) => {
-      const va = sortCol === "rate" ? (a.total === 0 ? 0 : a.notProcessedAfter24 / a.total) : a[sortCol];
-      const vb = sortCol === "rate" ? (b.total === 0 ? 0 : b.notProcessedAfter24 / b.total) : b[sortCol];
-      if (va === null || va === undefined) return 1;
-      if (vb === null || vb === undefined) return -1;
-      if (typeof va === "string") return sortDir === "asc" ? va.localeCompare(vb) : vb.localeCompare(va);
-      return sortDir === "asc" ? (va > vb ? 1 : -1) : (va < vb ? 1 : -1);
-    });
-  }, [filtered, sortCol, sortDir]);
-
-  const handleDownload = () => {
-    const headers = ["Enterprise ID", "Enterprise Name", "Account Type", "CSM", "Rooftops", ...(showNotIntegrated ? ["Not Integrated"] : []), ...(showPublishingDisabled ? ["Publishing Disabled"] : []), "Total Inventory", "VIN Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h", "Pending VINs >24h %", "Avg Website Score", ...activeBuckets.map(b => b.label)];
-    const rows = sorted.map(r => [r.id, r.name, r.accountType ?? "", r.csm ?? "", r.rooftopCount ?? 0, ...(showNotIntegrated ? [r.notIntegratedCount ?? 0] : []), ...(showPublishingDisabled ? [r.publishingDisabledCount ?? 0] : []), r.total, r.processed, r.processedAfter24, r.notProcessed, r.notProcessedAfter24, r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0), r.avgWebsiteScore !== null && r.avgWebsiteScore !== undefined ? Number(r.avgWebsiteScore).toFixed(1) : "", ...activeBuckets.map(b => r[b.key] ?? 0)]);
-    downloadCSV("enterprise-view.csv", headers, rows);
+  const handleDownload = async () => {
+    setDownloading(true);
+    const params = new URLSearchParams();
+    if (filters.search)       params.set("search",      filters.search);
+    if (filters.csm)          params.set("csm",         filters.csm);
+    if (filters.accountType)  params.set("accountType", filters.accountType);
+    if (filters.websiteScore) params.set("websiteScore", filters.websiteScore);
+    if (sortCol) { params.set("sortBy", sortCol); params.set("sortDir", sortDir); }
+    try {
+      const res = await fetch(`${API_BASE}/api/enterprises/export?${params}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const { data } = await res.json();
+      const headers = ["Enterprise ID", "Enterprise Name", "Account Type", "CSM", "Rooftops", ...(showNotIntegrated ? ["Not Integrated"] : []), ...(showPublishingDisabled ? ["Publishing Disabled"] : []), "Total Inventory", "VIN Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h", "Pending VINs >24h %", "Avg Website Score", ...activeBuckets.map(b => b.label)];
+      const csvRows = data.map((r: any) => [r.id, r.name, r.accountType ?? "", r.csm ?? "", r.rooftopCount ?? 0, ...(showNotIntegrated ? [r.notIntegratedCount ?? 0] : []), ...(showPublishingDisabled ? [r.publishingDisabledCount ?? 0] : []), r.total, r.processed, r.processedAfter24, r.notProcessed, r.notProcessedAfter24, r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0), r.avgWebsiteScore !== null && r.avgWebsiteScore !== undefined ? Number(r.avgWebsiteScore).toFixed(1) : "", ...activeBuckets.map(b => r[b.key] ?? 0)]);
+      downloadCSV("enterprise-view.csv", headers, csvRows);
+    } catch (err) {
+      console.error("Export failed:", err);
+    } finally {
+      setDownloading(false);
+    }
   };
 
   return (
@@ -823,7 +830,12 @@ function EnterpriseTab({ enterprises, onDrillDown, filters = DEFAULT_ENTERPRISE_
             </button>
           )}
         </div>
-        <DownloadButton onClick={handleDownload} />
+        <button onClick={handleDownload} disabled={downloading} title="Download as CSV"
+          style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 14px", borderRadius: 8, border: "1px solid #d1d5db", background: downloading ? "#f3f4f6" : "#fff", fontSize: 13, fontWeight: 600, cursor: downloading ? "not-allowed" : "pointer", color: downloading ? "#9ca3af" : "#374151", transition: "all 0.15s" }}
+          onMouseEnter={e => { if (!downloading) { e.currentTarget.style.background = "#f9fafb"; e.currentTarget.style.borderColor = "#9ca3af"; } }}
+          onMouseLeave={e => { if (!downloading) { e.currentTarget.style.background = "#fff"; e.currentTarget.style.borderColor = "#d1d5db"; } }}>
+          {downloading ? "⟳ Downloading…" : "↓ Download CSV"}
+        </button>
       </div>
       {(filters.csm || filters.accountType || filters.websiteScore) && (
         <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
@@ -845,15 +857,16 @@ function EnterpriseTab({ enterprises, onDrillDown, filters = DEFAULT_ENTERPRISE_
               ))}
             </tr>
           </thead>
-          <tbody>
-            {sorted.length === 0 && (
+          <tbody className={loading && rows.length > 0 ? "tbody-loading" : ""}>
+            {loading && rows.length === 0 && <TableShimmer cols={cols.length + 1} />}
+            {!loading && rows.length === 0 && (
               <tr><td colSpan={cols.length + 1} style={{ padding: 40, textAlign: "center", color: "#9ca3af", fontSize: 14 }}>No records match the current filters.</td></tr>
             )}
-            {sorted.map((r, i) => {
+            {rows.map((r, i) => {
               const rate = r.total === 0 ? 0 : (r.notProcessedAfter24 / r.total) * 100;
               return (
                 <tr key={r.id} style={{ background: i % 2 === 0 ? "#fff" : "#f9fafb" }}>
-                  <td style={{ ...tdStyle, textAlign: "center", color: "#9ca3af", fontSize: 12 }}>{i + 1}</td>
+                  <td style={{ ...tdStyle, textAlign: "center", color: "#9ca3af", fontSize: 12 }}>{(page - 1) * 50 + i + 1}</td>
                   <td style={{ ...tdStyle, fontFamily: "monospace", fontSize: 12, color: "#0ea5e9", fontWeight: 600 }}><Truncated value={r.id} maxWidth={90} /></td>
                   <td style={{ ...tdStyle, fontWeight: 600 }}><Truncated value={r.name} maxWidth={180} /></td>
                   <td style={tdStyle}>{r.accountType ? <Badge label={r.accountType} color="blue" /> : <span style={{ color: "#9ca3af" }}>—</span>}</td>
@@ -933,7 +946,20 @@ function EnterpriseTab({ enterprises, onDrillDown, filters = DEFAULT_ENTERPRISE_
           </tbody>
         </table>
       </div>
-      <div style={{ marginTop: 10, fontSize: 12, color: "#9ca3af" }}>Showing {sorted.length} of {enterprises.length} enterprises</div>
+      <div style={{ marginTop: 10, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+        <span style={{ fontSize: 12, color: "#9ca3af" }}>Showing {rows.length} of {total.toLocaleString()} enterprises</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <button onClick={() => onPageChange(page - 1)} disabled={page <= 1}
+            style={{ padding: "5px 12px", borderRadius: 7, border: "1px solid #d1d5db", background: page <= 1 ? "#f3f4f6" : "#fff", fontSize: 13, fontWeight: 600, cursor: page <= 1 ? "not-allowed" : "pointer", color: page <= 1 ? "#9ca3af" : "#374151" }}>
+            ← Prev
+          </button>
+          <span style={{ fontSize: 12, color: "#6b7280" }}>Page {page} of {pageCount}</span>
+          <button onClick={() => onPageChange(page + 1)} disabled={page >= pageCount}
+            style={{ padding: "5px 12px", borderRadius: 7, border: "1px solid #d1d5db", background: page >= pageCount ? "#f3f4f6" : "#fff", fontSize: 13, fontWeight: 600, cursor: page >= pageCount ? "not-allowed" : "pointer", color: page >= pageCount ? "#9ca3af" : "#374151" }}>
+            Next →
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1043,8 +1069,8 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
   const [sortDir, setSortDir] = useState("desc");
 
   const handleSort = col => {
-    if (sortCol !== col) { setSortCol(col); setSortDir("asc"); }
-    else if (sortDir === "asc") { setSortDir("desc"); }
+    if (sortCol !== col) { setSortCol(col); setSortDir("desc"); }
+    else if (sortDir === "desc") { setSortDir("asc"); }
     else { setSortCol(null); setSortDir("asc"); }
   };
 
@@ -1313,6 +1339,24 @@ export default function Dashboard() {
   const [rawSortCol, setRawSortCol] = useState<string | null>(null);
   const [rawSortDir, setRawSortDir] = useState<"asc" | "desc">("asc");
 
+  // Rooftop paginated data — sourced from /api/rooftops
+  const [rooftopRows, setRooftopRows] = useState<any[]>([]);
+  const [rooftopPage, setRooftopPage] = useState(1);
+  const [rooftopPageCount, setRooftopPageCount] = useState(1);
+  const [rooftopTotal, setRooftopTotal] = useState(0);
+  const [rooftopLoading, setRooftopLoading] = useState(false);
+  const [rooftopSortCol, setRooftopSortCol] = useState<string | null>("notProcessedAfter24");
+  const [rooftopSortDir, setRooftopSortDir] = useState<"asc" | "desc">("desc");
+
+  // Enterprise paginated data — sourced from /api/enterprises
+  const [enterpriseRows, setEnterpriseRows] = useState<any[]>([]);
+  const [enterprisePage, setEnterprisePage] = useState(1);
+  const [enterprisePageCount, setEnterprisePageCount] = useState(1);
+  const [enterpriseTotal, setEnterpriseTotal] = useState(0);
+  const [enterpriseLoading, setEnterpriseLoading] = useState(false);
+  const [enterpriseSortCol, setEnterpriseSortCol] = useState<string | null>("notProcessedAfter24");
+  const [enterpriseSortDir, setEnterpriseSortDir] = useState<"asc" | "desc">("desc");
+
   const tabs = ["Overview", "Enterprise View", "Rooftop View", "VIN Data"];
 
   // Fetch summary data from DB views
@@ -1325,6 +1369,45 @@ export default function Dashboard() {
         setLastSync(json.lastSync);
         return json;
       });
+  }, []);
+
+  // Fetch paginated rooftop rows
+  const loadRooftopPage = useCallback((page: number, filters: any, sortCol: string | null, sortDir: string) => {
+    setRooftopLoading(true);
+    const params = new URLSearchParams({ page: String(page), pageSize: "50" });
+    if (filters.search)           params.set("search",          filters.search);
+    if (filters.rooftopType)      params.set("type",            filters.rooftopType);
+    if (filters.csm)              params.set("csm",             filters.csm);
+    if (filters.enterprise)       params.set("enterprise",      filters.enterprise);
+    if (filters.imsIntegration)   params.set("imsIntegration",  filters.imsIntegration);
+    if (filters.publishingStatus) params.set("publishingStatus", filters.publishingStatus);
+    if (filters.websiteScore)     params.set("websiteScore",    filters.websiteScore);
+    if (sortCol) { params.set("sortBy", sortCol); params.set("sortDir", sortDir); }
+    fetch(`${API_BASE}/api/rooftops?${params}`)
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+      .then(({ data, total, pageCount }) => {
+        setRooftopRows(data); setRooftopTotal(total); setRooftopPageCount(pageCount); setRooftopPage(page);
+        setRooftopLoading(false);
+      })
+      .catch(err => { setFetchError(err.message); setRooftopLoading(false); });
+  }, []);
+
+  // Fetch paginated enterprise rows
+  const loadEnterprisePage = useCallback((page: number, filters: any, sortCol: string | null, sortDir: string) => {
+    setEnterpriseLoading(true);
+    const params = new URLSearchParams({ page: String(page), pageSize: "50" });
+    if (filters.search)       params.set("search",      filters.search);
+    if (filters.csm)          params.set("csm",         filters.csm);
+    if (filters.accountType)  params.set("accountType", filters.accountType);
+    if (filters.websiteScore) params.set("websiteScore", filters.websiteScore);
+    if (sortCol) { params.set("sortBy", sortCol); params.set("sortDir", sortDir); }
+    fetch(`${API_BASE}/api/enterprises?${params}`)
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+      .then(({ data, total, pageCount }) => {
+        setEnterpriseRows(data); setEnterpriseTotal(total); setEnterprisePageCount(pageCount); setEnterprisePage(page);
+        setEnterpriseLoading(false);
+      })
+      .catch(err => { setFetchError(err.message); setEnterpriseLoading(false); });
   }, []);
 
   // Fetch paginated raw VIN rows
@@ -1371,6 +1454,16 @@ export default function Dashboard() {
       .catch(err => { setFetchError(err.message); setLoading(false); });
   }, []);
 
+  // Load rooftop page when switching to Rooftop View or when filters/sort change
+  useEffect(() => {
+    if (tab === "Rooftop View") loadRooftopPage(1, rooftopFilters, rooftopSortCol, rooftopSortDir);
+  }, [tab, rooftopFilters, rooftopSortCol, rooftopSortDir]);
+
+  // Load enterprise page when switching to Enterprise View or when filters/sort change
+  useEffect(() => {
+    if (tab === "Enterprise View") loadEnterprisePage(1, enterpriseFilters, enterpriseSortCol, enterpriseSortDir);
+  }, [tab, enterpriseFilters, enterpriseSortCol, enterpriseSortDir]);
+
   // Load raw page when switching to VIN Data tab or when filters/page/sort change
   useEffect(() => {
     if (tab === "VIN Data") loadRawPage(rawPage, rawFilters, rawSortCol, rawSortDir);
@@ -1387,6 +1480,16 @@ export default function Dashboard() {
     setRawSortCol(col);
     setRawSortDir(dir);
     setRawPage(1);
+  }, []);
+
+  const handleRooftopSort = useCallback((col: string | null, dir: "asc" | "desc") => {
+    setRooftopSortCol(col);
+    setRooftopSortDir(dir);
+  }, []);
+
+  const handleEnterpriseSort = useCallback((col: string | null, dir: "asc" | "desc") => {
+    setEnterpriseSortCol(col);
+    setEnterpriseSortDir(dir);
   }, []);
 
   // Sync from Metabase — awaits full sync, then reloads summary
@@ -1430,6 +1533,34 @@ export default function Dashboard() {
           background: linear-gradient(90deg, #4f46e5 0%, #6366f1 40%, #818cf8 50%, #6366f1 60%, #4f46e5 100%);
           background-size: 600px 100%;
           animation: shimmer 1.6s linear infinite;
+        }
+        @keyframes shimmerCell {
+          0%   { background-position: 200% 0; }
+          100% { background-position: -200% 0; }
+        }
+        .shimmer-cell {
+          background: linear-gradient(90deg, #f0f0f0 25%, #e4e4e4 50%, #f0f0f0 75%);
+          background-size: 200% 100%;
+          animation: shimmerCell 1.4s ease-in-out infinite;
+        }
+        @keyframes cellSweep {
+          0%   { background-position: 200% 0; }
+          100% { background-position: -200% 0; }
+        }
+        .tbody-loading {
+          pointer-events: none;
+          user-select: none;
+        }
+        .tbody-loading td {
+          position: relative;
+        }
+        .tbody-loading td::after {
+          content: '';
+          position: absolute;
+          inset: 0;
+          background: linear-gradient(90deg, transparent 25%, rgba(255,255,255,0.65) 50%, transparent 75%);
+          background-size: 200% 100%;
+          animation: cellSweep 1.3s ease-in-out infinite;
         }
       `}</style>
       {(syncing || loading) && (
@@ -1477,11 +1608,44 @@ export default function Dashboard() {
       </div>
 
       {tab === "Overview" && <OverviewTab totals={s.totals} byType={s.byType} byCSM={s.byCSM} byBucket={s.byBucket ?? []} onDrillDown={handleDrillDown} onRooftopDrillDown={handleRooftopDrillDown} />}
-      {tab === "Rooftop View" && <RooftopTab allRooftops={s.byRooftop} onDrillDown={handleDrillDown} filters={rooftopFilters} setFilters={setRooftopFilters} />}
-      {tab === "Enterprise View" && <EnterpriseTab enterprises={s.byEnterprise} onDrillDown={handleDrillDown} filters={enterpriseFilters} setFilters={setEnterpriseFilters} />}
+      {tab === "Rooftop View" && (
+        <RooftopTab
+          allRooftops={s.byRooftop}
+          rows={rooftopRows}
+          total={rooftopTotal}
+          page={rooftopPage}
+          pageCount={rooftopPageCount}
+          loading={rooftopLoading}
+          onPageChange={(p) => loadRooftopPage(Math.max(1, Math.min(p, rooftopPageCount)), rooftopFilters, rooftopSortCol, rooftopSortDir)}
+          onDrillDown={handleDrillDown}
+          filters={rooftopFilters}
+          setFilters={(f) => { setRooftopFilters(f); }}
+          sortCol={rooftopSortCol}
+          sortDir={rooftopSortDir}
+          onSortChange={handleRooftopSort}
+        />
+      )}
+      {tab === "Enterprise View" && (
+        <EnterpriseTab
+          enterprises={s.byEnterprise}
+          rows={enterpriseRows}
+          total={enterpriseTotal}
+          page={enterprisePage}
+          pageCount={enterprisePageCount}
+          loading={enterpriseLoading}
+          onPageChange={(p) => loadEnterprisePage(Math.max(1, Math.min(p, enterprisePageCount)), enterpriseFilters, enterpriseSortCol, enterpriseSortDir)}
+          onDrillDown={handleDrillDown}
+          filters={enterpriseFilters}
+          setFilters={(f) => { setEnterpriseFilters(f); }}
+          sortCol={enterpriseSortCol}
+          sortDir={enterpriseSortDir}
+          onSortChange={handleEnterpriseSort}
+        />
+      )}
       {tab === "VIN Data" && (
         <RawTab
           data={rawData}
+          loading={rawLoading}
           filters={rawFilters}
           setFilters={(f) => { setRawFilters(f); setRawPage(1); }}
           total={rawTotal}

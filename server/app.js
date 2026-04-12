@@ -509,6 +509,136 @@ app.get("/api/vins/raw", (req, res) => {
   res.redirect(307, `/api/vins?${new URLSearchParams(req.query)}`);
 });
 
+// ─── GET /api/rooftops ────────────────────────────────────────────────────────
+
+const ROOFTOP_SORT_MAP = {
+  name:                "name",
+  type:                "type",
+  enterprise:          "enterprise",
+  csm:                 "csm",
+  total:               "total",
+  processed:           "processed",
+  notProcessed:        "not_processed",
+  notProcessedAfter24: "not_processed_after_24h",
+  rate:                "not_processed_after_24h", // proxy: sort by count as approximation
+  websiteScore:        "website_score",
+};
+
+function buildRooftopFilters(queryParams) {
+  const conditions = [];
+  const params = [];
+  const p = (val) => { params.push(val); return `$${params.length}`; };
+
+  if (queryParams.search) {
+    const s = `%${queryParams.search}%`;
+    conditions.push(`(name ILIKE ${p(s)} OR rooftop_id ILIKE ${p(s)})`);
+  }
+  if (queryParams.enterpriseId)   conditions.push(`enterprise_id = ${p(queryParams.enterpriseId)}`);
+  if (queryParams.enterprise)     conditions.push(`enterprise = ${p(queryParams.enterprise)}`);
+  if (queryParams.type)           conditions.push(`type = ${p(queryParams.type)}`);
+  if (queryParams.csm)            conditions.push(`csm = ${p(queryParams.csm)}`);
+  if (queryParams.imsIntegration === "Yes") conditions.push("ims_integration_status = 'true'");
+  if (queryParams.imsIntegration === "No")  conditions.push("ims_integration_status != 'true'");
+  if (queryParams.publishingStatus === "Yes") conditions.push("publishing_status = 'true'");
+  if (queryParams.publishingStatus === "No")  conditions.push("publishing_status != 'true'");
+  if (queryParams.websiteScore === "Poor (<6)")     conditions.push("website_score < 6");
+  if (queryParams.websiteScore === "Average (6\u20138)") conditions.push("(website_score >= 6 AND website_score < 8)");
+  if (queryParams.websiteScore === "Good (8+)")     conditions.push("website_score >= 8");
+
+  return { where: conditions.length ? `WHERE ${conditions.join(" AND ")}` : "", params };
+}
+
+app.get("/api/rooftops", async (req, res) => {
+  const page     = Math.max(1, parseInt(req.query.page)     || 1);
+  const pageSize = Math.min(500, Math.max(10, parseInt(req.query.pageSize) || 50));
+  const offset   = (page - 1) * pageSize;
+
+  const { where, params } = buildRooftopFilters(req.query);
+  const sortCol = ROOFTOP_SORT_MAP[req.query.sortBy] ?? "not_processed_after_24h";
+  const sortDir = req.query.sortDir === "asc" ? "ASC" : "DESC";
+  const orderBy = `ORDER BY ${sortCol} ${sortDir} NULLS LAST`;
+
+  const [countRes, rowsRes] = await Promise.all([
+    query(`SELECT COUNT(*)::int AS n FROM v_by_rooftop ${where}`, params),
+    query(`SELECT * FROM v_by_rooftop ${where} ${orderBy} LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+      [...params, pageSize, offset]),
+  ]);
+
+  const total = countRes.rows[0].n;
+  res.json({ data: rowsRes.rows.map(toRooftopRow), total, page, pageSize, pageCount: Math.ceil(total / pageSize) });
+});
+
+app.get("/api/rooftops/export", async (req, res) => {
+  const { where, params } = buildRooftopFilters(req.query);
+  const sortCol = ROOFTOP_SORT_MAP[req.query.sortBy] ?? "not_processed_after_24h";
+  const sortDir = req.query.sortDir === "asc" ? "ASC" : "DESC";
+  const { rows } = await query(`SELECT * FROM v_by_rooftop ${where} ORDER BY ${sortCol} ${sortDir} NULLS LAST`, params);
+  res.json({ data: rows.map(toRooftopRow) });
+});
+
+// ─── GET /api/enterprises ─────────────────────────────────────────────────────
+
+const ENTERPRISE_SORT_MAP = {
+  name:                   "name",
+  csm:                    "csm",
+  total:                  "total",
+  processed:              "processed",
+  notProcessed:           "not_processed",
+  notProcessedAfter24:    "not_processed_after_24h",
+  processedAfter24:       "processed_after_24h",
+  rate:                   "not_processed_after_24h", // proxy
+  rooftopCount:           "rooftop_count",
+  notIntegratedCount:     "not_integrated_count",
+  publishingDisabledCount:"publishing_disabled_count",
+  avgWebsiteScore:        "avg_website_score",
+};
+
+function buildEnterpriseFilters(queryParams) {
+  const conditions = [];
+  const params = [];
+  const p = (val) => { params.push(val); return `$${params.length}`; };
+
+  if (queryParams.search) {
+    const s = `%${queryParams.search}%`;
+    conditions.push(`(name ILIKE ${p(s)} OR id ILIKE ${p(s)})`);
+  }
+  if (queryParams.csm)         conditions.push(`csm = ${p(queryParams.csm)}`);
+  if (queryParams.accountType) conditions.push(`account_type = ${p(queryParams.accountType)}`);
+  if (queryParams.websiteScore === "Poor (<6)")     conditions.push("avg_website_score < 6");
+  if (queryParams.websiteScore === "Average (6\u20138)") conditions.push("(avg_website_score >= 6 AND avg_website_score < 8)");
+  if (queryParams.websiteScore === "Good (8+)")     conditions.push("avg_website_score >= 8");
+
+  return { where: conditions.length ? `WHERE ${conditions.join(" AND ")}` : "", params };
+}
+
+app.get("/api/enterprises", async (req, res) => {
+  const page     = Math.max(1, parseInt(req.query.page)     || 1);
+  const pageSize = Math.min(500, Math.max(10, parseInt(req.query.pageSize) || 50));
+  const offset   = (page - 1) * pageSize;
+
+  const { where, params } = buildEnterpriseFilters(req.query);
+  const sortCol = ENTERPRISE_SORT_MAP[req.query.sortBy] ?? "not_processed_after_24h";
+  const sortDir = req.query.sortDir === "asc" ? "ASC" : "DESC";
+  const orderBy = `ORDER BY ${sortCol} ${sortDir} NULLS LAST`;
+
+  const [countRes, rowsRes] = await Promise.all([
+    query(`SELECT COUNT(*)::int AS n FROM v_by_enterprise ${where}`, params),
+    query(`SELECT * FROM v_by_enterprise ${where} ${orderBy} LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+      [...params, pageSize, offset]),
+  ]);
+
+  const total = countRes.rows[0].n;
+  res.json({ data: rowsRes.rows.map(toEnterpriseRow), total, page, pageSize, pageCount: Math.ceil(total / pageSize) });
+});
+
+app.get("/api/enterprises/export", async (req, res) => {
+  const { where, params } = buildEnterpriseFilters(req.query);
+  const sortCol = ENTERPRISE_SORT_MAP[req.query.sortBy] ?? "not_processed_after_24h";
+  const sortDir = req.query.sortDir === "asc" ? "ASC" : "DESC";
+  const { rows } = await query(`SELECT * FROM v_by_enterprise ${where} ORDER BY ${sortCol} ${sortDir} NULLS LAST`, params);
+  res.json({ data: rows.map(toEnterpriseRow) });
+});
+
 // ─── GET /api/vins/export ─────────────────────────────────────────────────────
 
 app.get("/api/vins/export", async (req, res) => {
