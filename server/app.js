@@ -549,84 +549,84 @@ app.get("/api/summary", async (req, res) => {
   const statsWhere = dc ? `WHERE ${dc}` : '';
   const statsAnd   = dc ? `AND ${dc}` : '';
 
-  const [metaRes, totalsRes, byCsmRes, byTypeRes, byBucketRes] = await Promise.all([
-    query("SELECT MAX(synced_at) AS last_sync, COUNT(*)::int AS total_rows FROM vins"),
-    query(`
-      SELECT
-        COUNT(*)::int                                                                                        AS total,
-        SUM(CASE WHEN status = 'Delivered' THEN 1 ELSE 0 END)::int                                          AS processed,
-        SUM(CASE WHEN status = 'Delivered' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int             AS processed_after_24h,
-        SUM(CASE WHEN status != 'Delivered' THEN 1 ELSE 0 END)::int                                         AS not_processed,
-        SUM(CASE WHEN status != 'Delivered' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int            AS not_processed_after_24h,
-        SUM(CASE WHEN status != 'Delivered' AND reason_bucket = 'Processing Pending' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
-        SUM(CASE WHEN status != 'Delivered' AND reason_bucket = 'Publishing Pending' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
-        SUM(CASE WHEN status != 'Delivered' AND reason_bucket = 'QC Pending'         AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
-        SUM(CASE WHEN status != 'Delivered' AND reason_bucket = 'Sold'               AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_sold,
-        SUM(CASE WHEN status != 'Delivered' AND reason_bucket = 'Others'             AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_others
-      FROM vins ${statsWhere}
-    `),
-    query(`
-      SELECT
-        ed.poc_email                          AS name,
-        COUNT(DISTINCT v.rooftop_id)::int     AS rooftop_count,
-        COUNT(*)::int                         AS total,
-        SUM(CASE WHEN v.status = 'Delivered' THEN 1 ELSE 0 END)::int                                       AS processed,
-        SUM(CASE WHEN v.status = 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int        AS processed_after_24h,
-        SUM(CASE WHEN v.status != 'Delivered' THEN 1 ELSE 0 END)::int                                      AS not_processed,
-        SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int       AS not_processed_after_24h,
-        ROUND(AVG(rd.website_score)::numeric, 2) AS avg_website_score,
-        COUNT(DISTINCT CASE WHEN rd.ims_integration_status = 'false' THEN v.rooftop_id END)::int AS integrated_count,
-        COUNT(DISTINCT CASE WHEN rd.publishing_status = 'false' THEN v.rooftop_id END)::int      AS publishing_count,
-        SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Processing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
-        SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Publishing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
-        SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'QC Pending'         AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
-        SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Sold'               AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_sold,
-        SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Others'             AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_others
-      FROM vins v
-      LEFT JOIN enterprise_details ed ON v.enterprise_id = ed.enterprise_id
-      LEFT JOIN rooftop_details rd    ON v.rooftop_id = rd.team_id
-      ${statsWhere}
-      GROUP BY ed.poc_email
-      ORDER BY ed.poc_email
-    `),
-    query(`
-      SELECT
-        rd.team_type                          AS label,
-        COUNT(DISTINCT v.rooftop_id)::int     AS rooftop_count,
-        COUNT(*)::int                         AS total,
-        SUM(CASE WHEN v.status = 'Delivered' THEN 1 ELSE 0 END)::int                                       AS processed,
-        SUM(CASE WHEN v.status = 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int        AS processed_after_24h,
-        SUM(CASE WHEN v.status != 'Delivered' THEN 1 ELSE 0 END)::int                                      AS not_processed,
-        SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int       AS not_processed_after_24h,
-        COUNT(DISTINCT CASE WHEN rd.ims_integration_status = 'false' THEN v.rooftop_id END)::int AS integrated_count,
-        COUNT(DISTINCT CASE WHEN rd.publishing_status = 'false' THEN v.rooftop_id END)::int      AS publishing_count,
-        SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Processing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
-        SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Publishing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
-        SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'QC Pending'         AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
-        SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Sold'               AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_sold,
-        SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Others'             AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_others
-      FROM vins v
-      LEFT JOIN rooftop_details rd ON v.rooftop_id = rd.team_id
-      ${statsWhere}
-      GROUP BY rd.team_type
-    `),
-    query(`
-      SELECT reason_bucket AS label, COUNT(*)::int AS count
-      FROM vins
-      WHERE status != 'Delivered' AND COALESCE(after_24h,0)=1
-        AND reason_bucket IS NOT NULL AND reason_bucket != ''
-        ${statsAnd}
-      GROUP BY reason_bucket
-      ORDER BY
-        CASE reason_bucket
-          WHEN 'Processing Pending' THEN 1
-          WHEN 'Publishing Pending' THEN 2
-          WHEN 'QC Pending'         THEN 3
-          WHEN 'Sold'               THEN 4
-          ELSE 5
-        END, reason_bucket
-    `),
-  ]);
+  // Run sequentially to keep peak connections at 1 per Lambda (avoids exhausting
+  // Supabase's connection limit when multiple Lambda instances are active).
+  const metaRes = await query("SELECT MAX(synced_at) AS last_sync, COUNT(*)::int AS total_rows FROM vins");
+  const totalsRes = await query(`
+    SELECT
+      COUNT(*)::int                                                                                        AS total,
+      SUM(CASE WHEN status = 'Delivered' THEN 1 ELSE 0 END)::int                                          AS processed,
+      SUM(CASE WHEN status = 'Delivered' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int             AS processed_after_24h,
+      SUM(CASE WHEN status != 'Delivered' THEN 1 ELSE 0 END)::int                                         AS not_processed,
+      SUM(CASE WHEN status != 'Delivered' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int            AS not_processed_after_24h,
+      SUM(CASE WHEN status != 'Delivered' AND reason_bucket = 'Processing Pending' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
+      SUM(CASE WHEN status != 'Delivered' AND reason_bucket = 'Publishing Pending' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
+      SUM(CASE WHEN status != 'Delivered' AND reason_bucket = 'QC Pending'         AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
+      SUM(CASE WHEN status != 'Delivered' AND reason_bucket = 'Sold'               AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_sold,
+      SUM(CASE WHEN status != 'Delivered' AND reason_bucket = 'Others'             AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_others
+    FROM vins ${statsWhere}
+  `);
+  const byCsmRes = await query(`
+    SELECT
+      ed.poc_email                          AS name,
+      COUNT(DISTINCT v.rooftop_id)::int     AS rooftop_count,
+      COUNT(*)::int                         AS total,
+      SUM(CASE WHEN v.status = 'Delivered' THEN 1 ELSE 0 END)::int                                       AS processed,
+      SUM(CASE WHEN v.status = 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int        AS processed_after_24h,
+      SUM(CASE WHEN v.status != 'Delivered' THEN 1 ELSE 0 END)::int                                      AS not_processed,
+      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int       AS not_processed_after_24h,
+      ROUND(AVG(rd.website_score)::numeric, 2) AS avg_website_score,
+      COUNT(DISTINCT CASE WHEN rd.ims_integration_status = 'false' THEN v.rooftop_id END)::int AS integrated_count,
+      COUNT(DISTINCT CASE WHEN rd.publishing_status = 'false' THEN v.rooftop_id END)::int      AS publishing_count,
+      SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Processing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
+      SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Publishing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
+      SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'QC Pending'         AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
+      SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Sold'               AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_sold,
+      SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Others'             AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_others
+    FROM vins v
+    LEFT JOIN enterprise_details ed ON v.enterprise_id = ed.enterprise_id
+    LEFT JOIN rooftop_details rd    ON v.rooftop_id = rd.team_id
+    ${statsWhere}
+    GROUP BY ed.poc_email
+    ORDER BY ed.poc_email
+  `);
+  const byTypeRes = await query(`
+    SELECT
+      rd.team_type                          AS label,
+      COUNT(DISTINCT v.rooftop_id)::int     AS rooftop_count,
+      COUNT(*)::int                         AS total,
+      SUM(CASE WHEN v.status = 'Delivered' THEN 1 ELSE 0 END)::int                                       AS processed,
+      SUM(CASE WHEN v.status = 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int        AS processed_after_24h,
+      SUM(CASE WHEN v.status != 'Delivered' THEN 1 ELSE 0 END)::int                                      AS not_processed,
+      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int       AS not_processed_after_24h,
+      COUNT(DISTINCT CASE WHEN rd.ims_integration_status = 'false' THEN v.rooftop_id END)::int AS integrated_count,
+      COUNT(DISTINCT CASE WHEN rd.publishing_status = 'false' THEN v.rooftop_id END)::int      AS publishing_count,
+      SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Processing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
+      SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Publishing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
+      SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'QC Pending'         AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
+      SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Sold'               AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_sold,
+      SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Others'             AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_others
+    FROM vins v
+    LEFT JOIN rooftop_details rd ON v.rooftop_id = rd.team_id
+    ${statsWhere}
+    GROUP BY rd.team_type
+  `);
+  const byBucketRes = await query(`
+    SELECT reason_bucket AS label, COUNT(*)::int AS count
+    FROM vins
+    WHERE status != 'Delivered' AND COALESCE(after_24h,0)=1
+      AND reason_bucket IS NOT NULL AND reason_bucket != ''
+      ${statsAnd}
+    GROUP BY reason_bucket
+    ORDER BY
+      CASE reason_bucket
+        WHEN 'Processing Pending' THEN 1
+        WHEN 'Publishing Pending' THEN 2
+        WHEN 'QC Pending'         THEN 3
+        WHEN 'Sold'               THEN 4
+        ELSE 5
+      END, reason_bucket
+  `);
 
   const meta = metaRes.rows[0];
   res.json({
