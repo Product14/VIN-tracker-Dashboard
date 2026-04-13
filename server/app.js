@@ -357,7 +357,7 @@ const DATE_CUTOFF = '2026-04-01';
 function getDateCondition(dateFilter, alias = '') {
   const col = alias ? `${alias}.received_at` : 'received_at';
   if (dateFilter === 'post') return `${col} >= '${DATE_CUTOFF}'`;
-  if (dateFilter === 'pre')  return `${col} < '${DATE_CUTOFF}'`;
+  if (dateFilter === 'pre')  return `(${col} < '${DATE_CUTOFF}' OR ${col} IS NULL)`;
   return null;
 }
 
