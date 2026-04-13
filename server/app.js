@@ -208,12 +208,11 @@ async function runSync() {
     return { skipped: true };
   }
 
-  console.log("[sync] started — VINs, Rooftops, Enterprises running in parallel");
+  console.log("[sync] started — VINs, Rooftops, Enterprises running sequentially");
   try {
-    // allSettled so all three run to completion regardless of individual failures
-    const results = await Promise.allSettled([syncVins(), syncRooftops(), syncEnterprises()]);
-    for (const r of results) {
-      if (r.status === "rejected") console.error("[sync] table sync failed:", r.reason?.message);
+    // Run sequentially so only 1 DB connection is held at a time (pool max: 1).
+    for (const [fn, name] of [[syncVins, "VINs"], [syncRooftops, "Rooftops"], [syncEnterprises, "Enterprises"]]) {
+      try { await fn(); } catch (e) { console.error(`[sync] ${name} failed:`, e?.message); }
     }
   } finally {
     await query(`UPDATE sync_state SET running = FALSE, completed_at = NOW() WHERE id = 'global'`);
