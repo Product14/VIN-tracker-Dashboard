@@ -3,12 +3,14 @@ const { Pool } = pg;
 
 // For Vercel serverless: keep pool small to avoid exhausting Supabase connections.
 // Use the Supabase transaction-mode pooler URL (port 6543) in DATABASE_URL.
+// min 5: sync runs 3 concurrent getClient() calls + the lock claim/release queries
+// need pool slots too — 2 was too small and caused connection timeout errors.
 const pool = new Pool({
   connectionString: process.env.VIN_TRACKER_DATABASE_URL,
   ssl: { rejectUnauthorized: false },
-  max: 2,
+  max: 5,
   idleTimeoutMillis: 10000,
-  connectionTimeoutMillis: 5000,
+  connectionTimeoutMillis: 10000,
 });
 
 export const query     = (text, params) => pool.query(text, params);

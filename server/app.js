@@ -348,6 +348,94 @@ function toTypeRow(r) {
   };
 }
 
+// ─── Date filter helpers ──────────────────────────────────────────────────────
+
+const DATE_CUTOFF = '2026-04-01';
+
+// Returns a SQL condition string for the date filter, or null for "all".
+// alias: table alias prefix (e.g. 'v' → 'v.received_at'), or '' for bare column.
+function getDateCondition(dateFilter, alias = '') {
+  const col = alias ? `${alias}.received_at` : 'received_at';
+  if (dateFilter === 'post') return `${col} >= '${DATE_CUTOFF}'`;
+  if (dateFilter === 'pre')  return `${col} < '${DATE_CUTOFF}'`;
+  return null;
+}
+
+// Returns { prefix, from } for the rooftop aggregation source.
+// When dateFilter is active, inlines the view SQL as a CTE so the date
+// condition can be applied before aggregation.
+function buildRooftopSource(dateFilter) {
+  const dc = getDateCondition(dateFilter, 'v');
+  if (!dc) return { prefix: '', from: 'v_by_rooftop' };
+  const prefix = `
+    WITH rt AS (
+      SELECT
+        v.rooftop_id,
+        v.enterprise_id,
+        MAX(rd.team_name)                   AS name,
+        MAX(rd.team_type)                   AS type,
+        MAX(ed.poc_email)                   AS csm,
+        MAX(ed.name)                        AS enterprise,
+        COUNT(*)::int                       AS total,
+        SUM(CASE WHEN v.status = 'Delivered' THEN 1 ELSE 0 END)::int                                       AS processed,
+        SUM(CASE WHEN v.status = 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int        AS processed_after_24h,
+        SUM(CASE WHEN v.status != 'Delivered' THEN 1 ELSE 0 END)::int                                      AS not_processed,
+        SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int       AS not_processed_after_24h,
+        MAX(rd.website_score)               AS website_score,
+        MAX(rd.website_listing_url)         AS website_listing_url,
+        MAX(rd.ims_integration_status)      AS ims_integration_status,
+        MAX(rd.publishing_status)           AS publishing_status,
+        SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Processing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
+        SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Publishing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
+        SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'QC Pending'         AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
+        SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Sold'               AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_sold,
+        SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Others'             AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_others
+      FROM vins v
+      LEFT JOIN rooftop_details rd ON v.rooftop_id = rd.team_id
+      LEFT JOIN enterprise_details ed ON v.enterprise_id = ed.enterprise_id
+      WHERE ${dc}
+      GROUP BY v.rooftop_id, v.enterprise_id
+    )
+  `;
+  return { prefix, from: 'rt' };
+}
+
+// Returns { prefix, from } for the enterprise aggregation source.
+function buildEnterpriseSource(dateFilter) {
+  const dc = getDateCondition(dateFilter, 'v');
+  if (!dc) return { prefix: '', from: 'v_by_enterprise' };
+  const prefix = `
+    WITH et AS (
+      SELECT
+        v.enterprise_id                       AS id,
+        MAX(ed.name)                          AS name,
+        MAX(ed.poc_email)                     AS csm,
+        COUNT(*)::int                         AS total,
+        SUM(CASE WHEN v.status = 'Delivered' THEN 1 ELSE 0 END)::int                                       AS processed,
+        SUM(CASE WHEN v.status = 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int        AS processed_after_24h,
+        SUM(CASE WHEN v.status != 'Delivered' THEN 1 ELSE 0 END)::int                                      AS not_processed,
+        SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int       AS not_processed_after_24h,
+        COUNT(DISTINCT v.rooftop_id)::int     AS rooftop_count,
+        COUNT(DISTINCT CASE WHEN rd.ims_integration_status = 'false' THEN v.rooftop_id END)::int AS not_integrated_count,
+        COUNT(DISTINCT CASE WHEN rd.publishing_status = 'false' THEN v.rooftop_id END)::int      AS publishing_disabled_count,
+        ROUND(AVG(rd.website_score)::numeric, 2) AS avg_website_score,
+        MAX(ed.website_url)                   AS website_url,
+        MAX(ed.type)                          AS account_type,
+        SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Processing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
+        SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Publishing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
+        SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'QC Pending'         AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
+        SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Sold'               AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_sold,
+        SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Others'             AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_others
+      FROM vins v
+      LEFT JOIN enterprise_details ed ON v.enterprise_id = ed.enterprise_id
+      LEFT JOIN rooftop_details rd    ON v.rooftop_id = rd.team_id
+      WHERE ${dc}
+      GROUP BY v.enterprise_id
+    )
+  `;
+  return { prefix, from: 'et' };
+}
+
 // ─── VIN query helpers ────────────────────────────────────────────────────────
 
 // Whitelist map: frontend column key → DB expression (prevents SQL injection)
@@ -388,7 +476,7 @@ const VIN_SELECT = `
 // Builds a WHERE clause with PostgreSQL positional params ($1, $2, …).
 // Returns { where: string, params: any[] }.
 function buildVinFilters(queryParams) {
-  const { search, rooftop, rooftopId, rooftopType, csm, status, after24h, enterprise, enterpriseId, reasonBucket } = queryParams;
+  const { search, rooftop, rooftopId, rooftopType, csm, status, after24h, enterprise, enterpriseId, reasonBucket, dateFilter } = queryParams;
   const conditions = [];
   const params = [];
 
@@ -409,6 +497,8 @@ function buildVinFilters(queryParams) {
   if (after24h === "true"  || after24h === "1") conditions.push("COALESCE(v.after_24h, 0) = 1");
   if (after24h === "false" || after24h === "0") conditions.push("COALESCE(v.after_24h, 0) = 0");
   if (reasonBucket) conditions.push(`v.reason_bucket = ${p(reasonBucket)}`);
+  const dc = getDateCondition(dateFilter, 'v');
+  if (dc) conditions.push(dc);
 
   return { where: conditions.length ? `WHERE ${conditions.join(" AND ")}` : "", params };
 }
@@ -436,27 +526,96 @@ app.get("/api/sync/status", async (_req, res) => {
 // maxDuration: 300 is set in vercel.json to allow up to 5 minutes.
 
 app.post("/api/sync", async (_req, res) => {
-  const result = await runSync();
-  if (result.skipped) {
-    const { rows } = await query("SELECT started_at FROM sync_state WHERE id = 'global'");
-    return res.status(202).json({ status: "already_running", startedAt: rows[0]?.started_at });
+  try {
+    const result = await runSync();
+    if (result.skipped) {
+      const { rows } = await query("SELECT started_at FROM sync_state WHERE id = 'global'");
+      return res.status(202).json({ status: "already_running", startedAt: rows[0]?.started_at });
+    }
+    res.json({ status: "completed" });
+  } catch (err) {
+    console.error("[POST /api/sync] error:", err);
+    res.status(500).json({ error: err.message || "Sync failed" });
   }
-  res.json({ status: "completed" });
 });
 
 // ─── GET /api/summary ─────────────────────────────────────────────────────────
 
-app.get("/api/summary", async (_req, res) => {
+app.get("/api/summary", async (req, res) => {
+  const dateFilter = req.query.dateFilter;
+  const dc = getDateCondition(dateFilter);
+  // lastSync/totalRows always reflect the full dataset (unfiltered header info)
+  // All stats queries respect the date filter when active
+  const statsWhere = dc ? `WHERE ${dc}` : '';
+  const statsAnd   = dc ? `AND ${dc}` : '';
+
   const [metaRes, totalsRes, byCsmRes, byTypeRes, byBucketRes] = await Promise.all([
     query("SELECT MAX(synced_at) AS last_sync, COUNT(*)::int AS total_rows FROM vins"),
-    query("SELECT * FROM v_totals"),
-    query("SELECT * FROM v_by_csm"),
-    query("SELECT * FROM v_by_type"),
+    query(`
+      SELECT
+        COUNT(*)::int                                                                                        AS total,
+        SUM(CASE WHEN status = 'Delivered' THEN 1 ELSE 0 END)::int                                          AS processed,
+        SUM(CASE WHEN status = 'Delivered' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int             AS processed_after_24h,
+        SUM(CASE WHEN status != 'Delivered' THEN 1 ELSE 0 END)::int                                         AS not_processed,
+        SUM(CASE WHEN status != 'Delivered' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int            AS not_processed_after_24h,
+        SUM(CASE WHEN status != 'Delivered' AND reason_bucket = 'Processing Pending' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
+        SUM(CASE WHEN status != 'Delivered' AND reason_bucket = 'Publishing Pending' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
+        SUM(CASE WHEN status != 'Delivered' AND reason_bucket = 'QC Pending'         AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
+        SUM(CASE WHEN status != 'Delivered' AND reason_bucket = 'Sold'               AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_sold,
+        SUM(CASE WHEN status != 'Delivered' AND reason_bucket = 'Others'             AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_others
+      FROM vins ${statsWhere}
+    `),
+    query(`
+      SELECT
+        ed.poc_email                          AS name,
+        COUNT(DISTINCT v.rooftop_id)::int     AS rooftop_count,
+        COUNT(*)::int                         AS total,
+        SUM(CASE WHEN v.status = 'Delivered' THEN 1 ELSE 0 END)::int                                       AS processed,
+        SUM(CASE WHEN v.status = 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int        AS processed_after_24h,
+        SUM(CASE WHEN v.status != 'Delivered' THEN 1 ELSE 0 END)::int                                      AS not_processed,
+        SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int       AS not_processed_after_24h,
+        ROUND(AVG(rd.website_score)::numeric, 2) AS avg_website_score,
+        COUNT(DISTINCT CASE WHEN rd.ims_integration_status = 'false' THEN v.rooftop_id END)::int AS integrated_count,
+        COUNT(DISTINCT CASE WHEN rd.publishing_status = 'false' THEN v.rooftop_id END)::int      AS publishing_count,
+        SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Processing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
+        SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Publishing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
+        SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'QC Pending'         AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
+        SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Sold'               AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_sold,
+        SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Others'             AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_others
+      FROM vins v
+      LEFT JOIN enterprise_details ed ON v.enterprise_id = ed.enterprise_id
+      LEFT JOIN rooftop_details rd    ON v.rooftop_id = rd.team_id
+      ${statsWhere}
+      GROUP BY ed.poc_email
+      ORDER BY ed.poc_email
+    `),
+    query(`
+      SELECT
+        rd.team_type                          AS label,
+        COUNT(DISTINCT v.rooftop_id)::int     AS rooftop_count,
+        COUNT(*)::int                         AS total,
+        SUM(CASE WHEN v.status = 'Delivered' THEN 1 ELSE 0 END)::int                                       AS processed,
+        SUM(CASE WHEN v.status = 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int        AS processed_after_24h,
+        SUM(CASE WHEN v.status != 'Delivered' THEN 1 ELSE 0 END)::int                                      AS not_processed,
+        SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int       AS not_processed_after_24h,
+        COUNT(DISTINCT CASE WHEN rd.ims_integration_status = 'false' THEN v.rooftop_id END)::int AS integrated_count,
+        COUNT(DISTINCT CASE WHEN rd.publishing_status = 'false' THEN v.rooftop_id END)::int      AS publishing_count,
+        SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Processing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
+        SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Publishing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
+        SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'QC Pending'         AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
+        SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Sold'               AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_sold,
+        SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Others'             AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_others
+      FROM vins v
+      LEFT JOIN rooftop_details rd ON v.rooftop_id = rd.team_id
+      ${statsWhere}
+      GROUP BY rd.team_type
+    `),
     query(`
       SELECT reason_bucket AS label, COUNT(*)::int AS count
       FROM vins
       WHERE status != 'Delivered' AND COALESCE(after_24h,0)=1
         AND reason_bucket IS NOT NULL AND reason_bucket != ''
+        ${statsAnd}
       GROUP BY reason_bucket
       ORDER BY
         CASE reason_bucket
@@ -606,14 +765,15 @@ app.get("/api/rooftops", async (req, res) => {
   const pageSize = Math.min(500, Math.max(10, parseInt(req.query.pageSize) || 50));
   const offset   = (page - 1) * pageSize;
 
+  const { prefix, from } = buildRooftopSource(req.query.dateFilter);
   const { where, params } = buildRooftopFilters(req.query);
   const sortCol = ROOFTOP_SORT_MAP[req.query.sortBy] ?? "not_processed_after_24h";
   const sortDir = req.query.sortDir === "asc" ? "ASC" : "DESC";
   const orderBy = `ORDER BY ${sortCol} ${sortDir} NULLS LAST`;
 
   const [countRes, rowsRes] = await Promise.all([
-    query(`SELECT COUNT(*)::int AS n FROM v_by_rooftop ${where}`, params),
-    query(`SELECT * FROM v_by_rooftop ${where} ${orderBy} LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+    query(`${prefix} SELECT COUNT(*)::int AS n FROM ${from} ${where}`, params),
+    query(`${prefix} SELECT * FROM ${from} ${where} ${orderBy} LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
       [...params, pageSize, offset]),
   ]);
 
@@ -622,10 +782,11 @@ app.get("/api/rooftops", async (req, res) => {
 });
 
 app.get("/api/rooftops/export", async (req, res) => {
+  const { prefix, from } = buildRooftopSource(req.query.dateFilter);
   const { where, params } = buildRooftopFilters(req.query);
   const sortCol = ROOFTOP_SORT_MAP[req.query.sortBy] ?? "not_processed_after_24h";
   const sortDir = req.query.sortDir === "asc" ? "ASC" : "DESC";
-  const { rows } = await query(`SELECT * FROM v_by_rooftop ${where} ORDER BY ${sortCol} ${sortDir} NULLS LAST`, params);
+  const { rows } = await query(`${prefix} SELECT * FROM ${from} ${where} ORDER BY ${sortCol} ${sortDir} NULLS LAST`, params);
   res.json({ data: rows.map(toRooftopRow) });
 });
 
@@ -669,14 +830,15 @@ app.get("/api/enterprises", async (req, res) => {
   const pageSize = Math.min(500, Math.max(10, parseInt(req.query.pageSize) || 50));
   const offset   = (page - 1) * pageSize;
 
+  const { prefix, from } = buildEnterpriseSource(req.query.dateFilter);
   const { where, params } = buildEnterpriseFilters(req.query);
   const sortCol = ENTERPRISE_SORT_MAP[req.query.sortBy] ?? "not_processed_after_24h";
   const sortDir = req.query.sortDir === "asc" ? "ASC" : "DESC";
   const orderBy = `ORDER BY ${sortCol} ${sortDir} NULLS LAST`;
 
   const [countRes, rowsRes] = await Promise.all([
-    query(`SELECT COUNT(*)::int AS n FROM v_by_enterprise ${where}`, params),
-    query(`SELECT * FROM v_by_enterprise ${where} ${orderBy} LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+    query(`${prefix} SELECT COUNT(*)::int AS n FROM ${from} ${where}`, params),
+    query(`${prefix} SELECT * FROM ${from} ${where} ${orderBy} LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
       [...params, pageSize, offset]),
   ]);
 
@@ -685,10 +847,11 @@ app.get("/api/enterprises", async (req, res) => {
 });
 
 app.get("/api/enterprises/export", async (req, res) => {
+  const { prefix, from } = buildEnterpriseSource(req.query.dateFilter);
   const { where, params } = buildEnterpriseFilters(req.query);
   const sortCol = ENTERPRISE_SORT_MAP[req.query.sortBy] ?? "not_processed_after_24h";
   const sortDir = req.query.sortDir === "asc" ? "ASC" : "DESC";
-  const { rows } = await query(`SELECT * FROM v_by_enterprise ${where} ORDER BY ${sortCol} ${sortDir} NULLS LAST`, params);
+  const { rows } = await query(`${prefix} SELECT * FROM ${from} ${where} ORDER BY ${sortCol} ${sortDir} NULLS LAST`, params);
   res.json({ data: rows.map(toEnterpriseRow) });
 });
 
