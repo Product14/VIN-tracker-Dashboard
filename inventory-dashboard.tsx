@@ -1403,7 +1403,10 @@ const EMPTY_SUMMARY = {
 
 export default function Dashboard() {
   const [tab, setTab] = useState("Overview");
-  const [dateFilter, setDateFilter] = useState<"post" | "pre" | "all">("post");
+  const [dateFilter, setDateFilter] = useState<"post" | "pre" | "all">(() => {
+    const saved = typeof window !== "undefined" ? localStorage.getItem("vin_dateFilter") : null;
+    return (saved === "post" || saved === "pre" || saved === "all") ? saved : "post";
+  });
   const [rawFilters, setRawFilters] = useState(DEFAULT_FILTERS);
   const [rooftopFilters, setRooftopFilters] = useState(DEFAULT_ROOFTOP_FILTERS);
   const [enterpriseFilters, setEnterpriseFilters] = useState(DEFAULT_ENTERPRISE_FILTERS);
@@ -1560,6 +1563,11 @@ export default function Dashboard() {
       })
       .catch(err => { setFetchError(err.message); setLoading(false); initialLoadDone.current = true; });
   }, []);
+
+  // Persist dateFilter selection across page refreshes
+  useEffect(() => {
+    localStorage.setItem("vin_dateFilter", dateFilter);
+  }, [dateFilter]);
 
   // Reload summary when dateFilter changes (skip the initial mount — handled above)
   useEffect(() => {
