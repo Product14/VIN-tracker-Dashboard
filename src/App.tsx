@@ -15,7 +15,7 @@ const NAV = [
   },
   {
     id: "vin",
-    label: "VIN Tracking",
+    label: "VIN Tracking Dashboard",
     icon: (
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
         <rect x="1" y="3" width="15" height="13" rx="2"/><path d="M16 8h4l3 5v3h-7V8z"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/>
@@ -257,8 +257,8 @@ export default function App() {
                 }}>
                   {item.icon}
                 </span>
-                <span style={{ fontSize: 10, fontWeight: isActive ? 700 : 500, letterSpacing: "0.01em", textAlign: "center", lineHeight: 1.2 }}>
-                  {item.label.split(" ")[0]}
+                <span style={{ fontSize: 9.5, fontWeight: isActive ? 700 : 500, letterSpacing: "0.01em", textAlign: "center", lineHeight: 1.3, whiteSpace: "normal", wordBreak: "break-word", maxWidth: 68, padding: "0 4px" }}>
+                  {item.label}
                 </span>
               </button>
             );
