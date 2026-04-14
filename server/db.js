@@ -32,8 +32,10 @@ export async function initSchema() {
       received_at     TEXT,
       processed_at    TEXT,
       reason_bucket   TEXT,
+      hold_reason     TEXT DEFAULT '',
       synced_at       TEXT
     );
+    ALTER TABLE vins ADD COLUMN IF NOT EXISTS hold_reason TEXT DEFAULT '';
 
     CREATE INDEX IF NOT EXISTS idx_vins_rooftop_id    ON vins(rooftop_id);
     CREATE INDEX IF NOT EXISTS idx_vins_enterprise_id ON vins(enterprise_id);
@@ -71,9 +73,12 @@ export async function initSchema() {
     INSERT INTO sync_state (id) VALUES ('global') ON CONFLICT (id) DO NOTHING;
   `);
 
-  // Views — recreated fresh each time to pick up any SQL changes.
+  // Views — dropped and recreated on every cold start so column additions/reorders
+  // don't hit the "cannot change name of view column" error from CREATE OR REPLACE.
+  await pool.query(`DROP VIEW IF EXISTS v_totals, v_by_rooftop, v_by_enterprise, v_by_csm, v_by_type`);
+
   await pool.query(`
-    CREATE OR REPLACE VIEW v_totals AS
+    CREATE VIEW v_totals AS
     SELECT
       COUNT(*)::int                                                                                        AS total,
       SUM(CASE WHEN status = 'Delivered' THEN 1 ELSE 0 END)::int                                          AS processed,
@@ -83,13 +88,14 @@ export async function initSchema() {
       SUM(CASE WHEN status != 'Delivered' AND reason_bucket = 'Processing Pending' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
       SUM(CASE WHEN status != 'Delivered' AND reason_bucket = 'Publishing Pending' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
       SUM(CASE WHEN status != 'Delivered' AND reason_bucket = 'QC Pending'         AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
+      SUM(CASE WHEN status != 'Delivered' AND reason_bucket = 'QC Hold'            AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_hold,
       SUM(CASE WHEN status != 'Delivered' AND reason_bucket = 'Sold'               AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_sold,
       SUM(CASE WHEN status != 'Delivered' AND reason_bucket = 'Others'             AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_others
     FROM vins;
   `);
 
   await pool.query(`
-    CREATE OR REPLACE VIEW v_by_rooftop AS
+    CREATE VIEW v_by_rooftop AS
     SELECT
       v.rooftop_id,
       v.enterprise_id,
@@ -109,6 +115,7 @@ export async function initSchema() {
       SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Processing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
       SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Publishing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
       SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'QC Pending'         AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
+      SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'QC Hold'            AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_hold,
       SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Sold'               AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_sold,
       SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Others'             AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_others
     FROM vins v
@@ -118,7 +125,7 @@ export async function initSchema() {
   `);
 
   await pool.query(`
-    CREATE OR REPLACE VIEW v_by_enterprise AS
+    CREATE VIEW v_by_enterprise AS
     SELECT
       v.enterprise_id                       AS id,
       MAX(ed.name)                          AS name,
@@ -137,6 +144,7 @@ export async function initSchema() {
       SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Processing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
       SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Publishing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
       SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'QC Pending'         AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
+      SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'QC Hold'            AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_hold,
       SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Sold'               AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_sold,
       SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Others'             AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_others
     FROM vins v
@@ -146,7 +154,7 @@ export async function initSchema() {
   `);
 
   await pool.query(`
-    CREATE OR REPLACE VIEW v_by_csm AS
+    CREATE VIEW v_by_csm AS
     SELECT
       ed.poc_email                          AS name,
       COUNT(DISTINCT v.rooftop_id)::int     AS rooftop_count,
@@ -161,6 +169,7 @@ export async function initSchema() {
       SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Processing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
       SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Publishing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
       SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'QC Pending'         AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
+      SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'QC Hold'            AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_hold,
       SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Sold'               AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_sold,
       SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Others'             AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_others
     FROM vins v
@@ -171,7 +180,7 @@ export async function initSchema() {
   `);
 
   await pool.query(`
-    CREATE OR REPLACE VIEW v_by_type AS
+    CREATE VIEW v_by_type AS
     SELECT
       rd.team_type                          AS label,
       COUNT(DISTINCT v.rooftop_id)::int     AS rooftop_count,
@@ -185,6 +194,7 @@ export async function initSchema() {
       SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Processing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
       SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Publishing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
       SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'QC Pending'         AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
+      SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'QC Hold'            AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_hold,
       SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Sold'               AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_sold,
       SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Others'             AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_others
     FROM vins v

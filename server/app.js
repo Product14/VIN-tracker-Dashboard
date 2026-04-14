@@ -61,7 +61,7 @@ async function syncVins() {
 
   const vins = [], dealerVinIds = [], enterpriseIds = [], rooftopIds = [];
   const statuses = [], after24hs = [], receivedAts = [], processedAts = [];
-  const reasonBuckets = [], syncedAts = [];
+  const reasonBuckets = [], holdReasons = [], syncedAts = [];
 
   for (const row of deduped) {
     vins.push(row.vinName ?? "");
@@ -73,6 +73,7 @@ async function syncVins() {
     receivedAts.push(cleanDate(row.receivedAt));
     processedAts.push(cleanDate(row.sentAt));
     reasonBuckets.push(row.reason_bucket ?? "");
+    holdReasons.push(row.hold_reason ?? "");
     syncedAts.push(syncedAt);
   }
 
@@ -83,12 +84,12 @@ async function syncVins() {
     if (deduped.length > 0) {
       await client.query(`
         INSERT INTO vins
-          (vin, dealer_vin_id, enterprise_id, rooftop_id, status, after_24h, received_at, processed_at, reason_bucket, synced_at)
+          (vin, dealer_vin_id, enterprise_id, rooftop_id, status, after_24h, received_at, processed_at, reason_bucket, hold_reason, synced_at)
         SELECT
           UNNEST($1::text[]), UNNEST($2::text[]), UNNEST($3::text[]), UNNEST($4::text[]),
           UNNEST($5::text[]), UNNEST($6::smallint[]), UNNEST($7::text[]), UNNEST($8::text[]),
-          UNNEST($9::text[]), UNNEST($10::text[])
-      `, [vins, dealerVinIds, enterpriseIds, rooftopIds, statuses, after24hs, receivedAts, processedAts, reasonBuckets, syncedAts]);
+          UNNEST($9::text[]), UNNEST($10::text[]), UNNEST($11::text[])
+      `, [vins, dealerVinIds, enterpriseIds, rooftopIds, statuses, after24hs, receivedAts, processedAts, reasonBuckets, holdReasons, syncedAts]);
     }
     await client.query("COMMIT");
   } catch (e) {
@@ -236,6 +237,7 @@ function toApiRow(r) {
     csm:          r.csm,
     status:       r.status,
     reasonBucket: r.reason_bucket || null,
+    holdReason:   r.hold_reason || null,
     after24h:     r.after_24h !== null ? Boolean(r.after_24h) : null,
     receivedAt:   r.received_at,
     processedAt:  r.processed_at,
@@ -450,6 +452,7 @@ const SORT_MAP = {
   receivedAt:   "v.received_at",
   processedAt:  "v.processed_at",
   reasonBucket: "v.reason_bucket",
+  holdReason:   "v.hold_reason",
 };
 
 function buildVinSort({ sortBy, sortDir } = {}) {
@@ -466,7 +469,7 @@ const VIN_FROM = `
 
 const VIN_SELECT = `
   SELECT v.vin, v.dealer_vin_id, v.enterprise_id, v.rooftop_id,
-         v.status, v.after_24h, v.received_at, v.processed_at, v.reason_bucket, v.synced_at,
+         v.status, v.after_24h, v.received_at, v.processed_at, v.reason_bucket, v.hold_reason, v.synced_at,
          rd.team_name AS rooftop, rd.team_type AS rooftop_type,
          ed.name AS enterprise, ed.poc_email AS csm
   ${VIN_FROM}
@@ -662,6 +665,7 @@ app.get("/api/filter-options", async (_req, res) => {
         BOOL_OR(bucket_processing_pending > 0) AS bucket_processing_pending,
         BOOL_OR(bucket_publishing_pending > 0) AS bucket_publishing_pending,
         BOOL_OR(bucket_qc_pending         > 0) AS bucket_qc_pending,
+        BOOL_OR(bucket_qc_hold            > 0) AS bucket_qc_hold,
         BOOL_OR(bucket_sold               > 0) AS bucket_sold,
         BOOL_OR(bucket_others             > 0) AS bucket_others
       FROM v_by_rooftop
@@ -687,6 +691,7 @@ app.get("/api/filter-options", async (_req, res) => {
       bucketProcessingPending: bf.bucket_processing_pending ?? false,
       bucketPublishingPending: bf.bucket_publishing_pending ?? false,
       bucketQcPending:         bf.bucket_qc_pending         ?? false,
+      bucketQcHold:            bf.bucket_qc_hold            ?? false,
       bucketSold:              bf.bucket_sold               ?? false,
       bucketOthers:            bf.bucket_others             ?? false,
     },
