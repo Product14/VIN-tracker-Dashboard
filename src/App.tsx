@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useEffect } from "react";
 import Dashboard from "../inventory-dashboard.tsx";
 import ChurnDashboard from "./ChurnDashboard.tsx";
 
@@ -66,6 +66,42 @@ const TAB_ICONS: Record<string, JSX.Element> = {
 };
 
 function HomePage({ onNavigate }: { onNavigate: (dashId: string, tab: string) => void }) {
+  const [vinStats, setVinStats] = useState<{ pending24h: number; websiteCoverage: number; notIntegrated: number; total: number } | null>(null);
+
+  useEffect(() => {
+    fetch("/api/summary?dateFilter=all")
+      .then(r => r.ok ? r.json() : null)
+      .then(json => {
+        if (!json?.totals) return;
+        const t = json.totals;
+        const total = t.total ?? 0;
+        const notIntegrated = (json.byRooftop ?? []).filter((r: any) => r.imsIntegrationStatus === "Not Integrated").length;
+        const websiteWithUrl = (json.byRooftop ?? []).filter((r: any) => r.websiteListingUrl).length;
+        const totalRooftops = (json.byRooftop ?? []).length;
+        setVinStats({
+          pending24h: t.notProcessedAfter24h ?? t.not_processed_after_24h ?? 0,
+          total,
+          notIntegrated,
+          websiteCoverage: totalRooftops > 0 ? Math.round((websiteWithUrl / totalRooftops) * 100) : 0,
+        });
+      })
+      .catch(() => {});
+  }, []);
+
+  const churnCards = [{ label: "Issue Types", value: "7", pct: null }, { label: "Views", value: "3", pct: null }, { label: "ARR Tracked", value: "$800K+", pct: null }];
+
+  const vinMetrics = vinStats
+    ? [
+        { label: "Pending VINs >24h", value: vinStats.pending24h.toLocaleString(), pct: vinStats.total > 0 ? `${((vinStats.pending24h / vinStats.total) * 100).toFixed(1)}% of total` : null },
+        { label: "Website URL Coverage", value: `${vinStats.websiteCoverage}%`, pct: `of rooftops` },
+        { label: "Not Integrated", value: vinStats.notIntegrated.toLocaleString(), pct: null },
+      ]
+    : [
+        { label: "Pending VINs >24h", value: "—", pct: null },
+        { label: "Website URL Coverage", value: "—", pct: null },
+        { label: "Not Integrated", value: "—", pct: null },
+      ];
+
   const cards = [
     {
       id: "churn", label: "Churn Dashboard",
@@ -73,7 +109,7 @@ function HomePage({ onNavigate }: { onNavigate: (dashId: string, tab: string) =>
       color: "#6366f1", lightColor: "#eef2ff",
       icon: NAV[0].icon,
       tabs: ["Issue Level", "Rooftop Level", "Rooftop × Issue"],
-      stats: [{ label: "Issue Types", value: "7" }, { label: "Views", value: "3" }, { label: "ARR Tracked", value: "$800K+" }],
+      stats: churnCards,
     },
     {
       id: "vin", label: "VIN Tracking Dashboard",
@@ -81,7 +117,7 @@ function HomePage({ onNavigate }: { onNavigate: (dashId: string, tab: string) =>
       color: "#0ea5e9", lightColor: "#e0f2fe",
       icon: NAV[1].icon,
       tabs: ["Overview", "Enterprise View", "Rooftop View", "VIN Data"],
-      stats: [{ label: "Live Records", value: "120K+" }, { label: "Rooftops", value: "500+" }, { label: "CSMs", value: "20+" }],
+      stats: vinMetrics,
     },
   ];
 
@@ -138,10 +174,13 @@ function HomePage({ onNavigate }: { onNavigate: (dashId: string, tab: string) =>
               <p style={{ margin: 0, fontSize: 13, color: "#6b7280", lineHeight: 1.6 }}>{card.description}</p>
 
               {/* Stats row */}
-              <div style={{ display: "flex", gap: 16, marginTop: 16 }}>
-                {card.stats.map(s => (
+              <div style={{ display: "flex", gap: 20, marginTop: 16, flexWrap: "wrap" }}>
+                {card.stats.map((s: any) => (
                   <div key={s.label}>
-                    <div style={{ fontSize: 18, fontWeight: 800, color: card.color }}>{s.value}</div>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 5 }}>
+                      <span style={{ fontSize: 18, fontWeight: 800, color: card.color }}>{s.value}</span>
+                      {s.pct && <span style={{ fontSize: 11, color: "#9ca3af", fontWeight: 500 }}>({s.pct})</span>}
+                    </div>
                     <div style={{ fontSize: 11, color: "#9ca3af", fontWeight: 500 }}>{s.label}</div>
                   </div>
                 ))}
