@@ -783,272 +783,6 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
   );
 }
 
-function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = false, hasPublishingDisabled = false, bucketFlags = {}, rows, total, page, pageCount, loading, onPageChange, onDrillDown, filters = DEFAULT_ENTERPRISE_FILTERS, setFilters = (_f) => {}, sortCol, sortDir, onSortChange }) {
-  const [downloading, setDownloading] = useState(false);
-  const row1Ref = useRef<HTMLTableRowElement>(null);
-  const [row1H, setRow1H] = useState(0);
-  useEffect(() => { if (row1Ref.current) setRow1H(row1Ref.current.getBoundingClientRect().height); });
-
-  const tdStyle = { padding: "10px 14px", borderBottom: "1px solid #f3f4f6" };
-
-  const SCORE_OPTIONS = ["Poor (<6)", "Average (6–8)", "Good (8+)"];
-
-  const activeBuckets = BUCKETS.filter(b => bucketFlags[b.key]);
-  const pendencyColSpan = 1 + activeBuckets.length;
-  const showNotIntegrated      = hasNotIntegrated;
-  const showPublishingDisabled = hasPublishingDisabled;
-  const cols = [
-    { key: "id",                  label: "Enterprise ID" },
-    { key: "name",                label: "Enterprise Name" },
-    { key: "accountType",         label: "Account Type" },
-    { key: "csm",                 label: "CSM" },
-    { key: "rooftopCount",        label: "Rooftops",            numeric: true },
-    ...(showNotIntegrated      ? [{ key: "notIntegratedCount",      label: "Not Integrated",      numeric: true }] : []),
-    ...(showPublishingDisabled ? [{ key: "publishingDisabledCount", label: "Publishing Disabled", numeric: true }] : []),
-    { key: "total",               label: "Total Inventory",     numeric: true },
-    { key: "processed",           label: "VIN Delivered",       numeric: true },
-    { key: "processedAfter24",    label: "Delivered VINs >24h", numeric: true },
-    { key: "notProcessed",        label: "Pending VINs",        numeric: true },
-    { key: "notProcessedAfter24", label: "Pending VINs >24h",   numeric: true },
-    ...activeBuckets.map(b => ({ key: b.key, label: b.label, numeric: true })),
-    { key: "avgWebsiteScore",     label: "Avg Website Score",   numeric: true },
-    { key: "_links",              label: "Links",               numeric: true, noSort: true },
-  ];
-
-  const handleSort = col => {
-    if (sortCol !== col) { onSortChange(col, "desc"); }
-    else if (sortDir === "desc") { onSortChange(col, "asc"); }
-    else { onSortChange(null, "asc"); }
-  };
-
-  const activeCount = [filters.csm, filters.accountType, filters.websiteScore].filter(Boolean).length;
-
-  const handleDownload = async () => {
-    setDownloading(true);
-    const params = new URLSearchParams();
-    if (filters.search)       params.set("search",      filters.search);
-    if (filters.csm)          params.set("csm",         filters.csm);
-    if (filters.accountType)  params.set("accountType", filters.accountType);
-    if (filters.websiteScore) params.set("websiteScore", filters.websiteScore);
-    if (sortCol) { params.set("sortBy", sortCol); params.set("sortDir", sortDir); }
-    try {
-      const res = await fetch(`${API_BASE}/api/enterprises/export?${params}`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const { data } = await res.json();
-      const headers = ["Enterprise ID", "Enterprise Name", "Account Type", "CSM", "Rooftops", ...(showNotIntegrated ? ["Not Integrated"] : []), ...(showPublishingDisabled ? ["Publishing Disabled"] : []), "Total Inventory", "VIN Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h", "Pending VINs >24h %", "Avg Website Score", ...activeBuckets.map(b => b.label)];
-      const csvRows = data.map((r: any) => [r.id, r.name, r.accountType ?? "", r.csm ?? "", r.rooftopCount ?? 0, ...(showNotIntegrated ? [r.notIntegratedCount ?? 0] : []), ...(showPublishingDisabled ? [r.publishingDisabledCount ?? 0] : []), r.total, r.processed, r.processedAfter24, r.notProcessed, r.notProcessedAfter24, r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0), r.avgWebsiteScore !== null && r.avgWebsiteScore !== undefined ? Number(r.avgWebsiteScore).toFixed(1) : "", ...activeBuckets.map(b => r[b.key] ?? 0)]);
-      downloadCSV("enterprise-view.csv", headers, csvRows);
-    } catch (err) {
-      console.error("Export failed:", err);
-    } finally {
-      setDownloading(false);
-    }
-  };
-
-  return (
-    <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10, gap: 10 }}>
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", flex: 1 }}>
-          <input
-            placeholder="Search Enterprise, CSM..."
-            value={filters.search || ""}
-            onChange={e => setFilters(f => ({ ...f, search: e.target.value }))}
-            style={{ flex: 1, minWidth: 220, padding: "7px 14px", borderRadius: 8, border: "1px solid #d1d5db", fontSize: 13, outline: "none" }}
-          />
-          <SearchableSelect
-            value={filters.csm}
-            onChange={v => setFilters(f => ({ ...f, csm: v }))}
-            options={csmOptions}
-            placeholder="All CSMs"
-          />
-          <SearchableSelect
-            value={filters.accountType}
-            onChange={v => setFilters(f => ({ ...f, accountType: v }))}
-            options={typeOptions}
-            placeholder="All Types"
-          />
-          <SearchableSelect
-            value={filters.websiteScore}
-            onChange={v => setFilters(f => ({ ...f, websiteScore: v }))}
-            options={SCORE_OPTIONS}
-            placeholder="All Scores"
-          />
-          {(filters.search || activeCount > 0) && (
-            <button onClick={() => setFilters(DEFAULT_ENTERPRISE_FILTERS)}
-              style={{ padding: "7px 14px", borderRadius: 8, border: "1px solid #fca5a5", background: "#fef2f2", color: "#dc2626", fontSize: 13, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>
-              Clear {activeCount > 0 ? `${activeCount} filter${activeCount > 1 ? "s" : ""}` : "filters"}
-            </button>
-          )}
-        </div>
-        <button onClick={handleDownload} disabled={downloading} title="Download as CSV"
-          style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 14px", borderRadius: 8, border: "1px solid #d1d5db", background: downloading ? "#f3f4f6" : "#fff", fontSize: 13, fontWeight: 600, cursor: downloading ? "not-allowed" : "pointer", color: downloading ? "#9ca3af" : "#374151", transition: "all 0.15s" }}
-          onMouseEnter={e => { if (!downloading) { e.currentTarget.style.background = "#f9fafb"; e.currentTarget.style.borderColor = "#9ca3af"; } }}
-          onMouseLeave={e => { if (!downloading) { e.currentTarget.style.background = "#fff"; e.currentTarget.style.borderColor = "#d1d5db"; } }}>
-          {downloading ? "⟳ Downloading…" : "↓ Download CSV"}
-        </button>
-      </div>
-      {(filters.csm || filters.accountType || filters.websiteScore) && (
-        <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
-          {filters.csm         && <Badge label={`CSM: ${fmtCsm(filters.csm)}`} color="blue" />}
-          {filters.accountType && <Badge label={`Type: ${filters.accountType}`} color="blue" />}
-          {filters.websiteScore && <Badge label={`Score: ${filters.websiteScore}`} color="blue" />}
-        </div>
-      )}
-      <div style={{ maxHeight: "calc(100vh - 260px)", overflow: "auto", borderRadius: 10, border: "1px solid #e5e7eb" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-          <thead>
-            {/* Row 1 — main column headers (rowSpan=2) + pendency group label */}
-            <tr ref={row1Ref} style={{ background: "#f9fafb" }}>
-              <th rowSpan={2} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2, width: 48, whiteSpace: "nowrap" }}>S. No.</th>
-              {[
-                { key: "id", label: "Enterprise ID", numeric: false },
-                { key: "name", label: "Enterprise Name", numeric: false },
-                { key: "accountType", label: "Account Type", numeric: false },
-                { key: "csm", label: "CSM", numeric: false },
-              ].map(c => (
-                <th key={c.key} rowSpan={2} onClick={() => handleSort(c.key)} style={{ padding: "10px 14px", textAlign: "left", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "pointer", userSelect: "none", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
-                  {c.label} {sortCol === c.key ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
-                </th>
-              ))}
-              {[
-                { key: "rooftopCount", label: "Rooftops" },
-                ...(showNotIntegrated      ? [{ key: "notIntegratedCount",      label: "Not Integrated" }]      : []),
-                ...(showPublishingDisabled ? [{ key: "publishingDisabledCount", label: "Publishing Disabled" }] : []),
-                { key: "total",            label: "Total Inventory" },
-                { key: "processed",        label: "VIN Delivered" },
-                { key: "processedAfter24", label: "Delivered VINs >24h" },
-                { key: "notProcessed",     label: "Pending VINs" },
-              ].map(c => (
-                <th key={c.key} rowSpan={2} onClick={() => handleSort(c.key)} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "pointer", userSelect: "none", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
-                  {c.label} {sortCol === c.key ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
-                </th>
-              ))}
-              {/* Pendency group header */}
-              <th colSpan={pendencyColSpan} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#92400e", background: "#fffbeb", position: "sticky", top: 0, zIndex: 2, borderLeft: "2px solid #fcd34d", borderRight: "2px solid #fcd34d", boxShadow: "inset 0 -1px 0 #fde68a", whiteSpace: "nowrap" }}>
-                Pendency &gt;24h
-              </th>
-              <th rowSpan={2} onClick={() => handleSort("avgWebsiteScore")} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "pointer", userSelect: "none", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
-                Avg Website Score {sortCol === "avgWebsiteScore" ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
-              </th>
-              <th rowSpan={2} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "default", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
-                Links
-              </th>
-            </tr>
-            {/* Row 2 — pendency sub-headers */}
-            <tr style={{ background: "#fffbeb" }}>
-              <th onClick={() => handleSort("notProcessedAfter24")} style={{ padding: "5px 8px", fontSize: 11, fontWeight: 600, color: "#92400e", background: "#fffbeb", position: "sticky", top: row1H, zIndex: 3, whiteSpace: "nowrap", cursor: "pointer", userSelect: "none", textAlign: "center", borderLeft: "2px solid #fcd34d", boxShadow: "inset 0 -2px 0 #e5e7eb", ...(activeBuckets.length === 0 ? { borderRight: "2px solid #fcd34d" } : {}) }}>
-                Total {sortCol === "notProcessedAfter24" ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
-              </th>
-              {activeBuckets.map((b, idx) => (
-                <th key={b.key} onClick={() => handleSort(b.key)} style={{ padding: "5px 8px", fontSize: 11, fontWeight: 600, color: "#92400e", background: "#fffbeb", position: "sticky", top: row1H, zIndex: 3, whiteSpace: "nowrap", cursor: "pointer", userSelect: "none", textAlign: "center", boxShadow: "inset 0 -2px 0 #e5e7eb", ...(idx === activeBuckets.length - 1 ? { borderRight: "2px solid #fcd34d" } : {}) }}>
-                  {b.label.replace(" Pending", "").replace("Others", "Other")} {sortCol === b.key ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody className={loading && rows.length > 0 ? "tbody-loading" : ""}>
-            {loading && rows.length === 0 && <TableShimmer cols={cols.length + 1} />}
-            {!loading && rows.length === 0 && (
-              <tr><td colSpan={cols.length + 1} style={{ padding: 40, textAlign: "center", color: "#9ca3af", fontSize: 14 }}>No records match the current filters.</td></tr>
-            )}
-            {rows.map((r, i) => {
-              const rate = r.total === 0 ? 0 : (r.notProcessedAfter24 / r.total) * 100;
-              return (
-                <tr key={r.id} style={{ background: i % 2 === 0 ? "#fff" : "#f9fafb" }}>
-                  <td style={{ ...tdStyle, textAlign: "center", color: "#9ca3af", fontSize: 12 }}>{(page - 1) * 50 + i + 1}</td>
-                  <td style={{ ...tdStyle, fontFamily: "monospace", fontSize: 12, color: "#0ea5e9", fontWeight: 600 }}><Truncated value={r.id} maxWidth={90} /></td>
-                  <td style={{ ...tdStyle, fontWeight: 600 }}><Truncated value={r.name} maxWidth={180} /></td>
-                  <td style={tdStyle}>{r.accountType ? <Badge label={r.accountType} color="blue" /> : <span style={{ color: "#9ca3af" }}>—</span>}</td>
-                  <td style={tdStyle}><Truncated value={fmtCsm(r.csm)} maxWidth={130} /></td>
-                  <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.rooftopCount} color="#6b7280" onClick={() => onDrillDown({ enterpriseId: r.id })} /></td>
-                  {showNotIntegrated && (
-                    <td style={{ ...tdStyle, textAlign: "center" }}>
-                      {(r.notIntegratedCount ?? 0) > 0
-                        ? <ClickableNum value={r.notIntegratedCount} color="#991b1b" onClick={() => onDrillDown({ enterpriseId: r.id })} title="Rooftops not integrated" />
-                        : <span style={{ color: "#9ca3af" }}>0</span>}
-                    </td>
-                  )}
-                  {showPublishingDisabled && (
-                    <td style={{ ...tdStyle, textAlign: "center" }}>
-                      {(r.publishingDisabledCount ?? 0) > 0
-                        ? <ClickableNum value={r.publishingDisabledCount} color="#991b1b" onClick={() => onDrillDown({ enterpriseId: r.id })} title="Rooftops with publishing disabled" />
-                        : <span style={{ color: "#9ca3af" }}>0</span>}
-                    </td>
-                  )}
-                  <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.total} color="#4f46e5" onClick={() => onDrillDown({ enterpriseId: r.id })} /></td>
-                  <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.processed} color="#166534" onClick={() => onDrillDown({ enterpriseId: r.id, status: "Delivered" })} /></td>
-                  <td style={{ ...tdStyle, textAlign: "center" }}>
-                    {r.processedAfter24 > 0
-                      ? <span onClick={() => onDrillDown({ enterpriseId: r.id, status: "Delivered", after24h: true })} style={{ cursor: "pointer" }}><Badge label={r.processedAfter24} color="amber" /></span>
-                      : <span style={{ color: "#9ca3af" }}>0</span>}
-                  </td>
-                  <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.notProcessed} color="#991b1b" onClick={() => onDrillDown({ enterpriseId: r.id, status: "Not Delivered" })} /></td>
-                  {/* Pendency group: Total (count + %) */}
-                  <td style={{ ...tdStyle, textAlign: "center", borderLeft: "2px solid #fcd34d", ...(activeBuckets.length === 0 ? { borderRight: "2px solid #fcd34d" } : {}) }}>
-                    <div style={{ display: "flex", flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 5 }}>
-                      {r.notProcessedAfter24 > 0
-                        ? <span onClick={() => onDrillDown({ enterpriseId: r.id, status: "Not Delivered", after24h: true })} style={{ cursor: "pointer" }}><Badge label={r.notProcessedAfter24} color="red" /></span>
-                        : <span style={{ color: "#9ca3af" }}>0</span>}
-                      <span style={{ fontSize: 11, color: "#6b7280" }}>{rate.toFixed(0)}%</span>
-                    </div>
-                  </td>
-                  {/* Pendency group: bucket split columns */}
-                  {activeBuckets.map((b, idx) => (
-                    <td key={b.key} style={{ ...tdStyle, textAlign: "center", ...(idx === activeBuckets.length - 1 ? { borderRight: "2px solid #fcd34d" } : {}) }}>
-                      {(r[b.key] ?? 0) > 0 ? <Badge label={r[b.key]} color="amber" /> : <span style={{ color: "#9ca3af" }}>0</span>}
-                    </td>
-                  ))}
-                  <td style={{ ...tdStyle, textAlign: "center" }}>
-                    {r.avgWebsiteScore !== null && r.avgWebsiteScore !== undefined
-                      ? <span style={{ fontWeight: 700, color: r.avgWebsiteScore >= 8 ? "#166534" : r.avgWebsiteScore >= 6 ? "#92400e" : "#991b1b" }}>
-                          {Number(r.avgWebsiteScore).toFixed(1)}
-                        </span>
-                      : <span style={{ color: "#9ca3af" }}>—</span>}
-                  </td>
-                  <td style={{ ...tdStyle, textAlign: "center" }}>
-                    <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-                      <a href={`https://console.spyne.ai/home?enterprise_id=${r.id}`} target="_blank" rel="noreferrer" title="Open in Console"
-                        style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 28, height: 28, borderRadius: 6, border: "1px solid #e5e7eb", background: "#f9fafb", color: "#6b7280", textDecoration: "none", transition: "all 0.15s" }}
-                        onMouseEnter={e => { e.currentTarget.style.borderColor = "#818cf8"; e.currentTarget.style.color = "#4f46e5"; e.currentTarget.style.background = "#eef2ff"; }}
-                        onMouseLeave={e => { e.currentTarget.style.borderColor = "#e5e7eb"; e.currentTarget.style.color = "#6b7280"; e.currentTarget.style.background = "#f9fafb"; }}>
-                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-                      </a>
-                      {r.websiteUrl
-                        ? <a href={r.websiteUrl} target="_blank" rel="noreferrer" title="Open Website"
-                            style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 28, height: 28, borderRadius: 6, border: "1px solid #e5e7eb", background: "#f9fafb", color: "#6b7280", textDecoration: "none", transition: "all 0.15s" }}
-                            onMouseEnter={e => { e.currentTarget.style.borderColor = "#6ee7b7"; e.currentTarget.style.color = "#059669"; e.currentTarget.style.background = "#ecfdf5"; }}
-                            onMouseLeave={e => { e.currentTarget.style.borderColor = "#e5e7eb"; e.currentTarget.style.color = "#6b7280"; e.currentTarget.style.background = "#f9fafb"; }}>
-                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-                          </a>
-                        : <span title="Website URL not available"
-                            style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 28, height: 28, borderRadius: 6, border: "1px dashed #e5e7eb", background: "#fafafa", color: "#d1d5db", cursor: "not-allowed" }}>
-                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-                          </span>}
-                    </div>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-      <div style={{ marginTop: 10, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
-        <span style={{ fontSize: 12, color: "#9ca3af" }}>Showing {rows.length} of {total.toLocaleString()} enterprises</span>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <button onClick={() => onPageChange(page - 1)} disabled={page <= 1}
-            style={{ padding: "5px 12px", borderRadius: 7, border: "1px solid #d1d5db", background: page <= 1 ? "#f3f4f6" : "#fff", fontSize: 13, fontWeight: 600, cursor: page <= 1 ? "not-allowed" : "pointer", color: page <= 1 ? "#9ca3af" : "#374151" }}>
-            ← Prev
-          </button>
-          <span style={{ fontSize: 12, color: "#6b7280" }}>Page {page} of {pageCount}</span>
-          <button onClick={() => onPageChange(page + 1)} disabled={page >= pageCount}
-            style={{ padding: "5px 12px", borderRadius: 7, border: "1px solid #d1d5db", background: page >= pageCount ? "#f3f4f6" : "#fff", fontSize: 13, fontWeight: 600, cursor: page >= pageCount ? "not-allowed" : "pointer", color: page >= pageCount ? "#9ca3af" : "#374151" }}>
-            Next →
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 function CSMTab({ csms, onDrillDown }) {
   const tdStyle = { padding: "10px 14px", borderBottom: "1px solid #f3f4f6" };
@@ -1409,7 +1143,6 @@ export default function Dashboard() {
   });
   const [rawFilters, setRawFilters] = useState(DEFAULT_FILTERS);
   const [rooftopFilters, setRooftopFilters] = useState(DEFAULT_ROOFTOP_FILTERS);
-  const [enterpriseFilters, setEnterpriseFilters] = useState(DEFAULT_ENTERPRISE_FILTERS);
   const [, setTick] = useState(0);
 
   // Summary data — sourced from /api/summary (DB views, full dataset)
@@ -1439,16 +1172,8 @@ export default function Dashboard() {
   const [rooftopSortCol, setRooftopSortCol] = useState<string | null>("notProcessedAfter24");
   const [rooftopSortDir, setRooftopSortDir] = useState<"asc" | "desc">("desc");
 
-  // Enterprise paginated data — sourced from /api/enterprises
-  const [enterpriseRows, setEnterpriseRows] = useState<any[]>([]);
-  const [enterprisePage, setEnterprisePage] = useState(1);
-  const [enterprisePageCount, setEnterprisePageCount] = useState(1);
-  const [enterpriseTotal, setEnterpriseTotal] = useState(0);
-  const [enterpriseLoading, setEnterpriseLoading] = useState(false);
-  const [enterpriseSortCol, setEnterpriseSortCol] = useState<string | null>("notProcessedAfter24");
-  const [enterpriseSortDir, setEnterpriseSortDir] = useState<"asc" | "desc">("desc");
 
-  const tabs = ["Overview", "Enterprise View", "Rooftop View", "VIN Data"];
+  const tabs = ["Overview", "Rooftop View", "VIN Data"];
   // Track whether the initial mount load has completed so the dateFilter
   // effect can safely skip its first run (mount effect handles it).
   const initialLoadDone = useRef(false);
@@ -1498,24 +1223,6 @@ export default function Dashboard() {
       .catch(err => { setFetchError(err.message); setRooftopLoading(false); });
   }, []);
 
-  // Fetch paginated enterprise rows
-  const loadEnterprisePage = useCallback((page: number, filters: any, sortCol: string | null, sortDir: string, df: string = "post") => {
-    setEnterpriseLoading(true);
-    const params = new URLSearchParams({ page: String(page), pageSize: "50" });
-    if (filters.search)       params.set("search",      filters.search);
-    if (filters.csm)          params.set("csm",         filters.csm);
-    if (filters.accountType)  params.set("accountType", filters.accountType);
-    if (filters.websiteScore) params.set("websiteScore", filters.websiteScore);
-    if (sortCol) { params.set("sortBy", sortCol); params.set("sortDir", sortDir); }
-    params.set("dateFilter", df);
-    fetch(`${API_BASE}/api/enterprises?${params}`)
-      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
-      .then(({ data, total, pageCount }) => {
-        setEnterpriseRows(data); setEnterpriseTotal(total); setEnterprisePageCount(pageCount); setEnterprisePage(page);
-        setEnterpriseLoading(false);
-      })
-      .catch(err => { setFetchError(err.message); setEnterpriseLoading(false); });
-  }, []);
 
   // Fetch paginated raw VIN rows
   const loadRawPage = useCallback((page: number, filters: any, sortCol: string | null = null, sortDir: string = "asc", df: string = "post") => {
@@ -1580,10 +1287,6 @@ export default function Dashboard() {
     if (tab === "Rooftop View") loadRooftopPage(1, rooftopFilters, rooftopSortCol, rooftopSortDir, dateFilter);
   }, [tab, rooftopFilters, rooftopSortCol, rooftopSortDir, dateFilter]);
 
-  // Load enterprise page when switching to Enterprise View or when filters/sort/dateFilter change
-  useEffect(() => {
-    if (tab === "Enterprise View") loadEnterprisePage(1, enterpriseFilters, enterpriseSortCol, enterpriseSortDir, dateFilter);
-  }, [tab, enterpriseFilters, enterpriseSortCol, enterpriseSortDir, dateFilter]);
 
   // Load raw page when switching to VIN Data tab or when filters/page/sort/dateFilter change
   useEffect(() => {
@@ -1608,10 +1311,6 @@ export default function Dashboard() {
     setRooftopSortDir(dir);
   }, []);
 
-  const handleEnterpriseSort = useCallback((col: string | null, dir: "asc" | "desc") => {
-    setEnterpriseSortCol(col);
-    setEnterpriseSortDir(dir);
-  }, []);
 
   // Sync from Metabase — awaits full sync, then reloads summary and filter options
   const syncNow = useCallback(() => {
@@ -1769,27 +1468,6 @@ export default function Dashboard() {
           sortCol={rooftopSortCol}
           sortDir={rooftopSortDir}
           onSortChange={handleRooftopSort}
-        />
-      )}
-      {tab === "Enterprise View" && (
-        <EnterpriseTab
-          csmOptions={fo.enterpriseCSMs ?? []}
-          typeOptions={fo.enterpriseTypes ?? []}
-          hasNotIntegrated={fo.hasNotIntegrated ?? false}
-          hasPublishingDisabled={fo.hasPublishingDisabled ?? false}
-          bucketFlags={fo.bucketFlags ?? {}}
-          rows={enterpriseRows}
-          total={enterpriseTotal}
-          page={enterprisePage}
-          pageCount={enterprisePageCount}
-          loading={enterpriseLoading}
-          onPageChange={(p) => loadEnterprisePage(Math.max(1, Math.min(p, enterprisePageCount)), enterpriseFilters, enterpriseSortCol, enterpriseSortDir, dateFilter)}
-          onDrillDown={handleDrillDown}
-          filters={enterpriseFilters}
-          setFilters={(f) => { setEnterpriseFilters(f); }}
-          sortCol={enterpriseSortCol}
-          sortDir={enterpriseSortDir}
-          onSortChange={handleEnterpriseSort}
         />
       )}
       {tab === "VIN Data" && (
