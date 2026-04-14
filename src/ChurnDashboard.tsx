@@ -377,30 +377,17 @@ function RooftopIssueLevelView({ filterRooftop }: { filterRooftop?: string }) {
         {rooftopFilter && <button onClick={() => setRooftopFilter("")} style={{ padding: "6px 10px", borderRadius: 7, border: "1px solid #fca5a5", background: "#fef2f2", color: "#dc2626", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Clear filter</button>}
         <div style={{ flex: 1 }} />
         <button onClick={() => downloadCSV("churn-rooftop-issue.csv",
-          ["Rooftop","Enterprise","CSM","ARR","Issue ID","Issue Type","Status","Priority","Days Open","Total VINs","Pending VINs","Pending >24h","Pending Rate %"],
-          sorted.map(i => [i.rooftop, i.enterprise, i.csm, i.arr, i.id, i.issueType, i.status, i.priority, i.daysOpen, i.vinTotal, i.vinPending, i.vinPendingOver24, i.vinTotal > 0 ? ((i.vinPendingOver24 / i.vinTotal) * 100).toFixed(0) : 0])
+          ["Rooftop","Enterprise","CSM","ARR","Issue ID","Issue Type","Status","Priority","Days Open"],
+          sorted.map(i => [i.rooftop, i.enterprise, i.csm, i.arr, i.id, i.issueType, i.status, i.priority, i.daysOpen])
         )} style={{ padding: "6px 12px", borderRadius: 7, border: "1px solid #d1d5db", background: "#fff", fontSize: 12, fontWeight: 600, cursor: "pointer", color: "#374151" }}>
           ↓ Export CSV
         </button>
       </div>
 
-      {/* Column group legend */}
-      <div style={{ display: "flex", gap: 16, marginBottom: 8, fontSize: 11, fontWeight: 600 }}>
-        <span style={{ color: "#374151" }}>Churn columns</span>
-        <span style={{ color: "#d1d5db" }}>|</span>
-        <span style={{ color: "#0ea5e9" }}>VIN Inventory columns</span>
-      </div>
-
       <div style={{ overflowX: "auto", borderRadius: 10, border: "1px solid #e5e7eb" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-          <colgroup>
-            <col /><col /><col /><col />
-            <col /><col /><col /><col /><col />
-            <col style={{ background: "#f0f9ff" }} /><col style={{ background: "#f0f9ff" }} /><col style={{ background: "#f0f9ff" }} /><col style={{ background: "#f0f9ff" }} />
-          </colgroup>
           <thead>
             <tr>
-              {/* Churn columns */}
               {[
                 { key: "rooftop", label: "Rooftop" },
                 { key: "enterprise", label: "Enterprise" },
@@ -415,48 +402,21 @@ function RooftopIssueLevelView({ filterRooftop }: { filterRooftop?: string }) {
                   {c.label} <SortIcon col={c.key} sortCol={sortCol} sortDir={sortDir} />
                 </th>
               ))}
-              {/* VIN columns */}
-              {[
-                { key: "vinTotal", label: "Total VINs", numeric: true },
-                { key: "vinPending", label: "Pending VINs", numeric: true },
-                { key: "vinPendingOver24", label: "Pending >24h", numeric: true },
-                { key: "vinRate", label: "Pending Rate", numeric: true },
-              ].map(c => (
-                <th key={c.key} onClick={() => c.key !== "vinRate" && handleSort(c.key)}
-                  style={{ ...thStyle(true, sortCol === c.key), background: "#e0f2fe", color: sortCol === c.key ? "#0369a1" : "#0c4a6e", borderBottom: "2px solid #bae6fd" }}>
-                  {c.label} {c.key !== "vinRate" && <SortIcon col={c.key} sortCol={sortCol} sortDir={sortDir} />}
-                </th>
-              ))}
             </tr>
           </thead>
           <tbody>
-            {sorted.map((issue, i) => {
-              const rate = issue.vinTotal > 0 ? (issue.vinPendingOver24 / issue.vinTotal) * 100 : 0;
-              return (
-                <tr key={issue.id} style={{ background: i % 2 === 0 ? "#fff" : "#f9fafb" }}>
-                  <td style={{ ...tdBase, fontWeight: 600 }}>{issue.rooftop}</td>
-                  <td style={{ ...tdBase, color: "#6b7280" }}>{issue.enterprise}</td>
-                  <td style={tdBase}>{issue.csm}</td>
-                  <td style={{ ...tdBase, textAlign: "center", fontWeight: 700 }}>{fmtARR(issue.arr)}</td>
-                  <td style={tdBase}><IssueTypeBadge type={issue.issueType} /></td>
-                  <td style={{ ...tdBase, textAlign: "center" }}><StatusBadge status={issue.status} /></td>
-                  <td style={{ ...tdBase, textAlign: "center" }}><PriorityBadge priority={issue.priority} /></td>
-                  <td style={{ ...tdBase, textAlign: "center", fontWeight: 600, color: issue.daysOpen >= 20 ? "#dc2626" : issue.daysOpen >= 10 ? "#d97706" : "#374151" }}>{issue.daysOpen}d</td>
-                  {/* VIN cells */}
-                  <td style={{ ...tdBase, textAlign: "center", background: "#f0f9ff" }}>{fmt(issue.vinTotal)}</td>
-                  <td style={{ ...tdBase, textAlign: "center", background: "#f0f9ff", color: "#dc2626", fontWeight: 600 }}>{fmt(issue.vinPending)}</td>
-                  <td style={{ ...tdBase, textAlign: "center", background: "#f0f9ff", color: "#d97706", fontWeight: 600 }}>{fmt(issue.vinPendingOver24)}</td>
-                  <td style={{ ...tdBase, textAlign: "center", background: "#f0f9ff" }}>
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 5 }}>
-                      <div style={{ width: 48, height: 6, background: "#e5e7eb", borderRadius: 3, overflow: "hidden" }}>
-                        <div style={{ width: `${Math.min(rate, 100)}%`, height: "100%", background: rate >= 30 ? "#ef4444" : rate >= 15 ? "#eab308" : "#22c55e", borderRadius: 3 }} />
-                      </div>
-                      <span style={{ fontSize: 11, fontWeight: 600, color: "#374151" }}>{rate.toFixed(0)}%</span>
-                    </div>
-                  </td>
-                </tr>
-              );
-            })}
+            {sorted.map((issue, i) => (
+              <tr key={issue.id} style={{ background: i % 2 === 0 ? "#fff" : "#f9fafb" }}>
+                <td style={{ ...tdBase, fontWeight: 600 }}>{issue.rooftop}</td>
+                <td style={{ ...tdBase, color: "#6b7280" }}>{issue.enterprise}</td>
+                <td style={tdBase}>{issue.csm}</td>
+                <td style={{ ...tdBase, textAlign: "center", fontWeight: 700 }}>{fmtARR(issue.arr)}</td>
+                <td style={tdBase}><IssueTypeBadge type={issue.issueType} /></td>
+                <td style={{ ...tdBase, textAlign: "center" }}><StatusBadge status={issue.status} /></td>
+                <td style={{ ...tdBase, textAlign: "center" }}><PriorityBadge priority={issue.priority} /></td>
+                <td style={{ ...tdBase, textAlign: "center", fontWeight: 600, color: issue.daysOpen >= 20 ? "#dc2626" : issue.daysOpen >= 10 ? "#d97706" : "#374151" }}>{issue.daysOpen}d</td>
+              </tr>
+            ))}
           </tbody>
         </table>
       </div>
