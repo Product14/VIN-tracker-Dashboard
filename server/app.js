@@ -25,14 +25,15 @@ const cleanAfter24 = (v) => {
   return v ? 1 : 0;
 };
 
-// Fetch from Metabase with no artificial timeout — wait as long as Metabase
-// needs. Retry on HTTP errors or network failures with exponential back-off.
-async function fetchFromMetabase(url, label, retries = 3) {
+// Fetch from Metabase with optional per-attempt timeout and exponential back-off retry.
+// timeoutMs = 0 means no timeout (used for fast endpoints like Rooftops/Enterprises).
+async function fetchFromMetabase(url, label, retries = 3, timeoutMs = 0) {
   let lastErr;
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       if (attempt > 0) console.log(`[sync:${label}] retry attempt ${attempt}/${retries}`);
-      const res = await fetch(url);
+      const opts = timeoutMs > 0 ? { signal: AbortSignal.timeout(timeoutMs) } : {};
+      const res = await fetch(url, opts);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return await res.json();
     } catch (err) {
@@ -53,7 +54,10 @@ async function fetchFromMetabase(url, label, retries = 3) {
 
 async function syncVins() {
   console.log("[sync:VIN_DETAILS] fetching…");
-  const rows    = await fetchFromMetabase(VIN_DETAILS_URL, "VIN_DETAILS");
+  // 1 retry (not 3) — Metabase VIN fetch can take ~60s, so 3 retries would consume
+  // ~240s of the 300s Vercel budget before the other syncs even get a chance.
+  // 65s timeout per attempt caps a hanging request just above Metabase's worst case.
+  const rows    = await fetchFromMetabase(VIN_DETAILS_URL, "VIN_DETAILS", 1, 65000);
   const syncedAt = new Date().toISOString();
   const deduped = Object.values(
     rows.reduce((acc, row) => { acc[row.vinName ?? ""] = row; return acc; }, {})
@@ -193,8 +197,11 @@ async function syncEnterprises() {
   console.log(`[sync:ENTERPRISE_DETAILS] done — ${deduped.length} rows`);
 }
 
-// Atomically claims a sync lock in the DB, runs all three syncs in parallel,
+// Atomically claims a sync lock in the DB, runs all three syncs sequentially,
 // then releases the lock. Returns { skipped: true } if already running.
+// VINs is treated as critical — its failure propagates as an HTTP 500.
+// Rooftops and Enterprises run first (milliseconds) and fail silently.
+// completed_at is only stamped when VINs succeeds.
 async function runSync() {
   // Atomic claim: only one instance wins this UPDATE at a time.
   const { rows } = await query(`
@@ -209,14 +216,24 @@ async function runSync() {
     return { skipped: true };
   }
 
-  console.log("[sync] started — VINs, Rooftops, Enterprises running sequentially");
+  console.log("[sync] started — Rooftops, Enterprises (non-critical), then VINs (critical)");
+  let succeeded = false;
   try {
-    // Run sequentially so only 1 DB connection is held at a time (pool max: 1).
-    for (const [fn, name] of [[syncVins, "VINs"], [syncRooftops, "Rooftops"], [syncEnterprises, "Enterprises"]]) {
+    // Non-critical syncs first — fast and must not be blocked by VINs timing out.
+    for (const [fn, name] of [[syncRooftops, "Rooftops"], [syncEnterprises, "Enterprises"]]) {
       try { await fn(); } catch (e) { console.error(`[sync] ${name} failed:`, e?.message); }
     }
+    // VINs is critical — let failure throw so the caller returns HTTP 500.
+    await syncVins();
+    succeeded = true;
   } finally {
-    await query(`UPDATE sync_state SET running = FALSE, completed_at = NOW() WHERE id = 'global'`);
+    // Only stamp completed_at when VINs actually succeeded so the UI
+    // does not show a fresh "synced X min ago" after a failed sync.
+    if (succeeded) {
+      await query(`UPDATE sync_state SET running = FALSE, completed_at = NOW() WHERE id = 'global'`);
+    } else {
+      await query(`UPDATE sync_state SET running = FALSE WHERE id = 'global'`);
+    }
   }
 
   console.log("[sync] complete");
