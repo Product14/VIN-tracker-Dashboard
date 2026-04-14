@@ -1401,18 +1401,8 @@ const EMPTY_SUMMARY = {
   byBucket: [],
 };
 
-export default function Dashboard({ activeTab: propTab, onTabChange }: { activeTab?: string; onTabChange?: (t: string) => void } = {}) {
-  const [tab, setTab] = useState(propTab ?? "Overview");
-
-  // Sync when sidebar changes the active tab
-  useEffect(() => {
-    if (propTab !== undefined) setTab(propTab);
-  }, [propTab]);
-
-  const switchTab = useCallback((t: string) => {
-    setTab(t);
-    onTabChange?.(t);
-  }, [onTabChange]);
+export default function Dashboard() {
+  const [tab, setTab] = useState("Overview");
   const [dateFilter, setDateFilter] = useState<"post" | "pre" | "all">(() => {
     const saved = typeof window !== "undefined" ? localStorage.getItem("vin_dateFilter") : null;
     return (saved === "post" || saved === "pre" || saved === "all") ? saved : "post";
@@ -1646,13 +1636,13 @@ export default function Dashboard({ activeTab: propTab, onTabChange }: { activeT
   const handleDrillDown = useCallback((filters) => {
     setRawFilters({ ...DEFAULT_FILTERS, ...filters });
     setRawPage(1);
-    switchTab("VIN Data");
-  }, [switchTab]);
+    setTab("VIN Data");
+  }, []);
 
   const handleRooftopDrillDown = useCallback((filters) => {
     setRooftopFilters({ ...DEFAULT_ROOFTOP_FILTERS, ...filters });
-    switchTab("Rooftop View");
-  }, [switchTab]);
+    setTab("Rooftop View");
+  }, []);
 
   return (
     <div style={{ fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" }}>
@@ -1705,7 +1695,6 @@ export default function Dashboard({ activeTab: propTab, onTabChange }: { activeT
         </div>
       )}
       <div style={{ padding: "20px 32px" }}>
-      {propTab === undefined && (
       <div style={{ marginBottom: 24, display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
         <div>
           <h1 style={{ fontSize: 22, fontWeight: 800, color: "#111827", margin: 0 }}>VIN Inventory Dashboard</h1>
@@ -1748,12 +1737,10 @@ export default function Dashboard({ activeTab: propTab, onTabChange }: { activeT
           </button>
         </div>
       </div>
-      )}
 
-      {propTab === undefined && (
       <div style={{ display: "flex", gap: 4, marginBottom: 24, background: "#f3f4f6", borderRadius: 10, padding: 4, width: "fit-content" }}>
         {tabs.map(t => (
-          <button key={t} onClick={() => { switchTab(t); }} style={{
+          <button key={t} onClick={() => { setTab(t); }} style={{
             padding: "8px 20px", borderRadius: 8, border: "none", cursor: "pointer", fontSize: 14, fontWeight: 600,
             background: tab === t ? "#fff" : "transparent", color: tab === t ? "#111827" : "#6b7280",
             boxShadow: tab === t ? "0 1px 3px rgba(0,0,0,0.1)" : "none", transition: "all 0.15s"
@@ -1762,7 +1749,6 @@ export default function Dashboard({ activeTab: propTab, onTabChange }: { activeT
           </button>
         ))}
       </div>
-      )}
 
       {tab === "Overview" && <OverviewTab totals={s.totals} byType={s.byType} byCSM={s.byCSM} byBucket={s.byBucket ?? []} onDrillDown={handleDrillDown} onRooftopDrillDown={handleRooftopDrillDown} loading={summaryLoading} />}
       {tab === "Rooftop View" && (
