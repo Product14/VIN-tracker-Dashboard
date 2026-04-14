@@ -10,7 +10,7 @@ const pool = new Pool({
   connectionString: process.env.VIN_TRACKER_DATABASE_URL,
   ssl: { rejectUnauthorized: false },
   max: 1,
-  idleTimeoutMillis: 1000,
+  idleTimeoutMillis: 10000,
   connectionTimeoutMillis: 10000,
 });
 
@@ -39,11 +39,13 @@ export async function initSchema() {
     ALTER TABLE vins ADD COLUMN IF NOT EXISTS hold_reason TEXT DEFAULT '';
     ALTER TABLE vins ADD COLUMN IF NOT EXISTS has_photos SMALLINT DEFAULT 0;
 
-    CREATE INDEX IF NOT EXISTS idx_vins_rooftop_id    ON vins(rooftop_id);
-    CREATE INDEX IF NOT EXISTS idx_vins_enterprise_id ON vins(enterprise_id);
-    CREATE INDEX IF NOT EXISTS idx_vins_status        ON vins(status);
-    CREATE INDEX IF NOT EXISTS idx_vins_received_at   ON vins(received_at);
-    CREATE INDEX IF NOT EXISTS idx_vins_has_photos     ON vins(has_photos);
+    CREATE INDEX IF NOT EXISTS idx_vins_rooftop_id        ON vins(rooftop_id);
+    CREATE INDEX IF NOT EXISTS idx_vins_enterprise_id     ON vins(enterprise_id);
+    CREATE INDEX IF NOT EXISTS idx_vins_status            ON vins(status);
+    CREATE INDEX IF NOT EXISTS idx_vins_received_at       ON vins(received_at);
+    CREATE INDEX IF NOT EXISTS idx_vins_has_photos        ON vins(has_photos);
+    CREATE INDEX IF NOT EXISTS idx_vins_reason_bucket     ON vins(reason_bucket);
+    CREATE INDEX IF NOT EXISTS idx_vins_status_photos_24h ON vins(status, has_photos, after_24h);
 
     CREATE TABLE IF NOT EXISTS rooftop_details (
       team_id                TEXT PRIMARY KEY,
@@ -74,35 +76,39 @@ export async function initSchema() {
       completed_at  TIMESTAMPTZ
     );
     INSERT INTO sync_state (id) VALUES ('global') ON CONFLICT (id) DO NOTHING;
+    ALTER TABLE sync_state ADD COLUMN IF NOT EXISTS total_rows INTEGER;
+    ALTER TABLE sync_state ADD COLUMN IF NOT EXISTS last_sync  TEXT;
+
+    -- Stores precomputed summary payloads keyed by date_filter ('all', 'post', 'pre').
+    -- Populated at the end of each sync so the summary API is a trivial row lookup.
+    CREATE TABLE IF NOT EXISTS summary_cache (
+      date_filter  TEXT PRIMARY KEY,
+      payload      JSONB NOT NULL,
+      computed_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    -- Stores precomputed filter-options payload (single global row).
+    -- Populated at the end of each sync so GET /api/filter-options is a trivial row lookup.
+    CREATE TABLE IF NOT EXISTS filter_cache (
+      id           TEXT PRIMARY KEY DEFAULT 'global',
+      payload      JSONB NOT NULL,
+      computed_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
   `);
 
-  // Views — dropped and recreated on every cold start so column additions/reorders
-  // don't hit the "cannot change name of view column" error from CREATE OR REPLACE.
-  await pool.query(`DROP VIEW IF EXISTS v_totals, v_by_rooftop, v_by_enterprise, v_by_csm, v_by_type`);
+  // Materialized views — dropped and recreated on every cold start so schema changes
+  // (column additions, reorders) are always picked up automatically.
+  //
+  // Migration note: on first deploy, v_by_rooftop / v_by_enterprise may still be
+  // regular views. DROP VIEW silently fails if they're already materialized views
+  // (different object type), so we catch the error and fall through to the
+  // DROP MATERIALIZED VIEW which handles the post-migration case.
+  await pool.query(`DROP VIEW IF EXISTS v_totals, v_by_csm, v_by_type`).catch(() => {});
+  await pool.query(`DROP VIEW IF EXISTS v_by_rooftop, v_by_enterprise`).catch(() => {});
+  await pool.query(`DROP MATERIALIZED VIEW IF EXISTS v_by_rooftop, v_by_enterprise`);
 
   await pool.query(`
-    CREATE VIEW v_totals AS
-    SELECT
-      COUNT(*)::int                                                                                                          AS total,
-      COUNT(DISTINCT enterprise_id)::int                                                                                    AS enterprise_count,
-      SUM(CASE WHEN COALESCE(has_photos,0)=1 THEN 1 ELSE 0 END)::int                                                       AS with_photos,
-      SUM(CASE WHEN status = 'Delivered' AND COALESCE(has_photos,0)=1 THEN 1 ELSE 0 END)::int                              AS delivered_with_photos,
-      SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 THEN 1 ELSE 0 END)::int                             AS pending_with_photos,
-      SUM(CASE WHEN status = 'Delivered' THEN 1 ELSE 0 END)::int                                                            AS processed,
-      SUM(CASE WHEN status = 'Delivered' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int                               AS processed_after_24h,
-      SUM(CASE WHEN status != 'Delivered' THEN 1 ELSE 0 END)::int                                                           AS not_processed,
-      SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS not_processed_after_24h,
-      SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Processing Pending' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
-      SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Publishing Pending' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
-      SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'QC Pending'         AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
-      SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'QC Hold'            AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_hold,
-      SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Sold'               AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_sold,
-      SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Others'             AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_others
-    FROM vins;
-  `);
-
-  await pool.query(`
-    CREATE VIEW v_by_rooftop AS
+    CREATE MATERIALIZED VIEW v_by_rooftop AS
     SELECT
       v.rooftop_id,
       v.enterprise_id,
@@ -135,7 +141,7 @@ export async function initSchema() {
   `);
 
   await pool.query(`
-    CREATE VIEW v_by_enterprise AS
+    CREATE MATERIALIZED VIEW v_by_enterprise AS
     SELECT
       v.enterprise_id                       AS id,
       MAX(ed.name)                          AS name,
@@ -166,63 +172,11 @@ export async function initSchema() {
     GROUP BY v.enterprise_id;
   `);
 
+  // Unique indexes required for REFRESH MATERIALIZED VIEW CONCURRENTLY.
+  // Without these, a refresh would take an exclusive lock blocking all reads.
   await pool.query(`
-    CREATE VIEW v_by_csm AS
-    SELECT
-      ed.poc_email                          AS name,
-      COUNT(DISTINCT v.rooftop_id)::int     AS rooftop_count,
-      COUNT(DISTINCT v.enterprise_id)::int  AS enterprise_count,
-      COUNT(*)::int                                                                                                            AS total,
-      SUM(CASE WHEN COALESCE(v.has_photos,0)=1 THEN 1 ELSE 0 END)::int                                                       AS with_photos,
-      SUM(CASE WHEN v.status = 'Delivered' AND COALESCE(v.has_photos,0)=1 THEN 1 ELSE 0 END)::int                            AS delivered_with_photos,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 THEN 1 ELSE 0 END)::int                           AS pending_with_photos,
-      SUM(CASE WHEN v.status = 'Delivered' THEN 1 ELSE 0 END)::int                                                            AS processed,
-      SUM(CASE WHEN v.status = 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int                             AS processed_after_24h,
-      SUM(CASE WHEN v.status != 'Delivered' THEN 1 ELSE 0 END)::int                                                           AS not_processed,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS not_processed_after_24h,
-      ROUND(AVG(rd.website_score)::numeric, 2) AS avg_website_score,
-      COUNT(DISTINCT CASE WHEN (rd.website_listing_url IS NULL OR rd.website_listing_url = '') THEN v.rooftop_id END)::int AS missing_website_count,
-      COUNT(DISTINCT CASE WHEN rd.ims_integration_status = 'false' THEN v.rooftop_id END)::int AS integrated_count,
-      COUNT(DISTINCT CASE WHEN rd.publishing_status = 'false' THEN v.rooftop_id END)::int      AS publishing_count,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Processing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Publishing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'QC Pending'         AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'QC Hold'            AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_hold,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Sold'               AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_sold,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Others'             AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_others
-    FROM vins v
-    LEFT JOIN enterprise_details ed ON v.enterprise_id = ed.enterprise_id
-    LEFT JOIN rooftop_details rd    ON v.rooftop_id = rd.team_id
-    GROUP BY ed.poc_email
-    ORDER BY ed.poc_email;
+    CREATE UNIQUE INDEX IF NOT EXISTS uix_mv_rooftop_id    ON v_by_rooftop(rooftop_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS uix_mv_enterprise_id ON v_by_enterprise(id);
   `);
 
-  await pool.query(`
-    CREATE VIEW v_by_type AS
-    SELECT
-      rd.team_type                          AS label,
-      COUNT(DISTINCT v.rooftop_id)::int     AS rooftop_count,
-      COUNT(DISTINCT v.enterprise_id)::int  AS enterprise_count,
-      COUNT(*)::int                                                                                                            AS total,
-      SUM(CASE WHEN COALESCE(v.has_photos,0)=1 THEN 1 ELSE 0 END)::int                                                       AS with_photos,
-      SUM(CASE WHEN v.status = 'Delivered' AND COALESCE(v.has_photos,0)=1 THEN 1 ELSE 0 END)::int                            AS delivered_with_photos,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 THEN 1 ELSE 0 END)::int                           AS pending_with_photos,
-      SUM(CASE WHEN v.status = 'Delivered' THEN 1 ELSE 0 END)::int                                                            AS processed,
-      SUM(CASE WHEN v.status = 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int                             AS processed_after_24h,
-      SUM(CASE WHEN v.status != 'Delivered' THEN 1 ELSE 0 END)::int                                                           AS not_processed,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS not_processed_after_24h,
-      ROUND(AVG(rd.website_score)::numeric, 2) AS avg_website_score,
-      COUNT(DISTINCT CASE WHEN (rd.website_listing_url IS NULL OR rd.website_listing_url = '') THEN v.rooftop_id END)::int AS missing_website_count,
-      COUNT(DISTINCT CASE WHEN rd.ims_integration_status = 'false' THEN v.rooftop_id END)::int AS integrated_count,
-      COUNT(DISTINCT CASE WHEN rd.publishing_status = 'false' THEN v.rooftop_id END)::int      AS publishing_count,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Processing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Publishing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'QC Pending'         AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'QC Hold'            AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_hold,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Sold'               AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_sold,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Others'             AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_others
-    FROM vins v
-    LEFT JOIN rooftop_details rd ON v.rooftop_id = rd.team_id
-    GROUP BY rd.team_type;
-  `);
 }

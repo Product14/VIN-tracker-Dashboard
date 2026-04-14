@@ -1163,8 +1163,8 @@ function CSMTab({ csms, onDrillDown }) {
 }
 
 
-function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRooftopDrillDown, loading = false }) {
-  const [sortCol, setSortCol] = useState("notProcessedAfter24");
+function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRooftopDrillDown, loading = false, defaultSortCol = "notProcessedAfter24" }) {
+  const [sortCol, setSortCol] = useState(defaultSortCol);
   const [sortDir, setSortDir] = useState("desc");
 
   const handleSort = col => {
@@ -1184,6 +1184,7 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
   });
 
   const sorted = useMemo(() => {
+    if (!sortCol) return [...rows];
     return [...rows].sort((a, b) => {
       const va = a[sortCol];
       const vb = b[sortCol];
@@ -1412,7 +1413,7 @@ function OverviewTab({ totals, byType, byCSM, byBucket = [], onDrillDown, onRoof
           ))}
         </div>
       )}
-      <SummaryTable title="By Rooftop Type" rows={byType} colorHeader="#6366f1" filterKey="rooftopType" onDrillDown={onDrillDown} onRooftopDrillDown={onRooftopDrillDown} loading={loading} />
+      <SummaryTable title="By Rooftop Type" rows={byType} colorHeader="#6366f1" filterKey="rooftopType" onDrillDown={onDrillDown} onRooftopDrillDown={onRooftopDrillDown} loading={loading} defaultSortCol={null} />
       <SummaryTable title="By CSM" rows={byCSM} colorHeader="#0ea5e9" filterKey="csm" onDrillDown={onDrillDown} onRooftopDrillDown={onRooftopDrillDown} loading={loading} />
     </div>
   );

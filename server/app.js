@@ -233,6 +233,33 @@ async function runSync() {
     // does not show a fresh "synced X min ago" after a failed sync.
     if (succeeded) {
       await query(`UPDATE sync_state SET running = FALSE, completed_at = NOW() WHERE id = 'global'`);
+      // Precompute all 3 summary variants and store in summary_cache so
+      // GET /api/summary becomes a trivial single-row lookup (<5ms).
+      for (const df of [null, 'post', 'pre']) {
+        try {
+          const payload = await computeSummary(df);
+          await upsertSummaryCache(df, payload);
+        } catch (e) {
+          console.error(`[sync] summary precompute failed for dateFilter=${df}:`, e?.message);
+        }
+      }
+      // Update meta in sync_state so GET /api/sync/status needs no vins scan.
+      await query(`
+        UPDATE sync_state
+           SET total_rows = (SELECT COUNT(*)::int FROM vins),
+               last_sync  = (SELECT MAX(synced_at) FROM vins)
+         WHERE id = 'global'
+      `);
+      // Refresh materialized views with new vins data, then precompute
+      // filter-options cache so GET /api/filter-options is a trivial lookup.
+      await query(`REFRESH MATERIALIZED VIEW CONCURRENTLY v_by_rooftop`);
+      await query(`REFRESH MATERIALIZED VIEW CONCURRENTLY v_by_enterprise`);
+      try {
+        const filterPayload = await computeFilterOptions();
+        await upsertFilterCache(filterPayload);
+      } catch (e) {
+        console.error(`[sync] filter-options precompute failed:`, e?.message);
+      }
     } else {
       await query(`UPDATE sync_state SET running = FALSE WHERE id = 'global'`);
     }
@@ -555,18 +582,16 @@ function buildVinFilters(queryParams) {
 // ─── GET /api/sync/status ─────────────────────────────────────────────────────
 
 app.get("/api/sync/status", async (_req, res) => {
-  const [metaRes, stateRes] = await Promise.all([
-    query("SELECT MAX(synced_at) AS last_sync, COUNT(*)::int AS total_rows FROM vins"),
-    query("SELECT running, started_at, completed_at FROM sync_state WHERE id = 'global'"),
-  ]);
-  const meta  = metaRes.rows[0];
-  const state = stateRes.rows[0];
+  const { rows } = await query(
+    "SELECT running, started_at, completed_at, total_rows, last_sync FROM sync_state WHERE id = 'global'"
+  );
+  const state = rows[0];
   res.json({
-    running:     state?.running    ?? false,
-    startedAt:   state?.started_at ?? null,
+    running:     state?.running     ?? false,
+    startedAt:   state?.started_at  ?? null,
     completedAt: state?.completed_at ?? null,
-    lastSync:    meta?.last_sync   ?? null,
-    totalRows:   meta?.total_rows  ?? 0,
+    lastSync:    state?.last_sync   ?? null,
+    totalRows:   state?.total_rows  ?? 0,
   });
 });
 
@@ -588,127 +613,187 @@ app.post("/api/sync", async (_req, res) => {
   }
 });
 
+// ─── Summary computation ──────────────────────────────────────────────────────
+// Runs the full aggregation query and returns the shaped JS object.
+// Called at the end of each sync (to precompute all 3 variants) and as a
+// fallback in GET /api/summary when the cache is empty (first deploy).
+
+async function computeSummary(dateFilter) {
+  const dc = getDateCondition(dateFilter);
+  const statsWhere = dc ? `WHERE ${dc}` : '';
+  const { rows } = await query(`
+    WITH
+      meta AS (
+        SELECT MAX(synced_at) AS last_sync, COUNT(*)::int AS total_rows FROM vins
+      ),
+      base AS MATERIALIZED (
+        SELECT
+          v.status,
+          v.has_photos,
+          v.after_24h,
+          v.reason_bucket,
+          v.rooftop_id,
+          v.enterprise_id,
+          ed.poc_email,
+          rd.team_type,
+          rd.website_score,
+          rd.website_listing_url,
+          rd.ims_integration_status,
+          rd.publishing_status
+        FROM vins v
+        LEFT JOIN enterprise_details ed ON v.enterprise_id = ed.enterprise_id
+        LEFT JOIN rooftop_details rd    ON v.rooftop_id    = rd.team_id
+        ${statsWhere}
+      ),
+      totals AS (
+        SELECT
+          COUNT(*)::int                                                                                                          AS total,
+          COUNT(DISTINCT enterprise_id)::int                                                                                    AS enterprise_count,
+          SUM(CASE WHEN COALESCE(has_photos,0)=1 THEN 1 ELSE 0 END)::int                                                       AS with_photos,
+          SUM(CASE WHEN status = 'Delivered' AND COALESCE(has_photos,0)=1 THEN 1 ELSE 0 END)::int                              AS delivered_with_photos,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 THEN 1 ELSE 0 END)::int                             AS pending_with_photos,
+          SUM(CASE WHEN status = 'Delivered' THEN 1 ELSE 0 END)::int                                                            AS processed,
+          SUM(CASE WHEN status = 'Delivered' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int                               AS processed_after_24h,
+          SUM(CASE WHEN status != 'Delivered' THEN 1 ELSE 0 END)::int                                                           AS not_processed,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS not_processed_after_24h,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Processing Pending' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Publishing Pending' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'QC Pending'         AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'QC Hold'            AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_hold,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Sold'               AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_sold,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Others'             AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_others
+        FROM base
+      ),
+      by_csm AS (
+        SELECT
+          poc_email                                                                                                                  AS name,
+          COUNT(DISTINCT rooftop_id)::int                                                                                           AS rooftop_count,
+          COUNT(DISTINCT enterprise_id)::int                                                                                        AS enterprise_count,
+          COUNT(*)::int                                                                                                              AS total,
+          SUM(CASE WHEN COALESCE(has_photos,0)=1 THEN 1 ELSE 0 END)::int                                                           AS with_photos,
+          SUM(CASE WHEN status = 'Delivered' AND COALESCE(has_photos,0)=1 THEN 1 ELSE 0 END)::int                                  AS delivered_with_photos,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 THEN 1 ELSE 0 END)::int                                 AS pending_with_photos,
+          SUM(CASE WHEN status = 'Delivered' THEN 1 ELSE 0 END)::int                                                                AS processed,
+          SUM(CASE WHEN status = 'Delivered' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int                                   AS processed_after_24h,
+          SUM(CASE WHEN status != 'Delivered' THEN 1 ELSE 0 END)::int                                                               AS not_processed,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int     AS not_processed_after_24h,
+          ROUND(AVG(website_score)::numeric, 2)                                                                                     AS avg_website_score,
+          COUNT(DISTINCT CASE WHEN (website_listing_url IS NULL OR website_listing_url = '') THEN rooftop_id END)::int              AS missing_website_count,
+          COUNT(DISTINCT CASE WHEN ims_integration_status = 'false' THEN rooftop_id END)::int                                      AS integrated_count,
+          COUNT(DISTINCT CASE WHEN publishing_status = 'false' THEN rooftop_id END)::int                                           AS publishing_count,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Processing Pending' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Publishing Pending' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'QC Pending'         AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'QC Hold'            AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_hold,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Sold'               AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_sold,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Others'             AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_others
+        FROM base
+        GROUP BY poc_email
+      ),
+      by_type AS (
+        SELECT
+          team_type                                                                                                                  AS label,
+          COUNT(DISTINCT rooftop_id)::int                                                                                           AS rooftop_count,
+          COUNT(DISTINCT enterprise_id)::int                                                                                        AS enterprise_count,
+          COUNT(*)::int                                                                                                              AS total,
+          SUM(CASE WHEN COALESCE(has_photos,0)=1 THEN 1 ELSE 0 END)::int                                                           AS with_photos,
+          SUM(CASE WHEN status = 'Delivered' AND COALESCE(has_photos,0)=1 THEN 1 ELSE 0 END)::int                                  AS delivered_with_photos,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 THEN 1 ELSE 0 END)::int                                 AS pending_with_photos,
+          SUM(CASE WHEN status = 'Delivered' THEN 1 ELSE 0 END)::int                                                                AS processed,
+          SUM(CASE WHEN status = 'Delivered' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int                                   AS processed_after_24h,
+          SUM(CASE WHEN status != 'Delivered' THEN 1 ELSE 0 END)::int                                                               AS not_processed,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int     AS not_processed_after_24h,
+          ROUND(AVG(website_score)::numeric, 2)                                                                                     AS avg_website_score,
+          COUNT(DISTINCT CASE WHEN (website_listing_url IS NULL OR website_listing_url = '') THEN rooftop_id END)::int              AS missing_website_count,
+          COUNT(DISTINCT CASE WHEN ims_integration_status = 'false' THEN rooftop_id END)::int                                      AS integrated_count,
+          COUNT(DISTINCT CASE WHEN publishing_status = 'false' THEN rooftop_id END)::int                                           AS publishing_count,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Processing Pending' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Publishing Pending' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'QC Pending'         AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'QC Hold'            AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_hold,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Sold'               AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_sold,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Others'             AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_others
+        FROM base
+        GROUP BY team_type
+      ),
+      by_bucket AS (
+        SELECT reason_bucket AS label, COUNT(*)::int AS count
+        FROM base
+        WHERE status != 'Delivered' AND COALESCE(has_photos,0)=1 AND COALESCE(after_24h,0)=1
+          AND reason_bucket IS NOT NULL AND reason_bucket != ''
+        GROUP BY reason_bucket
+      )
+    SELECT
+      (SELECT last_sync   FROM meta)                AS last_sync,
+      (SELECT total_rows  FROM meta)                AS total_rows,
+      (SELECT row_to_json(t) FROM totals t)         AS totals_json,
+      (SELECT json_agg(c ORDER BY c.name)
+       FROM by_csm c)                               AS by_csm_json,
+      (SELECT json_agg(t ORDER BY
+          CASE t.label
+            WHEN 'Franchise Group'        THEN 1
+            WHEN 'Franchise Individual'   THEN 2
+            WHEN 'Independent Group'      THEN 3
+            WHEN 'Independent Individual' THEN 4
+            WHEN 'Others'                 THEN 5
+            ELSE 6
+          END, t.label)
+       FROM by_type t)                              AS by_type_json,
+      (SELECT json_agg(b ORDER BY
+          CASE b.label
+            WHEN 'Processing Pending' THEN 1
+            WHEN 'Publishing Pending' THEN 2
+            WHEN 'QC Pending'         THEN 3
+            WHEN 'Sold'               THEN 4
+            ELSE 5
+          END, b.label)
+       FROM by_bucket b)                            AS by_bucket_json
+  `);
+  const row = rows[0];
+  return {
+    lastSync:  row.last_sync  ?? null,
+    totalRows: row.total_rows ?? 0,
+    totals:    toTotals(row.totals_json),
+    byCSM:     (row.by_csm_json    ?? []).map(toCsmRow),
+    byType:    (row.by_type_json   ?? []).map(toTypeRow),
+    byBucket:  (row.by_bucket_json ?? []).map(r => ({ label: r.label, count: r.count })),
+  };
+}
+
+async function upsertSummaryCache(dateFilter, payload) {
+  await query(
+    `INSERT INTO summary_cache (date_filter, payload, computed_at)
+     VALUES ($1, $2, NOW())
+     ON CONFLICT (date_filter) DO UPDATE SET payload = $2, computed_at = NOW()`,
+    [dateFilter ?? 'all', JSON.stringify(payload)]
+  );
+}
+
 // ─── GET /api/summary ─────────────────────────────────────────────────────────
+// Serves from summary_cache (precomputed at end of each sync) — trivial lookup.
+// Falls back to computing on-demand if cache is empty (first deploy with existing data).
 
 app.get("/api/summary", async (req, res) => {
-  const dateFilter = req.query.dateFilter;
-  const dc = getDateCondition(dateFilter);
-  // lastSync/totalRows always reflect the full dataset (unfiltered header info)
-  // All stats queries respect the date filter when active
-  const statsWhere = dc ? `WHERE ${dc}` : '';
-  const statsAnd   = dc ? `AND ${dc}` : '';
-
-  // Run sequentially to keep peak connections at 1 per Lambda (avoids exhausting
-  // Supabase's connection limit when multiple Lambda instances are active).
-  const metaRes = await query("SELECT MAX(synced_at) AS last_sync, COUNT(*)::int AS total_rows FROM vins");
-  const totalsRes = await query(`
-    SELECT
-      COUNT(*)::int                                                                                                          AS total,
-      COUNT(DISTINCT enterprise_id)::int                                                                                    AS enterprise_count,
-      SUM(CASE WHEN COALESCE(has_photos,0)=1 THEN 1 ELSE 0 END)::int                                                       AS with_photos,
-      SUM(CASE WHEN status = 'Delivered' AND COALESCE(has_photos,0)=1 THEN 1 ELSE 0 END)::int                              AS delivered_with_photos,
-      SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 THEN 1 ELSE 0 END)::int                             AS pending_with_photos,
-      SUM(CASE WHEN status = 'Delivered' THEN 1 ELSE 0 END)::int                                                            AS processed,
-      SUM(CASE WHEN status = 'Delivered' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int                               AS processed_after_24h,
-      SUM(CASE WHEN status != 'Delivered' THEN 1 ELSE 0 END)::int                                                           AS not_processed,
-      SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS not_processed_after_24h,
-      SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Processing Pending' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
-      SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Publishing Pending' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
-      SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'QC Pending'         AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
-      SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'QC Hold'            AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_hold,
-      SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Sold'               AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_sold,
-      SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Others'             AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_others
-    FROM vins ${statsWhere}
-  `);
-  const byCsmRes = await query(`
-    SELECT
-      ed.poc_email                          AS name,
-      COUNT(DISTINCT v.rooftop_id)::int     AS rooftop_count,
-      COUNT(DISTINCT v.enterprise_id)::int  AS enterprise_count,
-      COUNT(*)::int                                                                                                            AS total,
-      SUM(CASE WHEN COALESCE(v.has_photos,0)=1 THEN 1 ELSE 0 END)::int                                                       AS with_photos,
-      SUM(CASE WHEN v.status = 'Delivered' AND COALESCE(v.has_photos,0)=1 THEN 1 ELSE 0 END)::int                            AS delivered_with_photos,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 THEN 1 ELSE 0 END)::int                           AS pending_with_photos,
-      SUM(CASE WHEN v.status = 'Delivered' THEN 1 ELSE 0 END)::int                                                            AS processed,
-      SUM(CASE WHEN v.status = 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int                             AS processed_after_24h,
-      SUM(CASE WHEN v.status != 'Delivered' THEN 1 ELSE 0 END)::int                                                           AS not_processed,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS not_processed_after_24h,
-      ROUND(AVG(rd.website_score)::numeric, 2) AS avg_website_score,
-      COUNT(DISTINCT CASE WHEN (rd.website_listing_url IS NULL OR rd.website_listing_url = '') THEN v.rooftop_id END)::int AS missing_website_count,
-      COUNT(DISTINCT CASE WHEN rd.ims_integration_status = 'false' THEN v.rooftop_id END)::int AS integrated_count,
-      COUNT(DISTINCT CASE WHEN rd.publishing_status = 'false' THEN v.rooftop_id END)::int      AS publishing_count,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Processing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Publishing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'QC Pending'         AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'QC Hold'            AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_hold,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Sold'               AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_sold,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Others'             AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_others
-    FROM vins v
-    LEFT JOIN enterprise_details ed ON v.enterprise_id = ed.enterprise_id
-    LEFT JOIN rooftop_details rd    ON v.rooftop_id = rd.team_id
-    ${statsWhere}
-    GROUP BY ed.poc_email
-    ORDER BY ed.poc_email
-  `);
-  const byTypeRes = await query(`
-    SELECT
-      rd.team_type                          AS label,
-      COUNT(DISTINCT v.rooftop_id)::int     AS rooftop_count,
-      COUNT(DISTINCT v.enterprise_id)::int  AS enterprise_count,
-      COUNT(*)::int                                                                                                            AS total,
-      SUM(CASE WHEN COALESCE(v.has_photos,0)=1 THEN 1 ELSE 0 END)::int                                                       AS with_photos,
-      SUM(CASE WHEN v.status = 'Delivered' AND COALESCE(v.has_photos,0)=1 THEN 1 ELSE 0 END)::int                            AS delivered_with_photos,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 THEN 1 ELSE 0 END)::int                           AS pending_with_photos,
-      SUM(CASE WHEN v.status = 'Delivered' THEN 1 ELSE 0 END)::int                                                            AS processed,
-      SUM(CASE WHEN v.status = 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int                             AS processed_after_24h,
-      SUM(CASE WHEN v.status != 'Delivered' THEN 1 ELSE 0 END)::int                                                           AS not_processed,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS not_processed_after_24h,
-      ROUND(AVG(rd.website_score)::numeric, 2) AS avg_website_score,
-      COUNT(DISTINCT CASE WHEN (rd.website_listing_url IS NULL OR rd.website_listing_url = '') THEN v.rooftop_id END)::int AS missing_website_count,
-      COUNT(DISTINCT CASE WHEN rd.ims_integration_status = 'false' THEN v.rooftop_id END)::int AS integrated_count,
-      COUNT(DISTINCT CASE WHEN rd.publishing_status = 'false' THEN v.rooftop_id END)::int      AS publishing_count,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Processing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Publishing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'QC Pending'         AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'QC Hold'            AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_hold,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Sold'               AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_sold,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Others'             AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_others
-    FROM vins v
-    LEFT JOIN rooftop_details rd ON v.rooftop_id = rd.team_id
-    ${statsWhere}
-    GROUP BY rd.team_type
-  `);
-  const byBucketRes = await query(`
-    SELECT reason_bucket AS label, COUNT(*)::int AS count
-    FROM vins
-    WHERE status != 'Delivered' AND COALESCE(has_photos,0)=1 AND COALESCE(after_24h,0)=1
-      AND reason_bucket IS NOT NULL AND reason_bucket != ''
-      ${statsAnd}
-    GROUP BY reason_bucket
-    ORDER BY
-      CASE reason_bucket
-        WHEN 'Processing Pending' THEN 1
-        WHEN 'Publishing Pending' THEN 2
-        WHEN 'QC Pending'         THEN 3
-        WHEN 'Sold'               THEN 4
-        ELSE 5
-      END, reason_bucket
-  `);
-
-  const meta = metaRes.rows[0];
-  res.json({
-    lastSync:  meta?.last_sync  ?? null,
-    totalRows: meta?.total_rows ?? 0,
-    totals:    toTotals(totalsRes.rows[0]),
-    byCSM:     byCsmRes.rows.map(toCsmRow),
-    byType:    byTypeRes.rows.map(toTypeRow),
-    byBucket:  byBucketRes.rows.map(r => ({ label: r.label, count: r.count })),
-  });
+  const dateFilter = req.query.dateFilter ?? null;
+  const cacheKey   = dateFilter ?? 'all';
+  const { rows } = await query(
+    'SELECT payload FROM summary_cache WHERE date_filter = $1',
+    [cacheKey]
+  );
+  if (rows.length > 0) {
+    return res.json(rows[0].payload);
+  }
+  // Cache not yet populated — compute and store so the next request is instant.
+  const payload = await computeSummary(dateFilter);
+  await upsertSummaryCache(dateFilter, payload);
+  res.json(payload);
 });
 
-// ─── GET /api/filter-options ──────────────────────────────────────────────────
+// ─── Filter-options computation ───────────────────────────────────────────────
+// Queries the materialized views (pre-aggregated at sync time) and returns the
+// shaped payload. Called at the end of each sync and as a fallback on cold start.
 
-app.get("/api/filter-options", async (_req, res) => {
+async function computeFilterOptions() {
   const [
     rooftopNamesRes,
     rooftopTypesRes,
@@ -742,10 +827,9 @@ app.get("/api/filter-options", async (_req, res) => {
       FROM v_by_enterprise
     `),
   ]);
-
   const bf = rooftopBucketFlagsRes.rows[0] ?? {};
   const cf = enterpriseColFlagsRes.rows[0]  ?? {};
-  res.json({
+  return {
     rooftopNames:    rooftopNamesRes.rows.map(r => r.name),
     rooftopTypes:    rooftopTypesRes.rows.map(r => r.type),
     rooftopCSMs:     rooftopCSMsRes.rows.map(r => r.csm),
@@ -762,7 +846,31 @@ app.get("/api/filter-options", async (_req, res) => {
     },
     hasNotIntegrated:      cf.has_not_integrated      ?? false,
     hasPublishingDisabled: cf.has_publishing_disabled ?? false,
-  });
+  };
+}
+
+async function upsertFilterCache(payload) {
+  await query(
+    `INSERT INTO filter_cache (id, payload, computed_at)
+     VALUES ('global', $1, NOW())
+     ON CONFLICT (id) DO UPDATE SET payload = $1, computed_at = NOW()`,
+    [JSON.stringify(payload)]
+  );
+}
+
+// ─── GET /api/filter-options ──────────────────────────────────────────────────
+// Serves from filter_cache (precomputed at end of each sync) — trivial lookup.
+// Falls back to computing on-demand if cache is empty (first deploy).
+
+app.get("/api/filter-options", async (_req, res) => {
+  const { rows } = await query(
+    "SELECT payload FROM filter_cache WHERE id = 'global'"
+  );
+  if (rows.length > 0) return res.json(rows[0].payload);
+  // Cache not yet populated — compute and store so the next request is instant.
+  const payload = await computeFilterOptions();
+  await upsertFilterCache(payload);
+  res.json(payload);
 });
 
 // ─── GET /api/vins ────────────────────────────────────────────────────────────
