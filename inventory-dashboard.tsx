@@ -1548,7 +1548,7 @@ export default function Dashboard() {
   // until Metabase fetch + DB insert are complete, then we reload summary).
   useEffect(() => {
     loadFilterOptions().catch(() => {});
-    loadSummary("post")
+    loadSummary(dateFilter)
       .then(data => {
         setLoading(false);
         initialLoadDone.current = true;
@@ -1556,7 +1556,7 @@ export default function Dashboard() {
           setSyncing(true);
           fetch(`${API_BASE}/api/sync`, { method: "POST" })
             .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
-            .then(() => Promise.all([loadSummary("post"), loadFilterOptions()]))
+            .then(() => Promise.all([loadSummary(dateFilter), loadFilterOptions()]))
             .then(() => setSyncing(false))
             .catch(err => { setFetchError(err.message); setSyncing(false); });
         }
