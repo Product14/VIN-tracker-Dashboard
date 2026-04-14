@@ -280,6 +280,7 @@ function toRooftopRow(r) {
     bucketProcessingPending:  r.bucket_processing_pending,
     bucketPublishingPending:  r.bucket_publishing_pending,
     bucketQcPending:          r.bucket_qc_pending,
+    bucketQcHold:             r.bucket_qc_hold,
     bucketSold:               r.bucket_sold,
     bucketOthers:             r.bucket_others,
   };
@@ -304,6 +305,7 @@ function toEnterpriseRow(r) {
     bucketProcessingPending:  r.bucket_processing_pending,
     bucketPublishingPending:  r.bucket_publishing_pending,
     bucketQcPending:          r.bucket_qc_pending,
+    bucketQcHold:             r.bucket_qc_hold,
     bucketSold:               r.bucket_sold,
     bucketOthers:             r.bucket_others,
   };
@@ -325,6 +327,7 @@ function toCsmRow(r) {
     bucketProcessingPending:  r.bucket_processing_pending,
     bucketPublishingPending:  r.bucket_publishing_pending,
     bucketQcPending:          r.bucket_qc_pending,
+    bucketQcHold:             r.bucket_qc_hold,
     bucketSold:               r.bucket_sold,
     bucketOthers:             r.bucket_others,
   };
@@ -344,6 +347,7 @@ function toTypeRow(r) {
     bucketProcessingPending:  r.bucket_processing_pending,
     bucketPublishingPending:  r.bucket_publishing_pending,
     bucketQcPending:          r.bucket_qc_pending,
+    bucketQcHold:             r.bucket_qc_hold,
     bucketSold:               r.bucket_sold,
     bucketOthers:             r.bucket_others,
   };
@@ -564,6 +568,7 @@ app.get("/api/summary", async (req, res) => {
       SUM(CASE WHEN status != 'Delivered' AND reason_bucket = 'Processing Pending' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
       SUM(CASE WHEN status != 'Delivered' AND reason_bucket = 'Publishing Pending' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
       SUM(CASE WHEN status != 'Delivered' AND reason_bucket = 'QC Pending'         AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
+      SUM(CASE WHEN status != 'Delivered' AND reason_bucket = 'QC Hold'            AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_hold,
       SUM(CASE WHEN status != 'Delivered' AND reason_bucket = 'Sold'               AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_sold,
       SUM(CASE WHEN status != 'Delivered' AND reason_bucket = 'Others'             AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_others
     FROM vins ${statsWhere}
@@ -583,6 +588,7 @@ app.get("/api/summary", async (req, res) => {
       SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Processing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
       SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Publishing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
       SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'QC Pending'         AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
+      SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'QC Hold'            AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_hold,
       SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Sold'               AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_sold,
       SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Others'             AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_others
     FROM vins v
@@ -606,6 +612,7 @@ app.get("/api/summary", async (req, res) => {
       SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Processing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
       SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Publishing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
       SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'QC Pending'         AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
+      SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'QC Hold'            AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_hold,
       SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Sold'               AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_sold,
       SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Others'             AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_others
     FROM vins v
