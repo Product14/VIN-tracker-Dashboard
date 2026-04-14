@@ -62,10 +62,11 @@ async function syncVins() {
   const deduped = Object.values(
     rows.reduce((acc, row) => { acc[row.vinName ?? ""] = row; return acc; }, {})
   );
+  if (deduped.length > 0) console.log("[sync:VIN_DETAILS] sample row keys:", Object.keys(deduped[0]), "| has_photos sample:", deduped[0].has_photos);
 
   const vins = [], dealerVinIds = [], enterpriseIds = [], rooftopIds = [];
   const statuses = [], after24hs = [], receivedAts = [], processedAts = [];
-  const reasonBuckets = [], holdReasons = [], syncedAts = [];
+  const reasonBuckets = [], holdReasons = [], hasPhotosArr = [], syncedAts = [];
 
   for (const row of deduped) {
     vins.push(row.vinName ?? "");
@@ -78,6 +79,7 @@ async function syncVins() {
     processedAts.push(cleanDate(row.sentAt));
     reasonBuckets.push(row.reason_bucket ?? "");
     holdReasons.push(row.hold_reason ?? "");
+    hasPhotosArr.push(cleanAfter24(row.has_photos ?? null));
     syncedAts.push(syncedAt);
   }
 
@@ -88,12 +90,12 @@ async function syncVins() {
     if (deduped.length > 0) {
       await client.query(`
         INSERT INTO vins
-          (vin, dealer_vin_id, enterprise_id, rooftop_id, status, after_24h, received_at, processed_at, reason_bucket, hold_reason, synced_at)
+          (vin, dealer_vin_id, enterprise_id, rooftop_id, status, after_24h, received_at, processed_at, reason_bucket, hold_reason, has_photos, synced_at)
         SELECT
           UNNEST($1::text[]), UNNEST($2::text[]), UNNEST($3::text[]), UNNEST($4::text[]),
           UNNEST($5::text[]), UNNEST($6::smallint[]), UNNEST($7::text[]), UNNEST($8::text[]),
-          UNNEST($9::text[]), UNNEST($10::text[]), UNNEST($11::text[])
-      `, [vins, dealerVinIds, enterpriseIds, rooftopIds, statuses, after24hs, receivedAts, processedAts, reasonBuckets, holdReasons, syncedAts]);
+          UNNEST($9::text[]), UNNEST($10::text[]), UNNEST($11::smallint[]), UNNEST($12::text[])
+      `, [vins, dealerVinIds, enterpriseIds, rooftopIds, statuses, after24hs, receivedAts, processedAts, reasonBuckets, holdReasons, hasPhotosArr, syncedAts]);
     }
     await client.query("COMMIT");
   } catch (e) {
@@ -256,6 +258,7 @@ function toApiRow(r) {
     reasonBucket: r.reason_bucket || null,
     holdReason:   r.hold_reason || null,
     after24h:     r.after_24h !== null ? Boolean(r.after_24h) : null,
+    hasPhotos:    r.has_photos !== null ? Boolean(r.has_photos) : false,
     receivedAt:   r.received_at,
     processedAt:  r.processed_at,
     syncedAt:     r.synced_at,
@@ -265,6 +268,10 @@ function toApiRow(r) {
 function toTotals(r) {
   return {
     total:                   r.total,
+    enterpriseCount:         r.enterprise_count ?? 0,
+    withPhotos:              r.with_photos ?? 0,
+    deliveredWithPhotos:     r.delivered_with_photos ?? 0,
+    pendingWithPhotos:       r.pending_with_photos ?? 0,
     processed:               r.processed,
     processedAfter24:        r.processed_after_24h,
     notProcessed:            r.not_processed,
@@ -286,6 +293,9 @@ function toRooftopRow(r) {
     enterpriseId:             r.enterprise_id,
     enterprise:               r.enterprise,
     total:                    r.total,
+    withPhotos:               r.with_photos ?? 0,
+    deliveredWithPhotos:      r.delivered_with_photos ?? 0,
+    pendingWithPhotos:        r.pending_with_photos ?? 0,
     processed:                r.processed,
     processedAfter24:         r.processed_after_24h,
     notProcessed:             r.not_processed,
@@ -309,6 +319,9 @@ function toEnterpriseRow(r) {
     name:                     r.name,
     csm:                      r.csm ?? null,
     total:                    r.total,
+    withPhotos:               r.with_photos ?? 0,
+    deliveredWithPhotos:      r.delivered_with_photos ?? 0,
+    pendingWithPhotos:        r.pending_with_photos ?? 0,
     processed:                r.processed,
     processedAfter24:         r.processed_after_24h,
     notProcessed:             r.not_processed,
@@ -333,12 +346,17 @@ function toCsmRow(r) {
     name:                     r.name,
     label:                    r.name,
     rooftopCount:             r.rooftop_count,
+    enterpriseCount:          r.enterprise_count ?? 0,
     total:                    r.total,
+    withPhotos:               r.with_photos ?? 0,
+    deliveredWithPhotos:      r.delivered_with_photos ?? 0,
+    pendingWithPhotos:        r.pending_with_photos ?? 0,
     processed:                r.processed,
     processedAfter24:         r.processed_after_24h,
     notProcessed:             r.not_processed,
     notProcessedAfter24:      r.not_processed_after_24h,
     avgWebsiteScore:          r.avg_website_score ?? null,
+    missingWebsiteCount:      r.missing_website_count ?? 0,
     integratedCount:          r.integrated_count ?? 0,
     publishingCount:          r.publishing_count ?? 0,
     bucketProcessingPending:  r.bucket_processing_pending,
@@ -354,11 +372,17 @@ function toTypeRow(r) {
   return {
     label:                    r.label,
     rooftopCount:             r.rooftop_count,
+    enterpriseCount:          r.enterprise_count ?? 0,
     total:                    r.total,
+    withPhotos:               r.with_photos ?? 0,
+    deliveredWithPhotos:      r.delivered_with_photos ?? 0,
+    pendingWithPhotos:        r.pending_with_photos ?? 0,
     processed:                r.processed,
     processedAfter24:         r.processed_after_24h,
     notProcessed:             r.not_processed,
     notProcessedAfter24:      r.not_processed_after_24h,
+    avgWebsiteScore:          r.avg_website_score ?? null,
+    missingWebsiteCount:      r.missing_website_count ?? 0,
     integratedCount:          r.integrated_count ?? 0,
     publishingCount:          r.publishing_count ?? 0,
     bucketProcessingPending:  r.bucket_processing_pending,
@@ -490,7 +514,7 @@ const VIN_FROM = `
 
 const VIN_SELECT = `
   SELECT v.vin, v.dealer_vin_id, v.enterprise_id, v.rooftop_id,
-         v.status, v.after_24h, v.received_at, v.processed_at, v.reason_bucket, v.hold_reason, v.synced_at,
+         v.status, v.after_24h, v.has_photos, v.received_at, v.processed_at, v.reason_bucket, v.hold_reason, v.synced_at,
          rd.team_name AS rooftop, rd.team_type AS rooftop_type,
          ed.name AS enterprise, ed.poc_email AS csm
   ${VIN_FROM}
@@ -499,7 +523,7 @@ const VIN_SELECT = `
 // Builds a WHERE clause with PostgreSQL positional params ($1, $2, …).
 // Returns { where: string, params: any[] }.
 function buildVinFilters(queryParams) {
-  const { search, rooftop, rooftopId, rooftopType, csm, status, after24h, enterprise, enterpriseId, reasonBucket, dateFilter } = queryParams;
+  const { search, rooftop, rooftopId, rooftopType, csm, status, after24h, hasPhotos, enterprise, enterpriseId, reasonBucket, dateFilter } = queryParams;
   const conditions = [];
   const params = [];
 
@@ -519,6 +543,8 @@ function buildVinFilters(queryParams) {
   if (enterprise)   conditions.push(`ed.name = ${p(enterprise)}`);
   if (after24h === "true"  || after24h === "1") conditions.push("COALESCE(v.after_24h, 0) = 1");
   if (after24h === "false" || after24h === "0") conditions.push("COALESCE(v.after_24h, 0) = 0");
+  if (hasPhotos === "true"  || hasPhotos === "1") conditions.push("COALESCE(v.has_photos, 0) = 1");
+  if (hasPhotos === "false" || hasPhotos === "0") conditions.push("COALESCE(v.has_photos, 0) = 0");
   if (reasonBucket) conditions.push(`v.reason_bucket = ${p(reasonBucket)}`);
   const dc = getDateCondition(dateFilter, 'v');
   if (dc) conditions.push(dc);
@@ -577,37 +603,46 @@ app.get("/api/summary", async (req, res) => {
   const metaRes = await query("SELECT MAX(synced_at) AS last_sync, COUNT(*)::int AS total_rows FROM vins");
   const totalsRes = await query(`
     SELECT
-      COUNT(*)::int                                                                                        AS total,
-      SUM(CASE WHEN status = 'Delivered' THEN 1 ELSE 0 END)::int                                          AS processed,
-      SUM(CASE WHEN status = 'Delivered' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int             AS processed_after_24h,
-      SUM(CASE WHEN status != 'Delivered' THEN 1 ELSE 0 END)::int                                         AS not_processed,
-      SUM(CASE WHEN status != 'Delivered' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int            AS not_processed_after_24h,
-      SUM(CASE WHEN status != 'Delivered' AND reason_bucket = 'Processing Pending' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
-      SUM(CASE WHEN status != 'Delivered' AND reason_bucket = 'Publishing Pending' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
-      SUM(CASE WHEN status != 'Delivered' AND reason_bucket = 'QC Pending'         AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
-      SUM(CASE WHEN status != 'Delivered' AND reason_bucket = 'QC Hold'            AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_hold,
-      SUM(CASE WHEN status != 'Delivered' AND reason_bucket = 'Sold'               AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_sold,
-      SUM(CASE WHEN status != 'Delivered' AND reason_bucket = 'Others'             AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_others
+      COUNT(*)::int                                                                                                          AS total,
+      COUNT(DISTINCT enterprise_id)::int                                                                                    AS enterprise_count,
+      SUM(CASE WHEN COALESCE(has_photos,0)=1 THEN 1 ELSE 0 END)::int                                                       AS with_photos,
+      SUM(CASE WHEN status = 'Delivered' AND COALESCE(has_photos,0)=1 THEN 1 ELSE 0 END)::int                              AS delivered_with_photos,
+      SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 THEN 1 ELSE 0 END)::int                             AS pending_with_photos,
+      SUM(CASE WHEN status = 'Delivered' THEN 1 ELSE 0 END)::int                                                            AS processed,
+      SUM(CASE WHEN status = 'Delivered' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int                               AS processed_after_24h,
+      SUM(CASE WHEN status != 'Delivered' THEN 1 ELSE 0 END)::int                                                           AS not_processed,
+      SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS not_processed_after_24h,
+      SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Processing Pending' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
+      SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Publishing Pending' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
+      SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'QC Pending'         AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
+      SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'QC Hold'            AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_hold,
+      SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Sold'               AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_sold,
+      SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Others'             AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_others
     FROM vins ${statsWhere}
   `);
   const byCsmRes = await query(`
     SELECT
       ed.poc_email                          AS name,
       COUNT(DISTINCT v.rooftop_id)::int     AS rooftop_count,
-      COUNT(*)::int                         AS total,
-      SUM(CASE WHEN v.status = 'Delivered' THEN 1 ELSE 0 END)::int                                       AS processed,
-      SUM(CASE WHEN v.status = 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int        AS processed_after_24h,
-      SUM(CASE WHEN v.status != 'Delivered' THEN 1 ELSE 0 END)::int                                      AS not_processed,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int       AS not_processed_after_24h,
+      COUNT(DISTINCT v.enterprise_id)::int  AS enterprise_count,
+      COUNT(*)::int                                                                                                            AS total,
+      SUM(CASE WHEN COALESCE(v.has_photos,0)=1 THEN 1 ELSE 0 END)::int                                                       AS with_photos,
+      SUM(CASE WHEN v.status = 'Delivered' AND COALESCE(v.has_photos,0)=1 THEN 1 ELSE 0 END)::int                            AS delivered_with_photos,
+      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 THEN 1 ELSE 0 END)::int                           AS pending_with_photos,
+      SUM(CASE WHEN v.status = 'Delivered' THEN 1 ELSE 0 END)::int                                                            AS processed,
+      SUM(CASE WHEN v.status = 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int                             AS processed_after_24h,
+      SUM(CASE WHEN v.status != 'Delivered' THEN 1 ELSE 0 END)::int                                                           AS not_processed,
+      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS not_processed_after_24h,
       ROUND(AVG(rd.website_score)::numeric, 2) AS avg_website_score,
+      COUNT(DISTINCT CASE WHEN (rd.website_listing_url IS NULL OR rd.website_listing_url = '') THEN v.rooftop_id END)::int AS missing_website_count,
       COUNT(DISTINCT CASE WHEN rd.ims_integration_status = 'false' THEN v.rooftop_id END)::int AS integrated_count,
       COUNT(DISTINCT CASE WHEN rd.publishing_status = 'false' THEN v.rooftop_id END)::int      AS publishing_count,
-      SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Processing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
-      SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Publishing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
-      SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'QC Pending'         AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
-      SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'QC Hold'            AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_hold,
-      SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Sold'               AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_sold,
-      SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Others'             AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_others
+      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Processing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
+      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Publishing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
+      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'QC Pending'         AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
+      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'QC Hold'            AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_hold,
+      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Sold'               AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_sold,
+      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Others'             AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_others
     FROM vins v
     LEFT JOIN enterprise_details ed ON v.enterprise_id = ed.enterprise_id
     LEFT JOIN rooftop_details rd    ON v.rooftop_id = rd.team_id
@@ -619,19 +654,25 @@ app.get("/api/summary", async (req, res) => {
     SELECT
       rd.team_type                          AS label,
       COUNT(DISTINCT v.rooftop_id)::int     AS rooftop_count,
-      COUNT(*)::int                         AS total,
-      SUM(CASE WHEN v.status = 'Delivered' THEN 1 ELSE 0 END)::int                                       AS processed,
-      SUM(CASE WHEN v.status = 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int        AS processed_after_24h,
-      SUM(CASE WHEN v.status != 'Delivered' THEN 1 ELSE 0 END)::int                                      AS not_processed,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int       AS not_processed_after_24h,
+      COUNT(DISTINCT v.enterprise_id)::int  AS enterprise_count,
+      COUNT(*)::int                                                                                                            AS total,
+      SUM(CASE WHEN COALESCE(v.has_photos,0)=1 THEN 1 ELSE 0 END)::int                                                       AS with_photos,
+      SUM(CASE WHEN v.status = 'Delivered' AND COALESCE(v.has_photos,0)=1 THEN 1 ELSE 0 END)::int                            AS delivered_with_photos,
+      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 THEN 1 ELSE 0 END)::int                           AS pending_with_photos,
+      SUM(CASE WHEN v.status = 'Delivered' THEN 1 ELSE 0 END)::int                                                            AS processed,
+      SUM(CASE WHEN v.status = 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int                             AS processed_after_24h,
+      SUM(CASE WHEN v.status != 'Delivered' THEN 1 ELSE 0 END)::int                                                           AS not_processed,
+      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS not_processed_after_24h,
+      ROUND(AVG(rd.website_score)::numeric, 2) AS avg_website_score,
+      COUNT(DISTINCT CASE WHEN (rd.website_listing_url IS NULL OR rd.website_listing_url = '') THEN v.rooftop_id END)::int AS missing_website_count,
       COUNT(DISTINCT CASE WHEN rd.ims_integration_status = 'false' THEN v.rooftop_id END)::int AS integrated_count,
       COUNT(DISTINCT CASE WHEN rd.publishing_status = 'false' THEN v.rooftop_id END)::int      AS publishing_count,
-      SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Processing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
-      SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Publishing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
-      SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'QC Pending'         AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
-      SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'QC Hold'            AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_hold,
-      SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Sold'               AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_sold,
-      SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Others'             AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_others
+      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Processing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
+      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Publishing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
+      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'QC Pending'         AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
+      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'QC Hold'            AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_hold,
+      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Sold'               AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_sold,
+      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Others'             AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_others
     FROM vins v
     LEFT JOIN rooftop_details rd ON v.rooftop_id = rd.team_id
     ${statsWhere}
@@ -640,7 +681,7 @@ app.get("/api/summary", async (req, res) => {
   const byBucketRes = await query(`
     SELECT reason_bucket AS label, COUNT(*)::int AS count
     FROM vins
-    WHERE status != 'Delivered' AND COALESCE(after_24h,0)=1
+    WHERE status != 'Delivered' AND COALESCE(has_photos,0)=1 AND COALESCE(after_24h,0)=1
       AND reason_bucket IS NOT NULL AND reason_bucket != ''
       ${statsAnd}
     GROUP BY reason_bucket
