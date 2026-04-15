@@ -146,7 +146,7 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl) {
     { label: "Sold",               count: bucketMap["Sold"]               ?? totals.bucketSold,              color: GREEN },
     { label: "Others",             count: bucketMap["Others"]             ?? totals.bucketOthers,            color: TEXT_MUTED },
   ];
-  const bucketsHtml = `<tr>${buckets.map(b => bucketBadge(b.label, b.count, b.color)).join("")}</tr>`;
+  const bucketsHtml = `<tr>${buckets.filter(b => b.count > 0).map(b => bucketBadge(b.label, b.count, b.color)).join("")}</tr>`;
 
   // Shared column headers for both tables
   const sharedHeaders = (firstColLabel) => tableHeader([
