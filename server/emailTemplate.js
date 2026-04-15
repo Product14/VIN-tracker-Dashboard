@@ -82,14 +82,6 @@ function tableRow(cells, zebra) {
   return `<tr style="background:${bg};">${tds}</tr>`;
 }
 
-// Returns a traffic-light color for a pending >24hr percentage value
-function pendingPctColor(num, denom) {
-  if (!denom) return null;
-  const p = (num / denom) * 100;
-  if (p < 25)  return GREEN;
-  if (p < 50)  return AMBER;
-  return RED;
-}
 
 function sectionTitle(title) {
   return `
@@ -171,7 +163,7 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl) {
     { value: fmt(r.processed)                                                                                                        },
     { value: fmt(r.notProcessed),                             color: r.notProcessed > 0 ? AMBER : null                              },
     { value: fmt(r.notProcessedAfter24),                      color: r.notProcessedAfter24 > 0 ? RED : null                         },
-    { value: pct(r.notProcessedAfter24, r.notProcessed),      color: pendingPctColor(r.notProcessedAfter24, r.notProcessed)         },
+    { value: pct(r.notProcessedAfter24, r.notProcessed),      color: r.notProcessedAfter24 > 0 ? RED : null                        },
     { value: score(r.avgWebsiteScore),                        muted: true                                                           },
   ], zebra);
 
