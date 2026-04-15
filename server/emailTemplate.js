@@ -122,8 +122,8 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl) {
     <tr>
       ${kpiCard("Total Inventory",      totals.total,                ACCENT_COLOR)}
       ${kpiCard("With Photos",          totals.withPhotos,           "#0891b2")}
-      ${kpiCard("VIN Delivered",        totals.processed,            GREEN)}
-      ${kpiCard("Pending VINs",         totals.notProcessed,         AMBER)}
+      ${kpiCard("VIN Delivered",        totals.deliveredWithPhotos,  GREEN)}
+      ${kpiCard("Pending VINs",         totals.pendingWithPhotos,    AMBER)}
       ${kpiCard("Pending VINs > 24 hr", totals.notProcessedAfter24,  RED)}
     </tr>`;
 
@@ -160,8 +160,8 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl) {
     { value: fmt(r.rooftopCount)                                                                                                     },
     { value: fmt(r.total)                                                                                                            },
     { value: fmt(r.withPhotos)                                                                                                       },
-    { value: fmt(r.processed)                                                                                                        },
-    { value: fmt(r.notProcessed),                             color: r.notProcessed > 0 ? AMBER : null                              },
+    { value: fmt(r.deliveredWithPhotos)                                                                                               },
+    { value: fmt(r.pendingWithPhotos),                        color: r.pendingWithPhotos > 0 ? AMBER : null                         },
     { value: fmt(r.notProcessedAfter24),                      color: r.notProcessedAfter24 > 0 ? RED : null                         },
     { value: pct(r.notProcessedAfter24, r.notProcessed),      color: r.notProcessedAfter24 > 0 ? RED : null                        },
     { value: score(r.avgWebsiteScore),                        muted: true                                                           },
