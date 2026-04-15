@@ -1085,16 +1085,15 @@ app.get("/api/scheduled-report", async (req, res) => {
     console.error("[scheduled-report] sync failed — sending email with cached data:", err?.message);
   }
 
-  // ── Step 2: Read summary (written to cache at end of every successful sync) ─
+  // ── Step 2: Compute fresh summary directly from DB ───────────────────────
+  // Always query live — never read from cache — so lastSync reflects the
+  // sync that just completed, not a previously cached value.
   let summary;
   try {
-    const { rows } = await query(
-      `SELECT payload FROM summary_cache WHERE date_filter = 'all'`
-    );
-    summary = rows.length > 0 ? rows[0].payload : await computeSummary(null);
+    summary = await computeSummary(null);
   } catch (err) {
-    console.error("[scheduled-report] failed to read summary:", err?.message);
-    return res.status(500).json({ error: "Failed to read summary data" });
+    console.error("[scheduled-report] failed to compute summary:", err?.message);
+    return res.status(500).json({ error: "Failed to compute summary data" });
   }
 
   // ── Step 3: Build HTML and send ───────────────────────────────────────────
