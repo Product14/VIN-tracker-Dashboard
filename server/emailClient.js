@@ -27,11 +27,25 @@ export async function sendReport(html, timeLabel) {
   const cc  = splitAddresses(process.env.EMAIL_CC);
   const bcc = splitAddresses(process.env.EMAIL_BCC);
 
+  const now = new Date();
+  const subjectDate = now.toLocaleDateString("en-IN", {
+    timeZone: "Asia/Kolkata",
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+  const subjectTime = now.toLocaleTimeString("en-IN", {
+    timeZone: "Asia/Kolkata",
+    hour: "numeric",
+    hour12: true,
+  }).toUpperCase().replace(/\s+/g, " ");
+  const subjectLabel = `${subjectDate} ${subjectTime}`;
+
   const payload = {
     to,
     ...(cc.length  > 0 && { cc }),
     ...(bcc.length > 0 && { bcc }),
-    subject:  `Control Tower Report — ${timeLabel}`,
+    subject:  `Studio Control Tower Report - ${subjectLabel}`,
     template: "email-control-tower-report",
     templateData: {
       HTMLdata: html,

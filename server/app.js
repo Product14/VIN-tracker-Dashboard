@@ -1063,7 +1063,7 @@ app.get("/api/scheduled-report", async (req, res) => {
     hour:      "2-digit",
     minute:    "2-digit",
     hour12:    true,
-  }).toUpperCase().replace(/\s+/g, " ") + " IST";
+  }).toUpperCase().replace(/\s+/g, " ");
 
   const dashboardUrl = process.env.DASHBOARD_URL || "";
 
