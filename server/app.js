@@ -1,6 +1,8 @@
 import express from "express";
 import cors from "cors";
 import { query, getClient } from "./db.js";
+import { buildEmailHtml } from "./emailTemplate.js";
+import { sendReport }     from "./emailClient.js";
 
 const app = express();
 app.use(cors());
@@ -1039,6 +1041,72 @@ app.get("/api/vins/export", async (req, res) => {
   const orderBy = buildVinSort(req.query);
   const { rows } = await query(`${VIN_SELECT} ${where} ORDER BY ${orderBy}`, params);
   res.json({ data: rows.map(toApiRow) });
+});
+
+// ─── GET /api/scheduled-report ───────────────────────────────────────────────
+// Called by Vercel Cron at 06:30, 12:30, 18:30 UTC (12:00 PM / 6:00 PM / 12:00 AM IST).
+// Workflow: sync data from Metabase → compute summary → build HTML → send email.
+// Secured via Vercel's built-in CRON_SECRET: Vercel sends it as
+//   Authorization: Bearer <CRON_SECRET>
+// so the endpoint rejects anything that doesn't match.
+
+app.get("/api/scheduled-report", async (req, res) => {
+  // ── Auth ───────────────────────────────────────────────────────────────────
+  const cronSecret = process.env.CRON_SECRET;
+  if (cronSecret && req.headers.authorization !== `Bearer ${cronSecret}`) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  // ── Time label (what the email header will show) ───────────────────────────
+  const timeLabel = new Date().toLocaleString("en-IN", {
+    timeZone:  "Asia/Kolkata",
+    hour:      "2-digit",
+    minute:    "2-digit",
+    hour12:    true,
+  }).toUpperCase().replace(/\s+/g, " ") + " IST";
+
+  const dashboardUrl = process.env.DASHBOARD_URL || "";
+
+  console.log(`[scheduled-report] starting — ${timeLabel}`);
+
+  // ── Step 1: Sync data from Metabase ───────────────────────────────────────
+  let syncSkipped = false;
+  try {
+    const result = await runSync();
+    syncSkipped = result.skipped;
+    if (syncSkipped) {
+      console.warn("[scheduled-report] sync was already running — sending email with cached data");
+    } else {
+      console.log("[scheduled-report] sync complete");
+    }
+  } catch (err) {
+    // Sync failed (VINs critical failure). Log and fall through to send email
+    // with the last cached summary so recipients still get a report.
+    console.error("[scheduled-report] sync failed — sending email with cached data:", err?.message);
+  }
+
+  // ── Step 2: Read summary (written to cache at end of every successful sync) ─
+  let summary;
+  try {
+    const { rows } = await query(
+      `SELECT payload FROM summary_cache WHERE date_filter = 'all'`
+    );
+    summary = rows.length > 0 ? rows[0].payload : await computeSummary(null);
+  } catch (err) {
+    console.error("[scheduled-report] failed to read summary:", err?.message);
+    return res.status(500).json({ error: "Failed to read summary data" });
+  }
+
+  // ── Step 3: Build HTML and send ───────────────────────────────────────────
+  try {
+    const html = buildEmailHtml(summary, timeLabel, dashboardUrl);
+    await sendReport(html, timeLabel);
+    console.log("[scheduled-report] done");
+    return res.json({ ok: true, timeLabel, syncSkipped });
+  } catch (err) {
+    console.error("[scheduled-report] email send failed:", err?.message);
+    return res.status(500).json({ error: err?.message });
+  }
 });
 
 export default app;

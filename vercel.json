@@ -9,5 +9,10 @@
     "api/index.js": {
       "maxDuration": 300
     }
-  }
+  },
+  "crons": [
+    { "path": "/api/scheduled-report", "schedule": "30 6 * * *"  },
+    { "path": "/api/scheduled-report", "schedule": "30 12 * * *" },
+    { "path": "/api/scheduled-report", "schedule": "30 18 * * *" }
+  ]
 }
