@@ -66,26 +66,30 @@ const TAB_ICONS: Record<string, JSX.Element> = {
 };
 
 function HomePage({ onNavigate }: { onNavigate: (dashId: string, tab: string) => void }) {
-  const [vinStats, setVinStats] = useState<{ pending24h: number; websiteCoverage: number; notIntegrated: number; total: number } | null>(null);
+  const [vinStats, setVinStats] = useState<{ pending24h: number; websiteCoverage: number; notIntegrated: number; total: number; totalRooftops: number; withUrl: number } | null>(null);
 
   useEffect(() => {
-    fetch("/api/summary?dateFilter=all")
-      .then(r => r.ok ? r.json() : null)
-      .then(json => {
-        if (!json?.totals) return;
-        const t = json.totals;
-        const total = t.total ?? 0;
-        const notIntegrated = (json.byRooftop ?? []).filter((r: any) => r.imsIntegrationStatus === "Not Integrated").length;
-        const websiteWithUrl = (json.byRooftop ?? []).filter((r: any) => r.websiteListingUrl).length;
-        const totalRooftops = (json.byRooftop ?? []).length;
-        setVinStats({
-          pending24h: t.notProcessedAfter24h ?? t.not_processed_after_24h ?? 0,
-          total,
-          notIntegrated,
-          websiteCoverage: totalRooftops > 0 ? Math.round((websiteWithUrl / totalRooftops) * 100) : 0,
-        });
-      })
-      .catch(() => {});
+    // Fetch summary (totals) + all rooftops (for IMS + website stats) in parallel
+    Promise.all([
+      fetch("/api/summary?dateFilter=post").then(r => r.ok ? r.json() : null),
+      fetch("/api/rooftops?page=1&pageSize=2000&dateFilter=post").then(r => r.ok ? r.json() : null),
+    ]).then(([summary, rooftopResp]) => {
+      if (!summary?.totals) return;
+      const t = summary.totals;
+      const total = t.total ?? 0;
+      const rows: any[] = rooftopResp?.data ?? [];
+      const totalRooftops = rooftopResp?.total ?? rows.length;
+      const notIntegrated = rows.filter((r: any) => r.imsIntegrationStatus === "false" || r.imsIntegrationStatus === false).length;
+      const withUrl = rows.filter((r: any) => r.websiteListingUrl).length;
+      setVinStats({
+        pending24h: t.notProcessedAfter24 ?? 0,
+        total,
+        notIntegrated,
+        websiteCoverage: totalRooftops > 0 ? Math.round((withUrl / totalRooftops) * 100) : 0,
+        totalRooftops,
+        withUrl,
+      });
+    }).catch(() => {});
   }, []);
 
   const churnCards = [{ label: "Issue Types", value: "7", pct: null }, { label: "Views", value: "3", pct: null }, { label: "ARR Tracked", value: "$800K+", pct: null }];
