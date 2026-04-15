@@ -1414,7 +1414,7 @@ function OverviewTab({ totals, byType, byCSM, byBucket = [], onDrillDown, onRoof
         </div>
       )}
       <SummaryTable title="By Rooftop Type" rows={byType} colorHeader="#6366f1" filterKey="rooftopType" onDrillDown={onDrillDown} onRooftopDrillDown={onRooftopDrillDown} loading={loading} defaultSortCol={null} />
-      <SummaryTable title="By CSM" rows={byCSM} colorHeader="#0ea5e9" filterKey="csm" onDrillDown={onDrillDown} onRooftopDrillDown={onRooftopDrillDown} loading={loading} />
+      <SummaryTable title="By CSM" rows={byCSM} colorHeader="#0ea5e9" filterKey="csm" onDrillDown={onDrillDown} onRooftopDrillDown={onRooftopDrillDown} loading={loading} defaultSortCol="rooftopCount" />
     </div>
   );
 }

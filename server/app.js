@@ -729,7 +729,7 @@ async function computeSummary(dateFilter) {
       (SELECT last_sync   FROM meta)                AS last_sync,
       (SELECT total_rows  FROM meta)                AS total_rows,
       (SELECT row_to_json(t) FROM totals t)         AS totals_json,
-      (SELECT json_agg(c ORDER BY c.name)
+      (SELECT json_agg(c ORDER BY c.rooftop_count DESC)
        FROM by_csm c)                               AS by_csm_json,
       (SELECT json_agg(t ORDER BY
           CASE t.label
