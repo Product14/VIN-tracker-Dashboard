@@ -1067,22 +1067,25 @@ app.get("/api/scheduled-report", async (req, res) => {
 
   const dashboardUrl = process.env.DASHBOARD_URL || "";
 
-  console.log(`[scheduled-report] starting — ${timeLabel}`);
+  const skipSync = req.query["skip-sync"] === "true";
+  console.log(`[scheduled-report] starting — ${timeLabel}${skipSync ? " (skip-sync)" : ""}`);
 
   // ── Step 1: Sync data from Metabase ───────────────────────────────────────
-  let syncSkipped = false;
-  try {
-    const result = await runSync();
-    syncSkipped = result.skipped;
-    if (syncSkipped) {
-      console.warn("[scheduled-report] sync was already running — sending email with cached data");
-    } else {
-      console.log("[scheduled-report] sync complete");
+  let syncSkipped = skipSync;
+  if (!skipSync) {
+    try {
+      const result = await runSync();
+      syncSkipped = result.skipped;
+      if (syncSkipped) {
+        console.warn("[scheduled-report] sync was already running — sending email with cached data");
+      } else {
+        console.log("[scheduled-report] sync complete");
+      }
+    } catch (err) {
+      // Sync failed (VINs critical failure). Log and fall through to send email
+      // with the last cached summary so recipients still get a report.
+      console.error("[scheduled-report] sync failed — sending email with cached data:", err?.message);
     }
-  } catch (err) {
-    // Sync failed (VINs critical failure). Log and fall through to send email
-    // with the last cached summary so recipients still get a report.
-    console.error("[scheduled-report] sync failed — sending email with cached data:", err?.message);
   }
 
   // ── Step 2: Compute fresh summary directly from DB ───────────────────────

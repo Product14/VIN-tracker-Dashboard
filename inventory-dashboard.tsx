@@ -155,25 +155,25 @@ function ClickableNum({ value, color, onClick, title = "" }) {
   );
 }
 
-function StatCard({ label, value, sub, color = "#6366f1", onClick, loading = false }: { label: string; value: any; sub?: string; color?: string; onClick?: any; loading?: boolean }) {
+function StatCard({ label, value, sub, color = "#6366f1", onClick, loading = false, compact = false }: { label: string; value: any; sub?: string; color?: string; onClick?: any; loading?: boolean; compact?: boolean }) {
   const interactive = !!onClick;
   return (
-    <div onClick={!loading ? onClick : undefined} style={{ background: "#fff", borderRadius: 12, padding: "20px 24px", boxShadow: "0 1px 3px rgba(0,0,0,0.08)", border: "1px solid #e5e7eb", flex: 1, minWidth: 160, cursor: interactive && !loading ? "pointer" : "default", transition: "all 0.15s" }}
+    <div onClick={!loading ? onClick : undefined} style={{ background: "#fff", borderRadius: 12, padding: compact ? "12px 16px" : "20px 24px", boxShadow: "0 1px 3px rgba(0,0,0,0.08)", border: "1px solid #e5e7eb", flex: 1, minWidth: 160, cursor: interactive && !loading ? "pointer" : "default", transition: "all 0.15s" }}
       onMouseEnter={e => { if (interactive && !loading) { e.currentTarget.style.boxShadow = "0 4px 12px rgba(0,0,0,0.12)"; e.currentTarget.style.transform = "translateY(-2px)"; } }}
       onMouseLeave={e => { if (interactive && !loading) { e.currentTarget.style.boxShadow = "0 1px 3px rgba(0,0,0,0.08)"; e.currentTarget.style.transform = "translateY(0)"; } }}>
-      <div style={{ fontSize: 13, color: "#6b7280", fontWeight: 500, marginBottom: 4 }}>{label}</div>
+      <div style={{ fontSize: compact ? 12 : 13, color: "#6b7280", fontWeight: 500, marginBottom: 4 }}>{label}</div>
       {loading ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 4 }}>
-          <div className="shimmer-cell" style={{ height: 32, borderRadius: 6, width: "60%" }} />
+          <div className="shimmer-cell" style={{ height: compact ? 24 : 32, borderRadius: 6, width: "60%" }} />
           {sub !== undefined && <div className="shimmer-cell" style={{ height: 14, borderRadius: 4, width: "45%" }} />}
         </div>
       ) : (
         <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
-          <div style={{ fontSize: 28, fontWeight: 700, color }}>{typeof value === "number" ? value.toLocaleString() : value}</div>
-          {sub && <div style={{ fontSize: 13, color: "#9ca3af", fontWeight: 500 }}>({sub})</div>}
+          <div style={{ fontSize: compact ? 22 : 28, fontWeight: 700, color }}>{typeof value === "number" ? value.toLocaleString() : value}</div>
+          {sub && <div style={{ fontSize: compact ? 12 : 13, color: "#9ca3af", fontWeight: 500 }}>({sub})</div>}
         </div>
       )}
-      {interactive && !loading && <div style={{ fontSize: 11, color: "#a5b4fc", marginTop: 6 }}>Click to view details →</div>}
+      {interactive && !loading && <div style={{ fontSize: 11, color: "#a5b4fc", marginTop: compact ? 4 : 6 }}>Click to view details →</div>}
     </div>
   );
 }
@@ -1243,13 +1243,13 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
               <tr ref={row1Ref} style={{ background: "#f9fafb" }}>
                 <th rowSpan={2} style={{ ...thBase, textAlign: "center", width: 36 }}>#</th>
                 <th rowSpan={2} style={{ ...thBase, textAlign: "left", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("label")}>{nameCol}{si("label")}</th>
+                <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("notProcessedAfter24")}>Pending &gt;24h{si("notProcessedAfter24")}</th>
                 <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("enterpriseCount")}>Enterprises{si("enterpriseCount")}</th>
                 <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("rooftopCount")}>Rooftops{si("rooftopCount")}</th>
                 <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("total")}>Inventory{si("total")}</th>
                 <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("withPhotos")}>With Photos{si("withPhotos")}</th>
                 <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("deliveredWithPhotos")}>Delivered{si("deliveredWithPhotos")}</th>
                 <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("pendingWithPhotos")}>Pending{si("pendingWithPhotos")}</th>
-                <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("notProcessedAfter24")}>Pending &gt;24h{si("notProcessedAfter24")}</th>
                 <th rowSpan={2} style={{ ...thBase, textAlign: "center" }}>Pending &gt;24h %</th>
                 <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("avgWebsiteScore")}>Avg Score{si("avgWebsiteScore")}</th>
                 {activeBuckets.length > 0 && (
@@ -1298,18 +1298,18 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
                         {filterKey === "csm" ? fmtCsm(r.label) : r.label}
                       </span>
                     </td>
-                    <td style={{ ...td, textAlign: "center" }}><ClickableNum value={r.enterpriseCount ?? 0} color="#6b7280" onClick={() => onRooftopDrillDown({ [filterKey]: r.label })} /></td>
-                    <td style={{ ...td, textAlign: "center" }}><ClickableNum value={r.rooftopCount} color="#6b7280" onClick={() => onRooftopDrillDown({ [filterKey]: r.label })} /></td>
-                    <td style={{ ...td, textAlign: "center" }}><ClickableNum value={r.total} color="#4f46e5" onClick={() => onDrillDown(base)} /></td>
-                    <td style={{ ...td, textAlign: "center" }}><ClickableNum value={r.withPhotos ?? 0} color="#0ea5e9" onClick={() => onDrillDown({ ...base, hasPhotos: true })} /></td>
-                    <td style={{ ...td, textAlign: "center" }}><ClickableNum value={r.deliveredWithPhotos ?? 0} color="#166534" onClick={() => onDrillDown({ ...base, status: "Delivered", hasPhotos: true })} /></td>
-                    <td style={{ ...td, textAlign: "center" }}><ClickableNum value={r.pendingWithPhotos ?? 0} color="#991b1b" onClick={() => onDrillDown({ ...base, status: "Not Delivered", hasPhotos: true })} /></td>
                     {/* Standalone: Pending >24h count */}
                     <td style={{ ...td, textAlign: "center" }}>
                       {r.notProcessedAfter24 > 0
                         ? <span onClick={() => onDrillDown({ ...base, status: "Not Delivered", after24h: true, hasPhotos: true })} style={{ cursor: "pointer" }}><Badge label={r.notProcessedAfter24} color="red" /></span>
                         : <span style={{ color: "#9ca3af" }}>0</span>}
                     </td>
+                    <td style={{ ...td, textAlign: "center" }}><ClickableNum value={r.enterpriseCount ?? 0} color="#6b7280" onClick={() => onRooftopDrillDown({ [filterKey]: r.label })} /></td>
+                    <td style={{ ...td, textAlign: "center" }}><ClickableNum value={r.rooftopCount} color="#6b7280" onClick={() => onRooftopDrillDown({ [filterKey]: r.label })} /></td>
+                    <td style={{ ...td, textAlign: "center" }}><ClickableNum value={r.total} color="#4f46e5" onClick={() => onDrillDown(base)} /></td>
+                    <td style={{ ...td, textAlign: "center" }}><ClickableNum value={r.withPhotos ?? 0} color="#0ea5e9" onClick={() => onDrillDown({ ...base, hasPhotos: true })} /></td>
+                    <td style={{ ...td, textAlign: "center" }}><ClickableNum value={r.deliveredWithPhotos ?? 0} color="#166534" onClick={() => onDrillDown({ ...base, status: "Delivered", hasPhotos: true })} /></td>
+                    <td style={{ ...td, textAlign: "center" }}><ClickableNum value={r.pendingWithPhotos ?? 0} color="#991b1b" onClick={() => onDrillDown({ ...base, status: "Not Delivered", hasPhotos: true })} /></td>
                     {/* Standalone: Pending >24h % */}
                     <td style={{ ...td, textAlign: "center", color: "#6b7280", fontSize: 12 }}>{rate.toFixed(0)}%</td>
                     {/* Avg Score */}
@@ -1355,18 +1355,18 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
               <tr>
                 <td style={{ ...totTd }} />
                 <td style={{ ...totTd }}>Total</td>
-                <td style={{ ...totTd, textAlign: "center", color: "#6b7280" }}>{(totRow.enterpriseCount ?? 0).toLocaleString()}</td>
-                <td style={{ ...totTd, textAlign: "center", color: "#6b7280" }}>{totRow.rooftopCount?.toLocaleString()}</td>
-                <td style={{ ...totTd, textAlign: "center" }}><ClickableNum value={totRow.total} color="#4f46e5" onClick={() => onDrillDown({})} /></td>
-                <td style={{ ...totTd, textAlign: "center" }}><ClickableNum value={totRow.withPhotos ?? 0} color="#0ea5e9" onClick={() => onDrillDown({ hasPhotos: true })} /></td>
-                <td style={{ ...totTd, textAlign: "center" }}><ClickableNum value={totRow.deliveredWithPhotos ?? 0} color="#166534" onClick={() => onDrillDown({ status: "Delivered", hasPhotos: true })} /></td>
-                <td style={{ ...totTd, textAlign: "center" }}><ClickableNum value={totRow.pendingWithPhotos ?? 0} color="#991b1b" onClick={() => onDrillDown({ status: "Not Delivered", hasPhotos: true })} /></td>
                 {/* Standalone: Pending >24h total count */}
                 <td style={{ ...totTd, textAlign: "center" }}>
                   {totRow.notProcessedAfter24 > 0
                     ? <span onClick={() => onDrillDown({ status: "Not Delivered", after24h: true, hasPhotos: true })} style={{ cursor: "pointer" }}><Badge label={totRow.notProcessedAfter24} color="red" /></span>
                     : <span style={{ color: "#9ca3af" }}>0</span>}
                 </td>
+                <td style={{ ...totTd, textAlign: "center", color: "#6b7280" }}>{(totRow.enterpriseCount ?? 0).toLocaleString()}</td>
+                <td style={{ ...totTd, textAlign: "center", color: "#6b7280" }}>{totRow.rooftopCount?.toLocaleString()}</td>
+                <td style={{ ...totTd, textAlign: "center" }}><ClickableNum value={totRow.total} color="#4f46e5" onClick={() => onDrillDown({})} /></td>
+                <td style={{ ...totTd, textAlign: "center" }}><ClickableNum value={totRow.withPhotos ?? 0} color="#0ea5e9" onClick={() => onDrillDown({ hasPhotos: true })} /></td>
+                <td style={{ ...totTd, textAlign: "center" }}><ClickableNum value={totRow.deliveredWithPhotos ?? 0} color="#166534" onClick={() => onDrillDown({ status: "Delivered", hasPhotos: true })} /></td>
+                <td style={{ ...totTd, textAlign: "center" }}><ClickableNum value={totRow.pendingWithPhotos ?? 0} color="#991b1b" onClick={() => onDrillDown({ status: "Not Delivered", hasPhotos: true })} /></td>
                 {/* Standalone: Pending >24h % */}
                 <td style={{ ...totTd, textAlign: "center", color: "#6b7280", fontSize: 12 }}>{totRate.toFixed(0)}%</td>
                 {/* Avg Score */}
@@ -1393,28 +1393,46 @@ function OverviewTab({ totals, byType, byCSM, byBucket = [], onDrillDown, onRoof
   const activeBuckets = byBucket;
   return (
     <div>
-      <div style={{ display: "flex", gap: 14, marginBottom: activeBuckets.length > 0 ? 10 : 28, flexWrap: "wrap" }}>
-        <StatCard label="Total Inventory" value={totals.total} color="#6366f1" onClick={() => onDrillDown({})} loading={loading} />
-        <StatCard label="With Photos" value={totals.withPhotos ?? 0} sub={totals.total > 0 ? `${(((totals.withPhotos ?? 0) / totals.total) * 100).toFixed(0)}% of total` : ""} color="#0ea5e9" onClick={() => onDrillDown({ hasPhotos: true })} loading={loading} />
-        <StatCard label="VIN Delivered" value={totals.deliveredWithPhotos ?? 0} sub={totals.withPhotos > 0 ? `${(((totals.deliveredWithPhotos ?? 0) / totals.withPhotos) * 100).toFixed(0)}% of with photos` : ""} color="#22c55e" onClick={() => onDrillDown({ status: "Delivered", hasPhotos: true })} loading={loading} />
-        <StatCard label="Pending VINs" value={totals.pendingWithPhotos ?? 0} sub={totals.withPhotos > 0 ? `${(((totals.pendingWithPhotos ?? 0) / totals.withPhotos) * 100).toFixed(0)}% of with photos` : ""} color="#ef4444" onClick={() => onDrillDown({ status: "Not Delivered", hasPhotos: true })} loading={loading} />
-        <StatCard label="Pending VINs >24h" value={totals.notProcessedAfter24} sub={totals.withPhotos > 0 ? `${((totals.notProcessedAfter24 / totals.withPhotos) * 100).toFixed(0)}% of with photos` : ""} color="#f59e0b" onClick={() => onDrillDown({ status: "Not Delivered", after24h: true, hasPhotos: true })} loading={loading} />
-      </div>
-      {activeBuckets.length > 0 && (
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 28, alignItems: "center", opacity: loading ? 0.45 : 1, transition: "opacity 0.2s" }}>
-          <span style={{ fontSize: 11, fontWeight: 600, color: "#9ca3af", textTransform: "uppercase" as const, letterSpacing: 0.5, marginRight: 2 }}>Pending &gt;24h by reason:</span>
-          {activeBuckets.map((b: { label: string; count: number }) => (
-            <span key={b.label} onClick={loading ? undefined : () => onDrillDown({ status: "Not Delivered", after24h: true, reasonBucket: b.label })}
-              style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "3px 10px", borderRadius: 999, fontSize: 12, fontWeight: 600, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", cursor: loading ? "default" : "pointer", transition: "all 0.15s" }}
-              onMouseEnter={e => { if (!loading) { e.currentTarget.style.background = "#fee2e2"; e.currentTarget.style.borderColor = "#fca5a5"; } }}
-              onMouseLeave={e => { if (!loading) { e.currentTarget.style.background = "#fef2f2"; e.currentTarget.style.borderColor = "#fecaca"; } }}>
-              {b.label} <span style={{ fontWeight: 700, color: "#ef4444" }}>{b.count.toLocaleString()}</span>
-            </span>
-          ))}
+      <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 28 }}>
+        {/* Row 1: Pending >24h card with pills directly below */}
+        <div style={{ display: "inline-flex", flexDirection: "column", gap: 8, background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 12, padding: "10px 16px" }}>
+          <div onClick={!loading ? () => onDrillDown({ status: "Not Delivered", after24h: true, hasPhotos: true }) : undefined}
+            style={{ display: "inline-flex", alignItems: "center", gap: 10, background: "#fff", borderRadius: 10, padding: "10px 16px", border: "1px solid #e5e7eb", boxShadow: "0 1px 3px rgba(0,0,0,0.08)", cursor: loading ? "default" : "pointer", transition: "all 0.15s" }}
+            onMouseEnter={e => { if (!loading) { e.currentTarget.style.boxShadow = "0 4px 12px rgba(0,0,0,0.12)"; e.currentTarget.style.transform = "translateY(-2px)"; } }}
+            onMouseLeave={e => { if (!loading) { e.currentTarget.style.boxShadow = "0 1px 3px rgba(0,0,0,0.08)"; e.currentTarget.style.transform = "translateY(0)"; } }}>
+            <div style={{ fontSize: 15, fontWeight: 600, color: "#374151" }}>Pending VINs &gt;24h</div>
+            {loading
+              ? <div className="shimmer-cell" style={{ height: 28, width: 50, borderRadius: 6 }} />
+              : <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                  <div style={{ fontSize: 28, fontWeight: 700, color: "#f59e0b", lineHeight: 1 }}>{totals.notProcessedAfter24.toLocaleString()}</div>
+                  <div style={{ fontSize: 14, color: "#f59e0b" }}>→</div>
+                </div>
+            }
+          </div>
+          {activeBuckets.length > 0 && (
+            <div style={{ display: "flex", gap: 5, flexWrap: "nowrap", alignItems: "center", opacity: loading ? 0.45 : 1, transition: "opacity 0.2s" }}>
+              <span style={{ fontSize: 11, fontWeight: 600, color: "#9ca3af", textTransform: "uppercase" as const, letterSpacing: 0.5, whiteSpace: "nowrap", marginRight: 2 }}>By reason:</span>
+              {activeBuckets.map((b: { label: string; count: number }) => (
+                <span key={b.label} onClick={loading ? undefined : () => onDrillDown({ status: "Not Delivered", after24h: true, reasonBucket: b.label })}
+                  style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 8px", borderRadius: 999, fontSize: 11, fontWeight: 600, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", cursor: loading ? "default" : "pointer", transition: "all 0.15s", whiteSpace: "nowrap" }}
+                  onMouseEnter={e => { if (!loading) { e.currentTarget.style.background = "#fee2e2"; e.currentTarget.style.borderColor = "#fca5a5"; } }}
+                  onMouseLeave={e => { if (!loading) { e.currentTarget.style.background = "#fef2f2"; e.currentTarget.style.borderColor = "#fecaca"; } }}>
+                  {b.label} <span style={{ fontWeight: 700, color: "#ef4444" }}>{b.count.toLocaleString()}</span>
+                </span>
+              ))}
+            </div>
+          )}
         </div>
-      )}
+        {/* Row 2: Remaining KPI cards */}
+        <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
+          <StatCard label="Total Inventory" value={totals.total} color="#6366f1" onClick={() => onDrillDown({})} loading={loading} />
+          <StatCard label="With Photos" value={totals.withPhotos ?? 0} sub={totals.total > 0 ? `${(((totals.withPhotos ?? 0) / totals.total) * 100).toFixed(0)}% of total` : ""} color="#0ea5e9" onClick={() => onDrillDown({ hasPhotos: true })} loading={loading} />
+          <StatCard label="VIN Delivered" value={totals.deliveredWithPhotos ?? 0} sub={totals.withPhotos > 0 ? `${(((totals.deliveredWithPhotos ?? 0) / totals.withPhotos) * 100).toFixed(0)}% of with photos` : ""} color="#22c55e" onClick={() => onDrillDown({ status: "Delivered", hasPhotos: true })} loading={loading} />
+          <StatCard label="Pending VINs" value={totals.pendingWithPhotos ?? 0} sub={totals.withPhotos > 0 ? `${(((totals.pendingWithPhotos ?? 0) / totals.withPhotos) * 100).toFixed(0)}% of with photos` : ""} color="#ef4444" onClick={() => onDrillDown({ status: "Not Delivered", hasPhotos: true })} loading={loading} />
+        </div>
+      </div>
       <SummaryTable title="By Rooftop Type" rows={byType} colorHeader="#6366f1" filterKey="rooftopType" onDrillDown={onDrillDown} onRooftopDrillDown={onRooftopDrillDown} loading={loading} defaultSortCol={null} />
-      <SummaryTable title="By CSM" rows={byCSM} colorHeader="#0ea5e9" filterKey="csm" onDrillDown={onDrillDown} onRooftopDrillDown={onRooftopDrillDown} loading={loading} defaultSortCol="rooftopCount" />
+      <SummaryTable title="By CSM" rows={byCSM} colorHeader="#0ea5e9" filterKey="csm" onDrillDown={onDrillDown} onRooftopDrillDown={onRooftopDrillDown} loading={loading} defaultSortCol="notProcessedAfter24" />
     </div>
   );
 }
