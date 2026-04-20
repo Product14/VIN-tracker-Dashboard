@@ -148,36 +148,29 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl) {
       </td>
     </tr>`;
 
+  // 2×2 grid — each card is 50% wide so it reads comfortably on mobile
   const kpiRow = `
     <tr>
-      ${kpiCard("Total Inventory",  totals.total,               ACCENT_COLOR, "25%")}
-      ${kpiCard("With Photos",      totals.withPhotos,          "#0891b2",    "25%")}
-      ${kpiCard("VIN Delivered",    totals.deliveredWithPhotos, GREEN,        "25%")}
-      ${kpiCard("Pending VINs",     totals.pendingWithPhotos,   AMBER,        "25%")}
+      ${kpiCard("Total Inventory",  totals.total,               ACCENT_COLOR, "50%")}
+      ${kpiCard("With Photos",      totals.withPhotos,          "#0891b2",    "50%")}
+    </tr>
+    <tr>
+      ${kpiCard("VIN Delivered",    totals.deliveredWithPhotos, GREEN,        "50%")}
+      ${kpiCard("Pending VINs",     totals.pendingWithPhotos,   AMBER,        "50%")}
     </tr>`;
 
-  // Shared column headers for both tables
+  // Shared column headers for both tables — trimmed to the 3 key metrics
   const sharedHeaders = (firstColLabel) => tableHeader([
     { label: firstColLabel,        align: "left" },
     { label: "Pending >24hr"                     },
-    { label: "Enterprises"                       },
-    { label: "Rooftops"                          },
-    { label: "Inventory"                         },
-    { label: "With Photos"                       },
-    { label: "Delivered"                         },
-    { label: "Pending"                           },
+    { label: "Total Pending"                     },
     { label: "Pending >24hr %"                   },
-    { label: "Avg Score"                         },
+    { label: "Website Score"                     },
   ]);
 
   const sharedRow = (firstCol, r, zebra) => tableRow([
     { value: firstCol,                                        align: "left"                                                         },
     { value: fmt(r.notProcessedAfter24),                      color: r.notProcessedAfter24 > 0 ? RED : null                         },
-    { value: fmt(r.enterpriseCount)                                                                                                  },
-    { value: fmt(r.rooftopCount)                                                                                                     },
-    { value: fmt(r.total)                                                                                                            },
-    { value: fmt(r.withPhotos)                                                                                                       },
-    { value: fmt(r.deliveredWithPhotos)                                                                                               },
     { value: fmt(r.pendingWithPhotos),                        color: r.pendingWithPhotos > 0 ? AMBER : null                         },
     { value: pct(r.notProcessedAfter24, r.notProcessed),      color: r.notProcessedAfter24 > 0 ? RED : null                        },
     { value: score(r.avgWebsiteScore),                        muted: true                                                           },
@@ -273,7 +266,7 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl) {
                   <table width="100%" cellpadding="0" cellspacing="0" border="0"
                          style="border:1px solid ${BORDER_COLOR}; border-radius:8px; overflow:hidden; border-collapse:separate; border-spacing:0;">
                     ${typeHeaders}
-                    ${typeRows || `<tr><td colspan="10" style="padding:16px; text-align:center; color:${TEXT_MUTED}; font-size:13px;">No data</td></tr>`}
+                    ${typeRows || `<tr><td colspan="5" style="padding:16px; text-align:center; color:${TEXT_MUTED}; font-size:13px;">No data</td></tr>`}
                   </table>
                 </td></tr>
 
@@ -283,7 +276,7 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl) {
                   <table width="100%" cellpadding="0" cellspacing="0" border="0"
                          style="border:1px solid ${BORDER_COLOR}; border-radius:8px; overflow:hidden; border-collapse:separate; border-spacing:0;">
                     ${csmHeaders}
-                    ${csmRows || `<tr><td colspan="10" style="padding:16px; text-align:center; color:${TEXT_MUTED}; font-size:13px;">No data</td></tr>`}
+                    ${csmRows || `<tr><td colspan="5" style="padding:16px; text-align:center; color:${TEXT_MUTED}; font-size:13px;">No data</td></tr>`}
                   </table>
                 </td></tr>
 
