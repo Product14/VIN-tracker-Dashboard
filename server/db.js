@@ -23,21 +23,32 @@ export const getClient = ()             => pool.connect();
 export async function initSchema() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS vins (
-      vin             TEXT PRIMARY KEY,
-      dealer_vin_id   TEXT,
-      enterprise_id   TEXT,
-      rooftop_id      TEXT,
-      status          TEXT,
-      after_24h       SMALLINT,
-      received_at     TEXT,
-      processed_at    TEXT,
-      reason_bucket   TEXT,
-      hold_reason     TEXT DEFAULT '',
-      has_photos      SMALLINT DEFAULT 0,
-      synced_at       TEXT
+      vin                  TEXT PRIMARY KEY,
+      dealer_vin_id        TEXT,
+      enterprise_id        TEXT,
+      rooftop_id           TEXT,
+      status               TEXT,
+      after_24h            SMALLINT,
+      received_at          TEXT,
+      processed_at         TEXT,
+      reason_bucket        TEXT,
+      hold_reason          TEXT DEFAULT '',
+      has_photos           SMALLINT DEFAULT 0,
+      output_image_count   INT,
+      thumbnail_url        TEXT,
+      vehicle_price        REAL,
+      synced_at            TEXT
     );
     ALTER TABLE vins ADD COLUMN IF NOT EXISTS hold_reason TEXT DEFAULT '';
     ALTER TABLE vins ADD COLUMN IF NOT EXISTS has_photos SMALLINT DEFAULT 0;
+    ALTER TABLE vins ADD COLUMN IF NOT EXISTS output_image_count INT;
+    ALTER TABLE vins ADD COLUMN IF NOT EXISTS thumbnail_url TEXT;
+    ALTER TABLE vins ADD COLUMN IF NOT EXISTS vehicle_price REAL;
+    ALTER TABLE vins ADD COLUMN IF NOT EXISTS make         TEXT;
+    ALTER TABLE vins ADD COLUMN IF NOT EXISTS model        TEXT;
+    ALTER TABLE vins ADD COLUMN IF NOT EXISTS year         TEXT;
+    ALTER TABLE vins ADD COLUMN IF NOT EXISTS trim         TEXT;
+    ALTER TABLE vins ADD COLUMN IF NOT EXISTS stock_number TEXT;
 
     CREATE INDEX IF NOT EXISTS idx_vins_rooftop_id        ON vins(rooftop_id);
     CREATE INDEX IF NOT EXISTS idx_vins_enterprise_id     ON vins(enterprise_id);
@@ -56,17 +67,21 @@ export async function initSchema() {
       website_listing_url    TEXT,
       ims_integration_status TEXT,
       publishing_status      TEXT,
+      recipient_email        TEXT,
       synced_at              TEXT
     );
+    ALTER TABLE rooftop_details ADD COLUMN IF NOT EXISTS recipient_email TEXT;
 
     CREATE TABLE IF NOT EXISTS enterprise_details (
-      enterprise_id  TEXT PRIMARY KEY,
-      name           TEXT,
-      type           TEXT,
-      website_url    TEXT,
-      poc_email      TEXT,
-      synced_at      TEXT
+      enterprise_id         TEXT PRIMARY KEY,
+      name                  TEXT,
+      type                  TEXT,
+      website_url           TEXT,
+      poc_email             TEXT,
+      group_recipient_email TEXT,
+      synced_at             TEXT
     );
+    ALTER TABLE enterprise_details ADD COLUMN IF NOT EXISTS group_recipient_email TEXT;
 
     -- Single-row table used as a distributed sync lock (survives Lambda restarts).
     CREATE TABLE IF NOT EXISTS sync_state (
