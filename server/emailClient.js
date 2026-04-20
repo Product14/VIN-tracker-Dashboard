@@ -3,7 +3,7 @@
 //
 // Required env vars:
 //   INTERNAL_EMAIL_API_URL   – e.g. https://abc.cyx.in/send-template-email
-//   EMAIL_TO                 – primary recipient (single address string)
+//   EMAIL_TO                 – primary recipient for Control Tower report (single address string)
 //   EMAIL_CC                 – comma-separated CC addresses (optional)
 //   EMAIL_BCC                – comma-separated BCC addresses (optional)
 
@@ -41,10 +41,13 @@ export async function sendReport(html, timeLabel) {
   }).toUpperCase().replace(/\s+/g, " ");
   const subjectLabel = `${subjectDate} ${subjectTime}`;
 
+  const from = process.env.FROM;
+
   const payload = {
     to,
     ...(cc.length  > 0 && { cc }),
     ...(bcc.length > 0 && { bcc }),
+    ...(from && { from }),
     subject:  `Studio Control Tower Report - ${subjectLabel}`,
     template: "email-control-tower-report",
     templateData: {
@@ -66,5 +69,50 @@ export async function sendReport(html, timeLabel) {
   }
 
   console.log("[email] sent successfully");
+  return res.json().catch(() => ({}));
+}
+
+/**
+ * Sends a customer-facing daily report email (rooftop or group).
+ * Unlike sendReport(), recipients and subject are caller-supplied, not from env vars.
+ *
+ * @param {string} html              – Full HTML string built by emailTemplateDaily.js
+ * @param {Object} opts
+ * @param {string|string[]} opts.to  – Recipient address(es)
+ * @param {string} opts.subject      – Email subject line
+ */
+export async function sendDailyReport(html, { to, cc, subject }) {
+  const url = process.env.INTERNAL_EMAIL_API_URL;
+  if (!url) throw new Error("INTERNAL_EMAIL_API_URL env var is not set");
+
+  const toArr = Array.isArray(to) ? to : [to];
+  if (toArr.length === 0) throw new Error("sendDailyReport: no recipient address provided");
+  const ccArr = cc ? (Array.isArray(cc) ? cc : [cc]).filter(Boolean) : [];
+
+  const from = process.env.FROM;
+
+  const payload = {
+    to:      toArr,
+    ...(ccArr.length > 0 && { cc: ccArr }),
+    ...(from && { from }),
+    subject,
+    template: "email-control-tower-report",
+    templateData: { HTMLdata: html },
+  };
+
+  console.log(`[email:daily] sending to=${toArr.join(",")} cc=${ccArr.join(",")||"—"} subject="${subject}"`);
+
+  const res = await fetch(url, {
+    method:  "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`Email API responded HTTP ${res.status}: ${body}`);
+  }
+
+  console.log("[email:daily] sent successfully");
   return res.json().catch(() => ({}));
 }

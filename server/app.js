@@ -1,8 +1,9 @@
 import express from "express";
 import cors from "cors";
 import { query, getClient } from "./db.js";
-import { buildEmailHtml } from "./emailTemplate.js";
-import { sendReport }     from "./emailClient.js";
+import { buildEmailHtml }                                    from "./emailTemplate.js";
+import { buildRooftopReportHtml, buildGroupReportHtml }     from "./emailTemplateDaily.js";
+import { sendReport, sendDailyReport }                      from "./emailClient.js";
 
 const app = express();
 app.use(cors());
@@ -64,11 +65,13 @@ async function syncVins() {
   const deduped = Object.values(
     rows.reduce((acc, row) => { acc[row.vinName ?? ""] = row; return acc; }, {})
   );
-  if (deduped.length > 0) console.log("[sync:VIN_DETAILS] sample row keys:", Object.keys(deduped[0]), "| has_photos sample:", deduped[0].has_photos);
+  if (deduped.length > 0) console.log("[sync:VIN_DETAILS] sample row keys:", Object.keys(deduped[0]), "| has_photos sample:", deduped[0].has_photos, "| output_image_count sample:", deduped[0].output_image_count);
 
   const vins = [], dealerVinIds = [], enterpriseIds = [], rooftopIds = [];
   const statuses = [], after24hs = [], receivedAts = [], processedAts = [];
-  const reasonBuckets = [], holdReasons = [], hasPhotosArr = [], syncedAts = [];
+  const reasonBuckets = [], holdReasons = [], hasPhotosArr = [];
+  const outputImageCounts = [], thumbnailUrls = [], vehiclePrices = [], syncedAts = [];
+  const makes = [], models = [], years = [], trims = [], stockNumbers = [];
 
   for (const row of deduped) {
     vins.push(row.vinName ?? "");
@@ -82,6 +85,14 @@ async function syncVins() {
     reasonBuckets.push(row.reason_bucket ?? "");
     holdReasons.push(row.hold_reason ?? "");
     hasPhotosArr.push(cleanAfter24(row.has_photos ?? null));
+    outputImageCounts.push(row.output_image_count != null ? Number(row.output_image_count) : null);
+    thumbnailUrls.push(row.thumbnail_url ?? null);
+    vehiclePrices.push(row.sellingPrice != null ? Number(row.sellingPrice) : row.vehicle_price != null ? Number(row.vehicle_price) : null);
+    makes.push(row.make ?? null);
+    models.push(row.model ?? null);
+    years.push(row.year != null ? String(row.year) : null);
+    trims.push(row.trim ?? null);
+    stockNumbers.push(row.stockNumber ?? null);
     syncedAts.push(syncedAt);
   }
 
@@ -92,12 +103,19 @@ async function syncVins() {
     if (deduped.length > 0) {
       await client.query(`
         INSERT INTO vins
-          (vin, dealer_vin_id, enterprise_id, rooftop_id, status, after_24h, received_at, processed_at, reason_bucket, hold_reason, has_photos, synced_at)
+          (vin, dealer_vin_id, enterprise_id, rooftop_id, status, after_24h, received_at, processed_at,
+           reason_bucket, hold_reason, has_photos, output_image_count, thumbnail_url, vehicle_price,
+           make, model, year, trim, stock_number, synced_at)
         SELECT
-          UNNEST($1::text[]), UNNEST($2::text[]), UNNEST($3::text[]), UNNEST($4::text[]),
-          UNNEST($5::text[]), UNNEST($6::smallint[]), UNNEST($7::text[]), UNNEST($8::text[]),
-          UNNEST($9::text[]), UNNEST($10::text[]), UNNEST($11::smallint[]), UNNEST($12::text[])
-      `, [vins, dealerVinIds, enterpriseIds, rooftopIds, statuses, after24hs, receivedAts, processedAts, reasonBuckets, holdReasons, hasPhotosArr, syncedAts]);
+          UNNEST($1::text[]),    UNNEST($2::text[]),     UNNEST($3::text[]),     UNNEST($4::text[]),
+          UNNEST($5::text[]),    UNNEST($6::smallint[]), UNNEST($7::text[]),     UNNEST($8::text[]),
+          UNNEST($9::text[]),    UNNEST($10::text[]),    UNNEST($11::smallint[]),UNNEST($12::int[]),
+          UNNEST($13::text[]),   UNNEST($14::real[]),
+          UNNEST($15::text[]),   UNNEST($16::text[]),   UNNEST($17::text[]),    UNNEST($18::text[]),
+          UNNEST($19::text[]),   UNNEST($20::text[])
+      `, [vins, dealerVinIds, enterpriseIds, rooftopIds, statuses, after24hs, receivedAts, processedAts,
+          reasonBuckets, holdReasons, hasPhotosArr, outputImageCounts, thumbnailUrls, vehiclePrices,
+          makes, models, years, trims, stockNumbers, syncedAts]);
     }
     await client.query("COMMIT");
   } catch (e) {
@@ -1106,6 +1124,358 @@ app.get("/api/scheduled-report", async (req, res) => {
     console.error("[scheduled-report] email send failed:", err?.message);
     return res.status(500).json({ error: err?.message });
   }
+});
+
+// ─── Daily Report Aggregation ─────────────────────────────────────────────────
+// All "yesterday" KPIs scope to VINs received on the given date (received_at date).
+// TTD = AVG(processed_at - received_at) for delivered VINs received yesterday.
+
+async function computeRooftopDailyReport(rooftopId, yesterday) {
+  // yesterday: JS Date object or ISO date string for the target day
+
+  const { rows: [kpi] } = await query(`
+    SELECT
+      -- Vehicles shot yesterday with photos (received_at date = yesterday, has_photos = 1)
+      COUNT(*) FILTER (WHERE DATE(received_at::timestamp) = $2::date AND COALESCE(has_photos, 0) = 1)                                                        AS new_vins,
+      COALESCE(SUM(output_image_count) FILTER (WHERE DATE(received_at::timestamp) = $2::date AND COALESCE(has_photos, 0) = 1), 0)                            AS images_received,
+      -- Vehicles published yesterday with photos (received_at date = yesterday, status = Delivered, has_photos = 1)
+      COUNT(*) FILTER (WHERE status = 'Delivered' AND COALESCE(has_photos, 0) = 1 AND DATE(received_at::timestamp) = $2::date)                              AS vins_delivered,
+      COALESCE(SUM(output_image_count) FILTER (WHERE status = 'Delivered' AND COALESCE(has_photos, 0) = 1 AND DATE(received_at::timestamp) = $2::date), 0) AS images_processed,
+      -- Vehicles received yesterday with photos that are still not delivered
+      COUNT(*) FILTER (WHERE status != 'Delivered' AND COALESCE(has_photos, 0) = 1 AND DATE(received_at::timestamp) = $2::date) AS vins_pending,
+      -- Avg TAT for VINs received yesterday, published, with photos
+      ROUND(AVG(
+        EXTRACT(EPOCH FROM (processed_at::timestamptz - received_at::timestamptz)) / 3600.0
+      ) FILTER (WHERE status = 'Delivered' AND COALESCE(has_photos, 0) = 1 AND DATE(received_at::timestamp) = $2::date
+                  AND processed_at IS NOT NULL AND received_at IS NOT NULL)::numeric, 1) AS avg_ttd_hrs
+    FROM vins
+    WHERE rooftop_id = $1
+  `, [rooftopId, yesterday]);
+
+  const { rows: [totals] } = await query(`
+    SELECT
+      COUNT(*)                                                                          AS total_active,
+      COUNT(*) FILTER (WHERE status = 'Delivered' AND COALESCE(has_photos, 0) = 1)   AS total_delivered,
+      COUNT(*) FILTER (WHERE status != 'Delivered')                                   AS total_pending,
+      COUNT(*) FILTER (WHERE COALESCE(has_photos, 0) = 1)                             AS with_photos
+    FROM vins
+    WHERE rooftop_id = $1
+  `, [rooftopId]);
+
+  const { rows: [rooftop] } = await query(`
+    SELECT team_name, enterprise_id FROM rooftop_details WHERE team_id = $1
+  `, [rooftopId]);
+
+  // Delivered VINs published yesterday — per-VIN table (max 5 for email)
+  const { rows: processedVins } = await query(`
+    SELECT
+      vin,
+      dealer_vin_id,
+      stock_number,
+      vehicle_price,
+      thumbnail_url,
+      make,
+      model,
+      year,
+      trim,
+      received_at,
+      processed_at,
+      ROUND(
+        EXTRACT(EPOCH FROM (processed_at::timestamptz - received_at::timestamptz)) / 3600.0
+        ::numeric, 2
+      )                                                  AS ttd_hrs
+    FROM vins
+    WHERE rooftop_id = $1
+      AND status = 'Delivered'
+      AND COALESCE(has_photos, 0) = 1
+      AND DATE(received_at::timestamp) = $2::date
+    ORDER BY received_at DESC
+    LIMIT 5
+  `, [rooftopId, yesterday]);
+
+  // VINs without images — top 5 for email display + total count for "+x more"
+  const [{ rows: noImageVins }, { rows: [noImageCount] }] = await Promise.all([
+    query(`
+      SELECT
+        vin,
+        dealer_vin_id,
+        stock_number,
+        make,
+        model,
+        year,
+        trim,
+        received_at,
+        EXTRACT(day FROM NOW() - received_at::timestamptz)::int AS days_on_lot
+      FROM vins
+      WHERE rooftop_id = $1
+        AND COALESCE(has_photos, 0) = 0
+      ORDER BY received_at ASC
+      LIMIT 5
+    `, [rooftopId]),
+    query(`
+      SELECT COUNT(*)::int AS total
+      FROM vins
+      WHERE rooftop_id = $1
+        AND COALESCE(has_photos, 0) = 0
+    `, [rooftopId]),
+  ]);
+
+  const totalActive    = Number(totals.total_active)    || 0;
+  const totalDelivered = Number(totals.total_delivered)  || 0;
+  const totalPending   = Number(totals.total_pending)    || 0;
+  const withPhotos     = Number(totals.with_photos)      || 0;
+  const deliveryPct    = totalActive > 0 ? Math.round(totalDelivered / totalActive * 1000) / 10 : 0;
+  const pendingPct     = totalActive > 0 ? Math.round(totalPending   / totalActive * 1000) / 10 : 0;
+  const withPhotosPct  = totalActive > 0 ? Math.round(withPhotos     / totalActive * 1000) / 10 : 0;
+
+  return {
+    rooftopId,
+    enterpriseId:    rooftop?.enterprise_id ?? null,
+    rooftopName:     rooftop?.team_name ?? rooftopId,
+    // Yesterday KPIs
+    newVins:         Number(kpi.new_vins)        || 0,
+    vinsDelivered:   Number(kpi.vins_delivered)  || 0,
+    vinsPending:     Number(kpi.vins_pending)    || 0,
+    imagesReceived:  Number(kpi.images_received) || 0,
+    imagesProcessed: Number(kpi.images_processed)|| 0,
+    imagesPending:   Number(kpi.images_pending)  || 0,
+    avgTtdHrs:       kpi.avg_ttd_hrs != null ? Number(kpi.avg_ttd_hrs) : null,
+    // Total inventory KPIs
+    totalActive,
+    withPhotos,
+    withPhotosPct,
+    totalDelivered,
+    totalPending,
+    deliveryPct,
+    pendingPct,
+    // Per-VIN tables
+    processedVins,
+    noImageVins,
+    noImagesTotal: Number(noImageCount.total) || 0,
+  };
+}
+
+async function computeGroupDailyReport(enterpriseId, yesterday) {
+  const { rows: [kpi] } = await query(`
+    SELECT
+      COUNT(*)                                                                            AS new_vins,
+      COUNT(*) FILTER (WHERE status = 'Delivered')                                       AS vins_delivered,
+      COUNT(*) FILTER (WHERE status != 'Delivered')                                      AS vins_pending,
+      COALESCE(SUM(output_image_count), 0)                                               AS images_received,
+      COALESCE(SUM(output_image_count) FILTER (WHERE status = 'Delivered'), 0)           AS images_processed,
+      COALESCE(SUM(output_image_count) FILTER (WHERE status != 'Delivered'), 0)          AS images_pending,
+      ROUND(AVG(
+        EXTRACT(EPOCH FROM (processed_at::timestamptz - received_at::timestamptz)) / 3600.0
+      ) FILTER (WHERE status = 'Delivered' AND processed_at IS NOT NULL)::numeric, 1)   AS avg_ttd_hrs
+    FROM vins
+    WHERE enterprise_id = $1
+      AND DATE(received_at::timestamp) = $2::date
+  `, [enterpriseId, yesterday]);
+
+  const { rows: [totals] } = await query(`
+    SELECT
+      COUNT(*)                                             AS total_active,
+      COUNT(*) FILTER (WHERE status = 'Delivered')        AS total_delivered,
+      COUNT(*) FILTER (WHERE status != 'Delivered')       AS total_pending,
+      COUNT(DISTINCT rooftop_id)                          AS rooftop_count
+    FROM vins
+    WHERE enterprise_id = $1
+  `, [enterpriseId]);
+
+  const { rows: [enterprise] } = await query(`
+    SELECT name FROM enterprise_details WHERE enterprise_id = $1
+  `, [enterpriseId]);
+
+  // Top 5 rooftops by new VINs yesterday
+  const { rows: topProcessed } = await query(`
+    SELECT
+      v.rooftop_id,
+      MAX(rd.team_name)                                                                          AS rooftop_name,
+      COUNT(*)                                                                                   AS new_vins,
+      COUNT(*) FILTER (WHERE v.status = 'Delivered')                                            AS vins_delivered,
+      COUNT(*) FILTER (WHERE v.status != 'Delivered')                                           AS vins_pending,
+      ROUND(AVG(
+        EXTRACT(EPOCH FROM (v.processed_at::timestamptz - v.received_at::timestamptz)) / 3600.0
+      ) FILTER (WHERE v.status = 'Delivered' AND v.processed_at IS NOT NULL)::numeric, 1)      AS avg_ttd_hrs
+    FROM vins v
+    LEFT JOIN rooftop_details rd ON v.rooftop_id = rd.team_id
+    WHERE v.enterprise_id = $1
+      AND DATE(v.received_at::timestamp) = $2::date
+    GROUP BY v.rooftop_id
+    ORDER BY new_vins DESC
+    LIMIT 5
+  `, [enterpriseId, yesterday]);
+
+  // Top 5 rooftops by VINs without images
+  const { rows: topNoImages } = await query(`
+    SELECT
+      v.rooftop_id,
+      MAX(rd.team_name)                                       AS rooftop_name,
+      COUNT(*)                                                AS vin_count,
+      COALESCE(SUM(v.vehicle_price), 0)                      AS total_value,
+      ROUND(AVG(
+        EXTRACT(day FROM NOW() - v.received_at::timestamptz)
+      )::numeric, 1)                                         AS avg_days_on_lot
+    FROM vins v
+    LEFT JOIN rooftop_details rd ON v.rooftop_id = rd.team_id
+    WHERE v.enterprise_id = $1
+      AND COALESCE(v.has_photos, 0) = 0
+    GROUP BY v.rooftop_id
+    ORDER BY vin_count DESC
+    LIMIT 5
+  `, [enterpriseId]);
+
+  const totalActive    = Number(totals.total_active)    || 0;
+  const totalDelivered = Number(totals.total_delivered)  || 0;
+  const totalPending   = Number(totals.total_pending)    || 0;
+  const deliveryPct    = totalActive > 0 ? Math.round(totalDelivered / totalActive * 1000) / 10 : 0;
+  const pendingPct     = totalActive > 0 ? Math.round(totalPending   / totalActive * 1000) / 10 : 0;
+
+  return {
+    enterpriseId,
+    enterpriseName:  enterprise?.name ?? enterpriseId,
+    rooftopCount:    Number(totals.rooftop_count) || 0,
+    // Yesterday KPIs
+    newVins:         Number(kpi.new_vins)        || 0,
+    vinsDelivered:   Number(kpi.vins_delivered)  || 0,
+    vinsPending:     Number(kpi.vins_pending)    || 0,
+    imagesReceived:  Number(kpi.images_received) || 0,
+    imagesProcessed: Number(kpi.images_processed)|| 0,
+    imagesPending:   Number(kpi.images_pending)  || 0,
+    avgTtdHrs:       kpi.avg_ttd_hrs != null ? Number(kpi.avg_ttd_hrs) : null,
+    // Total inventory KPIs
+    totalActive,
+    totalDelivered,
+    totalPending,
+    deliveryPct,
+    pendingPct,
+    // Per-rooftop tables
+    topProcessed,
+    topNoImages,
+  };
+}
+
+// ─── Daily Report Endpoint ────────────────────────────────────────────────────
+
+app.get("/api/send-daily-report", async (req, res) => {
+  // ── Auth ───────────────────────────────────────────────────────────────────
+  const cronSecret = process.env.CRON_SECRET;
+  if (cronSecret && req.headers.authorization !== `Bearer ${cronSecret}`) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  // ── Test-mode override ─────────────────────────────────────────────────────
+  // ?to=a@b.com&cc=c@d.com&rooftopId=123  — send a single report for the
+  // specified rooftop or enterprise to the given addresses.
+  // rooftopId and/or enterpriseId are required when to is present.
+  const testTo  = req.query.to ? String(req.query.to).split(",").map(s => s.trim()).filter(Boolean) : null;
+  const testCc  = req.query.cc ? String(req.query.cc).split(",").map(s => s.trim()).filter(Boolean) : null;
+  const testMode = testTo !== null;
+
+  if (testMode && !req.query.rooftopId && !req.query.enterpriseId) {
+    return res.status(400).json({ error: "Test mode requires rooftopId and/or enterpriseId — pass at least one so only that report is sent." });
+  }
+
+  // Yesterday in UTC date string (YYYY-MM-DD)
+  const now       = new Date();
+  const yesterday = new Date(now);
+  yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+  const yesterdayStr = yesterday.toISOString().slice(0, 10); // "2026-04-16"
+
+  // Formatted date label for email template headers ("16 Apr 2026")
+  const dateLabel = yesterday.toLocaleDateString("en-GB", {
+    day:   "numeric",
+    month: "short",
+    year:  "numeric",
+    timeZone: "UTC",
+  });
+
+  console.log(`[daily-report] starting — reporting on ${yesterdayStr}${testMode ? ` (test mode → ${testTo.join(",")})` : ""}`);
+
+  const results = { groups: [], rooftops: [], errors: [] };
+
+  // ── Group Reports ─────────────────────────────────────────────────────────
+  let enterprises;
+  try {
+    if (testMode && req.query.enterpriseId) {
+      const { rows } = await query(
+        `SELECT enterprise_id, name, group_recipient_email FROM enterprise_details WHERE enterprise_id = $1`,
+        [String(req.query.enterpriseId)]
+      );
+      enterprises = rows;
+    } else if (!testMode) {
+      const { rows } = await query(`
+        SELECT enterprise_id, name, group_recipient_email
+        FROM enterprise_details
+        WHERE group_recipient_email IS NOT NULL AND group_recipient_email != ''
+      `);
+      enterprises = rows;
+    } else {
+      enterprises = [];
+    }
+  } catch (e) {
+    console.error("[daily-report] failed to fetch enterprise recipients:", e?.message);
+    return res.status(500).json({ error: "DB error fetching enterprise recipients" });
+  }
+
+  for (const ent of enterprises) {
+    try {
+      const data = await computeGroupDailyReport(ent.enterprise_id, yesterdayStr);
+      const html = buildGroupReportHtml(data, dateLabel);
+      const sendOpts = testMode
+        ? { to: testTo, ...(testCc && { cc: testCc }), subject: `[TEST] Studio AI Group Report — ${ent.name || ent.enterprise_id} — ${dateLabel}` }
+        : { to: ent.group_recipient_email, subject: `Studio AI Group Report — ${ent.name || ent.enterprise_id} — ${dateLabel}` };
+      await sendDailyReport(html, sendOpts);
+      results.groups.push({ enterpriseId: ent.enterprise_id, name: ent.name, status: "sent" });
+      console.log(`[daily-report] group report sent → ${sendOpts.to} (${ent.name})`);
+    } catch (e) {
+      results.errors.push({ type: "group", enterpriseId: ent.enterprise_id, error: e?.message });
+      console.error(`[daily-report] group report failed for ${ent.enterprise_id}:`, e?.message);
+    }
+  }
+
+  // ── Rooftop Reports ───────────────────────────────────────────────────────
+  let rooftops;
+  try {
+    if (testMode && req.query.rooftopId) {
+      const { rows } = await query(
+        `SELECT team_id, team_name, recipient_email FROM rooftop_details WHERE team_id = $1`,
+        [String(req.query.rooftopId)]
+      );
+      rooftops = rows;
+    } else if (!testMode) {
+      const { rows } = await query(`
+        SELECT team_id, team_name, recipient_email
+        FROM rooftop_details
+        WHERE recipient_email IS NOT NULL AND recipient_email != ''
+      `);
+      rooftops = rows;
+    } else {
+      rooftops = [];
+    }
+  } catch (e) {
+    console.error("[daily-report] failed to fetch rooftop recipients:", e?.message);
+    return res.status(500).json({ error: "DB error fetching rooftop recipients" });
+  }
+
+  for (const rt of rooftops) {
+    try {
+      const data = await computeRooftopDailyReport(rt.team_id, yesterdayStr);
+      const html = buildRooftopReportHtml(data, dateLabel);
+      const sendOpts = testMode
+        ? { to: testTo, ...(testCc && { cc: testCc }), subject: `[TEST] Studio AI Daily Report — ${rt.team_name || rt.team_id} — ${dateLabel}` }
+        : { to: rt.recipient_email, subject: `Studio AI Daily Report — ${rt.team_name || rt.team_id} — ${dateLabel}` };
+      await sendDailyReport(html, sendOpts);
+      results.rooftops.push({ rooftopId: rt.team_id, name: rt.team_name, status: "sent" });
+      console.log(`[daily-report] rooftop report sent → ${sendOpts.to} (${rt.team_name})`);
+    } catch (e) {
+      results.errors.push({ type: "rooftop", rooftopId: rt.team_id, error: e?.message });
+      console.error(`[daily-report] rooftop report failed for ${rt.team_id}:`, e?.message);
+    }
+  }
+
+  console.log(`[daily-report] done — ${results.groups.length} group, ${results.rooftops.length} rooftop, ${results.errors.length} errors`);
+  return res.json({ ok: true, date: yesterdayStr, testMode, ...results });
 });
 
 export default app;
