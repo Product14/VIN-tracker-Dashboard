@@ -56,7 +56,7 @@ function isAfter24h(item) {
 
 function applyRawFilters(data, filters) {
   return data.filter(d => {
-    if (filters.rooftop && d.rooftop !== filters.rooftop) return false;
+    if (filters.rooftopId && d.rooftopId !== filters.rooftopId) return false;
     if (filters.rooftopType && d.rooftopType !== filters.rooftopType) return false;
     if (filters.csm && d.csm !== filters.csm) return false;
     if (filters.status && d.status !== filters.status) return false;
@@ -203,6 +203,7 @@ function SearchableSelect({ value, onChange, options, placeholder = "All" }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const ref = useRef(null);
+  const inputRef = useRef(null);
 
   useEffect(() => {
     if (!open) return;
@@ -216,10 +217,27 @@ function SearchableSelect({ value, onChange, options, placeholder = "All" }) {
     return () => document.removeEventListener("mousedown", handleOutside);
   }, [open]);
 
+  useEffect(() => {
+    if (open && inputRef.current) {
+      inputRef.current.focus();
+    }
+  }, [open]);
+
   const filtered = useMemo(() => {
     if (!query) return options;
     const q = query.toLowerCase();
-    return options.filter(o => o.toLowerCase().includes(q));
+    const tokens = q.split(/\s+/).filter(Boolean);
+    return options
+      .filter(o => {
+        const ol = o.toLowerCase();
+        return tokens.every(t => ol.includes(t));
+      })
+      .sort((a, b) => {
+        const al = a.toLowerCase(), bl = b.toLowerCase();
+        const aStarts = al.startsWith(q), bStarts = bl.startsWith(q);
+        if (aStarts !== bStarts) return aStarts ? -1 : 1;
+        return al.localeCompare(bl);
+      });
   }, [options, query]);
 
   const baseStyle = {
@@ -239,7 +257,7 @@ function SearchableSelect({ value, onChange, options, placeholder = "All" }) {
         <span style={{ fontSize: 10, color: "#6b7280", flexShrink: 0 }}>{open ? "▲" : "▼"}</span>
       </div>
       {open && (
-        <div style={{
+        <div onClick={e => e.stopPropagation()} style={{
           position: "absolute", top: "calc(100% + 4px)", left: 0, zIndex: 50,
           background: "#fff", border: "1px solid #d1d5db", borderRadius: 8,
           boxShadow: "0 4px 16px rgba(0,0,0,0.12)", minWidth: "100%", maxWidth: 280,
@@ -247,7 +265,7 @@ function SearchableSelect({ value, onChange, options, placeholder = "All" }) {
         }}>
           <div style={{ padding: "8px 10px", borderBottom: "1px solid #e5e7eb" }}>
             <input
-              autoFocus
+              ref={inputRef}
               value={query}
               onChange={e => setQuery(e.target.value)}
               placeholder="Search..."
@@ -289,10 +307,20 @@ function FilterBar({ filters, setFilters, rooftopOptions = [], typeOptions = [],
   // Build id→name and name→id maps for display vs filter
   const enterpriseIdToName = useMemo(() => Object.fromEntries(enterpriseObjects.map(e => [e.id, e.name])), [enterpriseObjects]);
   const enterpriseNameToId = useMemo(() => Object.fromEntries(enterpriseObjects.map(e => [e.name, e.id])), [enterpriseObjects]);
-  const enterpriseNames = useMemo(() => enterpriseObjects.map(e => e.name).sort(), [enterpriseObjects]);
+  const enterpriseNames = useMemo(() => [...new Set(enterpriseObjects.map(e => e.name).filter(Boolean))].sort(), [enterpriseObjects]);
   const selectedEnterpriseName = filters.enterpriseId ? (enterpriseIdToName[filters.enterpriseId] ?? filters.enterpriseId) : null;
 
-  const activeCount = [filters.enterpriseId, filters.rooftopId, filters.rooftop, filters.rooftopType, filters.csm, filters.status, filters.after24h !== null ? "x" : null, filters.hasPhotos !== null && filters.hasPhotos !== undefined ? "x" : null, filters.reasonBucket].filter(Boolean).length;
+  // When an enterprise is selected, narrow the rooftop dropdown to that enterprise's rooftops only.
+  const availableRooftops = useMemo(
+    () => filters.enterpriseId ? rooftopOptions.filter(r => r.enterprise_id === filters.enterpriseId) : rooftopOptions,
+    [rooftopOptions, filters.enterpriseId]
+  );
+  const rooftopIdToName = useMemo(() => Object.fromEntries(availableRooftops.map(r => [r.id, r.name])), [availableRooftops]);
+  const rooftopNameToId = useMemo(() => Object.fromEntries(availableRooftops.map(r => [r.name, r.id])), [availableRooftops]);
+  const rooftopNames = useMemo(() => [...new Set(availableRooftops.map(r => r.name).filter(Boolean))].sort(), [availableRooftops]);
+  const selectedRooftopName = filters.rooftopId ? (rooftopIdToName[filters.rooftopId] ?? filters.rooftopId) : null;
+
+  const activeCount = [filters.enterpriseId, filters.rooftopId, filters.rooftopType, filters.csm, filters.status, filters.after24h !== null ? "x" : null, filters.hasPhotos !== null && filters.hasPhotos !== undefined ? "x" : null, filters.hasVin !== null && filters.hasVin !== undefined ? "x" : null, filters.reasonBucket].filter(Boolean).length;
 
   return (
     <div style={{ marginBottom: 16 }}>
@@ -301,14 +329,14 @@ function FilterBar({ filters, setFilters, rooftopOptions = [], typeOptions = [],
           style={{ flex: 1, minWidth: 180, padding: "7px 14px", borderRadius: 8, border: "1px solid #d1d5db", fontSize: 13, outline: "none" }} />
         <SearchableSelect
           value={selectedEnterpriseName}
-          onChange={v => setFilters(f => ({ ...f, enterpriseId: v ? (enterpriseNameToId[v] ?? null) : null }))}
+          onChange={v => setFilters(f => ({ ...f, enterpriseId: v ? (enterpriseNameToId[v] ?? null) : null, rooftopId: null }))}
           options={enterpriseNames}
           placeholder="All Enterprises"
         />
         <SearchableSelect
-          value={filters.rooftop}
-          onChange={v => setFilters(f => ({ ...f, rooftop: v }))}
-          options={rooftopOptions}
+          value={selectedRooftopName}
+          onChange={v => setFilters(f => ({ ...f, rooftopId: v ? (rooftopNameToId[v] ?? null) : null }))}
+          options={rooftopNames}
           placeholder="All Rooftops"
         />
         <SearchableSelect
@@ -342,13 +370,19 @@ function FilterBar({ filters, setFilters, rooftopOptions = [], typeOptions = [],
           placeholder="All Photos"
         />
         <SearchableSelect
+          value={filters.hasVin === null || filters.hasVin === undefined ? null : filters.hasVin ? "Has VIN" : "No VIN"}
+          onChange={v => setFilters(f => ({ ...f, hasVin: v === null ? null : v === "Has VIN" }))}
+          options={["Has VIN", "No VIN"]}
+          placeholder="All VINs"
+        />
+        <SearchableSelect
           value={filters.reasonBucket}
           onChange={v => setFilters(f => ({ ...f, reasonBucket: v }))}
           options={BUCKETS.map(b => b.label)}
           placeholder="All Buckets"
         />
         {activeCount > 0 && (
-          <button onClick={() => setFilters({ search: "", enterpriseId: null, rooftopId: null, rooftop: null, rooftopType: null, csm: null, status: null, after24h: null, hasPhotos: null, reasonBucket: null })}
+          <button onClick={() => setFilters({ search: "", enterpriseId: null, rooftopId: null, rooftopType: null, csm: null, status: null, after24h: null, hasPhotos: null, hasVin: null, reasonBucket: null })}
             style={{ padding: "7px 14px", borderRadius: 8, border: "1px solid #fca5a5", background: "#fef2f2", color: "#dc2626", fontSize: 13, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>
             Clear {activeCount} filter{activeCount > 1 ? "s" : ""}
           </button>
@@ -357,13 +391,13 @@ function FilterBar({ filters, setFilters, rooftopOptions = [], typeOptions = [],
       {activeCount > 0 && (
         <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
           {filters.enterpriseId && <Badge label={`Enterprise: ${selectedEnterpriseName}`} color="blue" />}
-          {filters.rooftopId && <Badge label={`Rooftop ID: ${filters.rooftopId}`} color="blue" />}
-          {filters.rooftop && <Badge label={`Rooftop: ${filters.rooftop}`} color="blue" />}
+          {filters.rooftopId && <Badge label={`Rooftop: ${rooftopIdToName[filters.rooftopId] ?? filters.rooftopId}`} color="blue" />}
           {filters.rooftopType && <Badge label={`Type: ${filters.rooftopType}`} color="blue" />}
           {filters.csm && <Badge label={`CSM: ${filters.csm}`} color="blue" />}
           {filters.status && <Badge label={`Status: ${filters.status}`} color={filters.status === "Delivered" ? "green" : "red"} />}
           {filters.after24h !== null && <Badge label={filters.after24h ? "After 24h" : "Within 24h"} color="amber" />}
           {filters.hasPhotos !== null && filters.hasPhotos !== undefined && <Badge label={filters.hasPhotos ? "Has Photos" : "No Photos"} color="blue" />}
+          {filters.hasVin !== null && filters.hasVin !== undefined && <Badge label={filters.hasVin ? "Has VIN" : "No VIN"} color="blue" />}
           {filters.reasonBucket && <Badge label={`Bucket: ${filters.reasonBucket}`} color="amber" />}
         </div>
       )}
@@ -419,12 +453,12 @@ function RawTab({ data, loading, filters, setFilters, total, page, pageCount, on
     if (filters.search)       params.set("search",       filters.search);
     if (filters.enterpriseId) params.set("enterpriseId", filters.enterpriseId);
     if (filters.rooftopId)    params.set("rooftopId",    filters.rooftopId);
-    if (filters.rooftop)      params.set("rooftop",      filters.rooftop);
     if (filters.rooftopType)  params.set("rooftopType",  filters.rooftopType);
     if (filters.csm)          params.set("csm",          filters.csm);
     if (filters.status)       params.set("status",       filters.status);
     if (filters.after24h !== null) params.set("after24h", filters.after24h ? "true" : "false");
     if (filters.hasPhotos !== null && filters.hasPhotos !== undefined) params.set("hasPhotos", filters.hasPhotos ? "true" : "false");
+    if (filters.hasVin !== null && filters.hasVin !== undefined) params.set("hasVin", filters.hasVin ? "true" : "false");
     if (filters.reasonBucket)      params.set("reasonBucket", filters.reasonBucket);
     if (sortCol) { params.set("sortBy", sortCol); params.set("sortDir", sortDir); }
     try {
@@ -1447,7 +1481,7 @@ function timeAgo(isoString: string): string {
   const d = Math.floor(diff / 86400); return `${d} day${d > 1 ? "s" : ""} ago`;
 }
 
-const DEFAULT_FILTERS = { search: "", enterpriseId: null, rooftop: null, rooftopId: null, rooftopType: null, csm: null, status: null, after24h: null, hasPhotos: null, reasonBucket: null };
+const DEFAULT_FILTERS = { search: "", enterpriseId: null, rooftopId: null, rooftopType: null, csm: null, status: null, after24h: null, hasPhotos: null, hasVin: null, reasonBucket: null };
 const DEFAULT_ROOFTOP_FILTERS = { search: "", rooftopType: null, csm: null, enterprise: null, websiteScore: null, imsIntegration: null, publishingStatus: null };
 const DEFAULT_ENTERPRISE_FILTERS = { search: "", csm: null, accountType: null, websiteScore: null };
 
@@ -1593,12 +1627,12 @@ export default function Dashboard() {
     if (filters.search)       params.set("search",       filters.search);
     if (filters.enterpriseId) params.set("enterpriseId", filters.enterpriseId);
     if (filters.rooftopId)    params.set("rooftopId",    filters.rooftopId);
-    if (filters.rooftop)      params.set("rooftop",      filters.rooftop);
     if (filters.rooftopType)  params.set("rooftopType",  filters.rooftopType);
     if (filters.csm)          params.set("csm",          filters.csm);
     if (filters.status)       params.set("status",       filters.status);
     if (filters.after24h !== null) params.set("after24h", filters.after24h ? "true" : "false");
     if (filters.hasPhotos !== null && filters.hasPhotos !== undefined) params.set("hasPhotos", filters.hasPhotos ? "true" : "false");
+    if (filters.hasVin !== null && filters.hasVin !== undefined) params.set("hasVin", filters.hasVin ? "true" : "false");
     if (filters.reasonBucket)      params.set("reasonBucket", filters.reasonBucket);
     if (sortCol) { params.set("sortBy", sortCol); params.set("sortDir", sortDir); }
     params.set("dateFilter", df);
@@ -1702,7 +1736,7 @@ export default function Dashboard() {
 
   // Derive filter dropdown options from /api/filter-options (lightweight distinct-value queries)
   const fo = filterOptions ?? {};
-  const rooftopOptions    = (fo.rooftopNames    ?? []) as string[];
+  const rooftopOptions    = (fo.rooftops        ?? []) as { id: string; name: string; enterprise_id: string }[];
   const typeOptions       = (fo.rooftopTypes    ?? []) as string[];
   const csmOptions        = useMemo(() => [...new Set((s.byCSM ?? []).map((r: any) => r.name))].sort() as string[], [s.byCSM]);
   const enterpriseObjects = (fo.enterprises     ?? []) as { id: string; name: string }[];

@@ -562,7 +562,7 @@ const VIN_SELECT = `
 // Builds a WHERE clause with PostgreSQL positional params ($1, $2, …).
 // Returns { where: string, params: any[] }.
 function buildVinFilters(queryParams) {
-  const { search, rooftop, rooftopId, rooftopType, csm, status, after24h, hasPhotos, enterprise, enterpriseId, reasonBucket, dateFilter } = queryParams;
+  const { search, rooftop, rooftopId, rooftopType, csm, status, after24h, hasPhotos, hasVin, enterprise, enterpriseId, reasonBucket, dateFilter } = queryParams;
   const conditions = [];
   const params = [];
 
@@ -584,6 +584,8 @@ function buildVinFilters(queryParams) {
   if (after24h === "false" || after24h === "0") conditions.push("COALESCE(v.after_24h, 0) = 0");
   if (hasPhotos === "true"  || hasPhotos === "1") conditions.push("COALESCE(v.has_photos, 0) = 1");
   if (hasPhotos === "false" || hasPhotos === "0") conditions.push("COALESCE(v.has_photos, 0) = 0");
+  if (hasVin === "true"  || hasVin === "1") conditions.push("(v.vin IS NOT NULL AND v.vin != '')");
+  if (hasVin === "false" || hasVin === "0") conditions.push("(v.vin IS NULL OR v.vin = '')");
   if (reasonBucket) conditions.push(`v.reason_bucket = ${p(reasonBucket)}`);
   const dc = getDateCondition(dateFilter, 'v');
   if (dc) conditions.push(dc);
@@ -816,7 +818,7 @@ async function computeFilterOptions() {
     rooftopBucketFlagsRes,
     enterpriseColFlagsRes,
   ] = await Promise.all([
-    query("SELECT DISTINCT name FROM v_by_rooftop WHERE name IS NOT NULL ORDER BY name"),
+    query("SELECT rooftop_id AS id, MAX(name) AS name, MAX(enterprise_id) AS enterprise_id FROM v_by_rooftop WHERE name IS NOT NULL GROUP BY rooftop_id ORDER BY MAX(name)"),
     query("SELECT DISTINCT type FROM v_by_rooftop WHERE type IS NOT NULL ORDER BY type"),
     query("SELECT DISTINCT csm  FROM v_by_rooftop WHERE csm  IS NOT NULL ORDER BY csm"),
     query("SELECT DISTINCT enterprise_id AS id, enterprise AS name FROM v_by_rooftop WHERE enterprise IS NOT NULL ORDER BY enterprise"),
@@ -842,7 +844,7 @@ async function computeFilterOptions() {
   const bf = rooftopBucketFlagsRes.rows[0] ?? {};
   const cf = enterpriseColFlagsRes.rows[0]  ?? {};
   return {
-    rooftopNames:    rooftopNamesRes.rows.map(r => r.name),
+    rooftops:        rooftopNamesRes.rows,
     rooftopTypes:    rooftopTypesRes.rows.map(r => r.type),
     rooftopCSMs:     rooftopCSMsRes.rows.map(r => r.csm),
     enterprises:     enterprisesRes.rows,
@@ -875,11 +877,30 @@ async function upsertFilterCache(payload) {
 // Falls back to computing on-demand if cache is empty (first deploy).
 
 app.get("/api/filter-options", async (_req, res) => {
-  const { rows } = await query(
-    "SELECT payload FROM filter_cache WHERE id = 'global'"
-  );
-  if (rows.length > 0) return res.json(rows[0].payload);
-  // Cache not yet populated — compute and store so the next request is instant.
+  const [cacheRes, syncRes] = await Promise.all([
+    query("SELECT payload, computed_at FROM filter_cache WHERE id = 'global'"),
+    query("SELECT completed_at FROM sync_state WHERE id = 'global'"),
+  ]);
+
+  const row        = cacheRes.rows[0];
+  const lastSync   = syncRes.rows[0]?.completed_at;
+  const cached     = row?.payload;
+  const computedAt = row?.computed_at;
+
+  // Shape check: rooftops must be the current {id, name, enterprise_id}[] format.
+  const hasValidShape = cached &&
+    Array.isArray(cached.rooftops) &&
+    (cached.rooftops.length === 0 || cached.rooftops[0]?.enterprise_id !== undefined);
+
+  // Freshness check: cache must have been computed after the last completed sync.
+  // If a sync ran more recently, the materialized views were refreshed and the
+  // cache may be missing newly added rooftops (like Forrester Lincoln).
+  const isFresh = computedAt && lastSync
+    ? new Date(computedAt) >= new Date(lastSync)
+    : true; // no sync yet — treat existing cache as fresh
+
+  if (hasValidShape && isFresh) return res.json(cached);
+
   const payload = await computeFilterOptions();
   await upsertFilterCache(payload);
   res.json(payload);
