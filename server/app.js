@@ -37,7 +37,12 @@ async function fetchFromMetabase(url, label, retries = 3, timeoutMs = 0) {
       const opts = timeoutMs > 0 ? { signal: AbortSignal.timeout(timeoutMs) } : {};
       const res = await fetch(url, opts);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return await res.json();
+      const json = await res.json();
+      if (Array.isArray(json)) return json;
+      // Metabase sometimes wraps rows in { data: [...] } — normalise to array.
+      if (Array.isArray(json?.data)) return json.data;
+      console.warn(`[sync:${label}] unexpected response shape:`, JSON.stringify(json).slice(0, 300));
+      return [];
     } catch (err) {
       lastErr = err;
       if (attempt < retries) {
@@ -61,8 +66,9 @@ async function syncVins() {
   // 65s timeout per attempt caps a hanging request just above Metabase's worst case.
   const rows    = await fetchFromMetabase(VIN_DETAILS_URL, "VIN_DETAILS", 1, 65000);
   const syncedAt = new Date().toISOString();
+  // Deduplicate by dealerVinId (primary key). Skip rows with no dealerVinId.
   const deduped = Object.values(
-    rows.reduce((acc, row) => { acc[row.vinName ?? ""] = row; return acc; }, {})
+    rows.reduce((acc, row) => { if (row["dealerVinId"]) acc[row["dealerVinId"]] = row; return acc; }, {})
   );
   if (deduped.length > 0) console.log("[sync:VIN_DETAILS] sample row keys:", Object.keys(deduped[0]), "| has_photos sample:", deduped[0].has_photos);
 
@@ -72,7 +78,7 @@ async function syncVins() {
 
   for (const row of deduped) {
     vins.push(row.vinName ?? "");
-    dealerVinIds.push(row["m.dealerVinId"] ?? null);
+    dealerVinIds.push(row["dealerVinId"] ?? null);
     enterpriseIds.push(row.enterpriseId ?? "");
     rooftopIds.push(String(row.teamId ?? ""));
     statuses.push(row.status ?? "");
@@ -92,12 +98,12 @@ async function syncVins() {
     if (deduped.length > 0) {
       await client.query(`
         INSERT INTO vins
-          (vin, dealer_vin_id, enterprise_id, rooftop_id, status, after_24h, received_at, processed_at, reason_bucket, hold_reason, has_photos, synced_at)
+          (dealer_vin_id, vin, enterprise_id, rooftop_id, status, after_24h, received_at, processed_at, reason_bucket, hold_reason, has_photos, synced_at)
         SELECT
           UNNEST($1::text[]), UNNEST($2::text[]), UNNEST($3::text[]), UNNEST($4::text[]),
           UNNEST($5::text[]), UNNEST($6::smallint[]), UNNEST($7::text[]), UNNEST($8::text[]),
           UNNEST($9::text[]), UNNEST($10::text[]), UNNEST($11::smallint[]), UNNEST($12::text[])
-      `, [vins, dealerVinIds, enterpriseIds, rooftopIds, statuses, after24hs, receivedAts, processedAts, reasonBuckets, holdReasons, hasPhotosArr, syncedAts]);
+      `, [dealerVinIds, vins, enterpriseIds, rooftopIds, statuses, after24hs, receivedAts, processedAts, reasonBuckets, holdReasons, hasPhotosArr, syncedAts]);
     }
     await client.query("COMMIT");
   } catch (e) {
@@ -208,10 +214,14 @@ async function syncEnterprises() {
 // completed_at is only stamped when VINs succeeds.
 async function runSync() {
   // Atomic claim: only one instance wins this UPDATE at a time.
+  // Also steal the lock if running = TRUE but started_at is older than 10 minutes —
+  // this handles the case where a previous Vercel function was killed by the 300s
+  // timeout before the finally block could release the lock.
   const { rows } = await query(`
     UPDATE sync_state
        SET running = TRUE, started_at = NOW(), completed_at = NULL
-     WHERE id = 'global' AND running = FALSE
+     WHERE id = 'global'
+       AND (running = FALSE OR started_at < NOW() - INTERVAL '10 minutes')
     RETURNING id
   `);
 
