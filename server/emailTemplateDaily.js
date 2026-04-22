@@ -21,24 +21,16 @@ function clean(v) {
   return (s === "" || s === "0" || s === "null") ? null : s;
 }
 
-// "Apr 16 · 9:12 AM" (UTC)
-function formatDt(iso) {
+// "Apr 16 · 9:12 AM EDT" — tz is an IANA timezone string (e.g. "America/New_York")
+function formatDt(iso, tz = "America/New_York") {
   if (!iso) return "—";
   try {
     const d = new Date(iso);
     if (isNaN(d)) return "—";
-    const date = d.toLocaleString("en-US", {
-      timeZone: "UTC",
-      month: "short",
-      day: "numeric",
-    });
-    const time = d.toLocaleString("en-US", {
-      timeZone: "UTC",
-      hour: "numeric",
-      minute: "2-digit",
-      hour12: true,
-    });
-    return `${date} · ${time}`;
+    const date = d.toLocaleString("en-US", { timeZone: tz, month: "short", day: "numeric" });
+    const time = d.toLocaleString("en-US", { timeZone: tz, hour: "numeric", minute: "2-digit", hour12: true });
+    const tzAbbr = d.toLocaleString("en-US", { timeZone: tz, timeZoneName: "short" }).split(" ").pop();
+    return `${date} · ${time} ${tzAbbr}`;
   } catch { return "—"; }
 }
 
@@ -68,9 +60,10 @@ function spacer(px) {
 
 /**
  * @param {object} data      – return value of computeRooftopDailyReport()
- * @param {string} dateLabel – "16 Apr 2026"
+ * @param {string} dateLabel – "16 Apr 2026 (EDT)"
+ * @param {string} timezone  – IANA timezone string (e.g. "America/New_York")
  */
-export function buildRooftopReportHtml(data, dateLabel) {
+export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_York") {
   const {
     rooftopId,
     enterpriseId,
@@ -84,10 +77,12 @@ export function buildRooftopReportHtml(data, dateLabel) {
     totalDelivered,
     // Tables
     processedVins,
+    processedVinsTotal,
     noImageVins,
   } = data;
 
-  const inventoryUrl = `https://console.spyne.ai/inventory/v2/listings?enterprise_id=${enterpriseId || ""}${rooftopId ? `&team_id=${rooftopId}` : ""}&scoreAttributes=NO_PHOTOS`;
+  const inventoryBaseUrl = `https://console.spyne.ai/inventory/v2/listings?enterprise_id=${enterpriseId || ""}${rooftopId ? `&team_id=${rooftopId}` : ""}`;
+  const inventoryUrl = `${inventoryBaseUrl}&scoreAttributes=NO_PHOTOS`;
   const vinUrl = (dealerVinId) =>
     dealerVinId
       ? `https://console.spyne.ai/inventory/v2/listings/${dealerVinId}?enterprise_id=${enterpriseId || ""}${rooftopId ? `&team_id=${rooftopId}` : ""}`
@@ -107,7 +102,7 @@ export function buildRooftopReportHtml(data, dateLabel) {
   // 3 cards × 174px + 2 gaps × 11px = 522 + 22 = 544px
 
   const kpiCard = (accentColor, label, bigNum, imgCount) => `
-    <td width="174" valign="top" style="width:174px;background:#FFFFFF;border:1px solid #E5E7EB;border-top:3px solid ${accentColor};">
+    <td width="174" valign="top" class="card-cell" style="width:174px;background:#FFFFFF;border:1px solid #E5E7EB;border-top:3px solid ${accentColor};">
       <div style="padding:16px 16px 18px;">
         <div style="font-size:9px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:#9CA3AF;line-height:1.4;margin-bottom:10px;">${label}</div>
         <div style="font-size:32px;font-weight:700;color:#111827;line-height:1;font-family:Arial,Helvetica,sans-serif;margin-bottom:6px;">${n(bigNum)}</div>
@@ -115,10 +110,10 @@ export function buildRooftopReportHtml(data, dateLabel) {
       </div>
     </td>`;
 
-  const kpiGap = `<td width="11" style="width:11px;font-size:0;line-height:0;">&nbsp;</td>`;
+  const kpiGap = `<td width="11" class="card-gap" style="width:11px;font-size:0;line-height:0;">&nbsp;</td>`;
 
   const yesterdayCards = `
-    <table width="544" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;">
+    <table width="544" class="card-row" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;">
       <tr>
         ${kpiCard("#2563EB", "Vehicles Shot",      newVins,      imagesReceived)}
         ${kpiGap}
@@ -143,25 +138,25 @@ export function buildRooftopReportHtml(data, dateLabel) {
   const pendingPct        = withPhotos > 0  ? (pendingWithPhotos / withPhotos * 100) : 0;
 
   const invCard = (label, count, pctVal, pctLabel, accentColor) => `
-    <td width="174" valign="top" style="width:174px;">
-      <div style="background:#F9FAFB;border:1px solid #E5E7EB;border-top:3px solid ${accentColor};padding:16px 16px 18px;">
+    <td width="174" valign="top" class="card-cell" style="width:174px;background:#F9FAFB;border:1px solid #E5E7EB;border-top:3px solid ${accentColor};">
+      <div style="padding:16px 16px 18px;">
         <div style="font-size:9px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:#9CA3AF;line-height:1.4;margin-bottom:10px;">${label}</div>
         <div style="font-size:28px;font-weight:700;color:#111827;line-height:1;font-family:Arial,Helvetica,sans-serif;margin-bottom:6px;">${n(count)}</div>
         <div style="font-size:11px;color:${accentColor};font-weight:600;line-height:1.4;">${pct(pctVal)}${pctLabel ? ` ${pctLabel}` : ""}</div>
       </div>
     </td>`;
 
-  const invGap = `<td width="11" style="width:11px;font-size:0;line-height:0;">&nbsp;</td>`;
+  const invGap = `<td width="11" class="card-gap" style="width:11px;font-size:0;line-height:0;">&nbsp;</td>`;
 
   const inventorySnapshot = `
-    <table width="544" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;">
+    <table width="544" class="card-row" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;">
       <tr>
         <td style="background:#F9FAFB;border:1px solid #E5E7EB;padding:18px 20px;">
           <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;">
             <tr>
               <td style="vertical-align:middle;">
                 <div style="font-size:10px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:#9CA3AF;line-height:1.4;margin-bottom:3px;">Inventory Snapshot</div>
-                <div style="font-size:17px;font-weight:700;color:#111827;line-height:1.3;">Your inventory today</div>
+                <div style="font-size:17px;font-weight:700;color:#111827;line-height:1.3;">Your inventory as of yesterday</div>
               </td>
               <td align="right" style="vertical-align:middle;">
                 <div style="font-size:36px;font-weight:700;color:#111827;line-height:1;font-family:Arial,Helvetica,sans-serif;">${n(totalActive)}</div>
@@ -173,7 +168,7 @@ export function buildRooftopReportHtml(data, dateLabel) {
       </tr>
     </table>
     ${spacer(12)}
-    <table width="544" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;">
+    <table width="544" class="card-row" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;">
       <tr>
         ${invCard("Vehicles with Photos", withPhotos,      withPhotosPctCalc, "of total vehicles",       "#2563EB")}
         ${invGap}
@@ -187,7 +182,7 @@ export function buildRooftopReportHtml(data, dateLabel) {
   const thStyle = `padding:9px 10px;border-bottom:2px solid #E5E7EB;text-align:left;font-size:9px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#9CA3AF;line-height:1.4;white-space:nowrap;`;
 
   const processedRows = processedVins.length === 0
-    ? `<tr><td colspan="3" style="padding:24px 0;text-align:center;font-size:12px;color:#9CA3AF;line-height:1.4;">No vehicles received.</td></tr>`
+    ? `<tr><td colspan="4" style="padding:24px 0;text-align:center;font-size:12px;color:#9CA3AF;line-height:1.4;">No vehicles received.</td></tr>`
     : processedVins.slice(0, 5).map(v => {
         const thumb = v.thumbnail_url
           ? `<img src="${v.thumbnail_url}" alt="" width="80" style="display:block;width:80px;height:auto;border:0;">`
@@ -198,7 +193,7 @@ export function buildRooftopReportHtml(data, dateLabel) {
         const stockLine   = clean(v.stock_number);
         const vUrl        = vinUrl(v.dealer_vin_id);
         const nameHtml    = vehicleName
-          ? `<div style="font-size:12px;font-weight:700;line-height:1.3;margin-bottom:2px;">${vUrl ? `<a href="${vUrl}" style="color:#111827;text-decoration:underline;">${vehicleName}</a>` : `<span style="color:#111827;">${vehicleName}</span>`}</div>`
+          ? `<div style="font-size:12px;font-weight:700;line-height:1.3;margin-bottom:2px;"><span style="color:#111827;">${vehicleName}</span></div>`
           : `<div style="font-size:12px;font-weight:700;color:#6B7280;line-height:1.3;margin-bottom:2px;">—</div>`;
         return `<tr>
           <td style="padding:10px 10px 10px 0;border-bottom:1px solid #F3F4F6;vertical-align:middle;">${thumb}</td>
@@ -209,18 +204,27 @@ export function buildRooftopReportHtml(data, dateLabel) {
             ${stockLine ? `<div style="font-size:10px;color:#9CA3AF;line-height:1.4;">Stock&nbsp;#${stockLine}</div>` : ""}
           </td>
           <td style="padding:10px 0 10px 10px;border-bottom:1px solid #F3F4F6;vertical-align:middle;text-align:right;white-space:nowrap;">
-            <div style="font-size:10px;color:#9CA3AF;line-height:1.6;">Received&nbsp;&nbsp;${formatDt(v.received_at)}</div>
-            <div style="font-size:10px;color:#9CA3AF;line-height:1.6;">Published&nbsp;&nbsp;${formatDt(v.processed_at)}</div>
+            <div style="font-size:10px;color:#9CA3AF;line-height:1.6;">Received&nbsp;&nbsp;${formatDt(v.received_at, timezone)}</div>
+            <div style="font-size:10px;color:#9CA3AF;line-height:1.6;">Published&nbsp;&nbsp;${formatDt(v.processed_at, timezone)}</div>
             <div style="font-size:11px;font-weight:700;color:#059669;line-height:1.6;margin-top:1px;">TAT&nbsp;&nbsp;${formatTat(v.ttd_hrs)}</div>
+          </td>
+          <td style="padding:10px 0 10px 10px;border-bottom:1px solid #F3F4F6;vertical-align:middle;text-align:center;white-space:nowrap;">
+            ${vUrl ? `<a href="${vUrl}" style="display:inline-block;padding:4px 8px;color:#2563EB;font-size:10px;font-weight:600;text-decoration:none;font-family:Arial,Helvetica,sans-serif;letter-spacing:0.01em;">View &rarr;</a>` : ""}
           </td>
         </tr>`;
       }).join("\n");
+
+  const receivedMore = Math.max(0, (processedVinsTotal || 0) - processedVins.slice(0, 5).length);
+  const receivedCta = receivedMore === 0 ? "" :
+    `<div style="margin-top:14px;text-align:center;">
+       <a href="${inventoryBaseUrl}" style="display:inline-block;padding:8px 20px;background:#ffffff;border:1px solid #D1D5DB;color:#374151;font-size:12px;font-weight:600;text-decoration:none;border-radius:4px;font-family:Arial,Helvetica,sans-serif;">+${receivedMore} more vehicle${receivedMore !== 1 ? "s" : ""} received</a>
+     </div>`;
 
   // ── No-photo VINs table ───────────────────────────────────────────────────
   const noImagesMore = (data.noImagesTotal || 0) - noImageVins.length;
 
   const noPhotoRows = noImageVins.length === 0
-    ? `<tr><td colspan="2" style="padding:20px 0;text-align:center;font-size:12px;color:#059669;line-height:1.4;">All vehicles have photos — great job!</td></tr>`
+    ? `<tr><td colspan="3" style="padding:20px 0;text-align:center;font-size:12px;color:#059669;line-height:1.4;">All vehicles have photos — great job!</td></tr>`
     : noImageVins.map(v => {
         const days      = v.days_on_lot != null ? Number(v.days_on_lot) : null;
         const ageColor  = days == null ? "#6B7280" : days >= 7 ? "#DC2626" : days >= 3 ? "#F59E0B" : "#6B7280";
@@ -230,11 +234,14 @@ export function buildRooftopReportHtml(data, dateLabel) {
         const vUrl2     = vinUrl(v.dealer_vin_id);
         return `<tr>
           <td style="padding:10px 10px 10px 0;border-bottom:1px solid #F3F4F6;vertical-align:middle;">
-            <div style="font-size:12px;font-weight:700;line-height:1.3;margin-bottom:2px;">${vUrl2 ? `<a href="${vUrl2}" style="color:#111827;text-decoration:underline;">${vehicle}</a>` : `<span style="color:#111827;">${vehicle}</span>`}</div>
+            <div style="font-size:12px;font-weight:700;line-height:1.3;margin-bottom:2px;"><span style="color:#111827;">${vehicle}</span></div>
             ${trimLine2 ? `<div style="font-size:10.5px;color:#6B7280;line-height:1.3;margin-bottom:3px;">${trimLine2}</div>` : ""}
             <div style="font-size:10px;color:#9CA3AF;line-height:1.3;">${v.vin}${v.stock_number ? `&nbsp;&middot;&nbsp;Stock&nbsp;#${v.stock_number}` : ""}</div>
           </td>
           <td style="padding:10px 0 10px 10px;border-bottom:1px solid #F3F4F6;vertical-align:middle;text-align:right;font-size:12px;font-weight:700;color:${ageColor};white-space:nowrap;line-height:1.4;">${ageLabel}</td>
+          <td style="padding:10px 0 10px 10px;border-bottom:1px solid #F3F4F6;vertical-align:middle;text-align:center;white-space:nowrap;">
+            ${vUrl2 ? `<a href="${vUrl2}" style="display:inline-block;padding:4px 8px;color:#2563EB;font-size:10px;font-weight:600;text-decoration:none;font-family:Arial,Helvetica,sans-serif;letter-spacing:0.01em;">View &rarr;</a>` : ""}
+          </td>
         </tr>`;
       }).join("\n");
 
@@ -257,6 +264,17 @@ export function buildRooftopReportHtml(data, dateLabel) {
 <meta http-equiv="X-UA-Compatible" content="IE=edge">
 <!--[if mso]><xml><o:OfficeDocumentSettings><o:AllowPNG/><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml><![endif]-->
 <title>Studio AI Daily Report — ${rooftopName}</title>
+<style>
+  @media screen and (max-width:600px) {
+    /* Reduce horizontal padding on all major sections */
+    .sec-pad { padding-left:16px !important; padding-right:16px !important; }
+    /* Make card grid tables fluid so cards share the available width proportionally */
+    .card-row { width:100% !important; }
+    /* Each card takes 32% of the row; gap cells take 2% — 3×32 + 2×2 = 100 */
+    .card-cell { width:32% !important; }
+    .card-gap  { width:2%  !important; }
+  }
+</style>
 </head>
 <body style="margin:0;padding:0;background:#EBEBEB;font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#111827;">
 <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;background:#EBEBEB;">
@@ -307,7 +325,7 @@ export function buildRooftopReportHtml(data, dateLabel) {
         <!-- ══ YESTERDAY'S PERFORMANCE — hidden on quiet days ════════════════ -->
         ${!quietDay ? `
         <tr>
-          <td style="padding:28px 28px 0;">
+          <td class="sec-pad" style="padding:28px 28px 0;">
             ${secHead("Performance", "How did we do?", "Vehicles shot, published, and pending for the day")}
             ${yesterdayCards}
           </td>
@@ -318,7 +336,7 @@ export function buildRooftopReportHtml(data, dateLabel) {
 
         <!-- ══ INVENTORY SNAPSHOT ══════════════════════════════════════════════ -->
         <tr>
-          <td style="padding:28px 28px 0;">
+          <td class="sec-pad" style="padding:28px 28px 0;">
             ${inventorySnapshot}
           </td>
         </tr>
@@ -329,18 +347,20 @@ export function buildRooftopReportHtml(data, dateLabel) {
         <!-- ══ PUBLISHED VINs — hidden on quiet days ═══════════════════════════ -->
         ${!quietDay ? `
         <tr>
-          <td style="padding:28px 28px 24px;background:#F9FAFB;">
+          <td class="sec-pad" style="padding:28px 28px 24px;background:#F9FAFB;">
             ${secHead("", "Vehicles Received", "")}
             <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;">
               <thead>
                 <tr>
                   <th style="${thStyle}padding-left:0;">Photo</th>
                   <th style="${thStyle}">Vehicle</th>
-                  <th style="${thStyle}padding-right:0;text-align:right;">Timeline</th>
+                  <th style="${thStyle}text-align:right;">Timeline</th>
+                  <th style="${thStyle}padding-right:0;text-align:center;"></th>
                 </tr>
               </thead>
               <tbody>${processedRows}</tbody>
             </table>
+            ${receivedCta}
           </td>
         </tr>
         ` : ""}
@@ -350,13 +370,14 @@ export function buildRooftopReportHtml(data, dateLabel) {
 
         <!-- ══ VEHICLES WITHOUT PHOTOS ════════════════════════════════════════ -->
         <tr>
-          <td style="padding:28px 28px 24px;">
+          <td class="sec-pad" style="padding:28px 28px 24px;">
             ${secHead("Needs Attention", "Vehicles without photos", "Live inventory missing media — potential buyers cannot see these listings", "#DC2626")}
             <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;">
               <thead>
                 <tr>
                   <th style="${thStyle}padding-left:0;">Vehicle</th>
-                  <th style="${thStyle}padding-right:0;text-align:right;">Ageing</th>
+                  <th style="${thStyle}text-align:right;">Ageing</th>
+                  <th style="${thStyle}padding-right:0;text-align:center;"></th>
                 </tr>
               </thead>
               <tbody>${noPhotoRows}</tbody>

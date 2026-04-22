@@ -198,6 +198,13 @@ async function syncEnterprises() {
   const client = await getClient();
   try {
     await client.query("BEGIN");
+    // Preserve manually-set timezone values — they are not sourced from Metabase
+    // and would otherwise be lost by the DELETE below.
+    const { rows: tzRows } = await client.query(
+      `SELECT enterprise_id, timezone FROM enterprise_details WHERE timezone IS NOT NULL`
+    );
+    const savedTimezones = new Map(tzRows.map(r => [r.enterprise_id, r.timezone]));
+
     await client.query("DELETE FROM enterprise_details");
     if (deduped.length > 0) {
       await client.query(`
@@ -207,6 +214,13 @@ async function syncEnterprises() {
           UNNEST($1::text[]), UNNEST($2::text[]), UNNEST($3::text[]),
           UNNEST($4::text[]), UNNEST($5::text[]), UNNEST($6::text[])
       `, [enterpriseIds, names, types, websiteUrls, pocEmails, syncedAts]);
+    }
+    // Restore saved timezones
+    for (const [enterpriseId, tz] of savedTimezones) {
+      await client.query(
+        `UPDATE enterprise_details SET timezone = $1 WHERE enterprise_id = $2`,
+        [tz, enterpriseId]
+      );
     }
     await client.query("COMMIT");
   } catch (e) {
@@ -1130,27 +1144,27 @@ app.get("/api/scheduled-report", async (req, res) => {
 // All "yesterday" KPIs scope to VINs received on the given date (received_at date).
 // TTD = AVG(processed_at - received_at) for delivered VINs received yesterday.
 
-async function computeRooftopDailyReport(rooftopId, yesterday) {
-  // yesterday: JS Date object or ISO date string for the target day
+async function computeRooftopDailyReport(rooftopId, yesterday, timezone = "America/New_York") {
+  // yesterday: YYYY-MM-DD date string for the target day (in the given timezone)
 
   const { rows: [kpi] } = await query(`
     SELECT
       -- Vehicles shot yesterday with photos (received_at date = yesterday, has_photos = 1)
-      COUNT(*) FILTER (WHERE DATE(received_at::timestamp) = $2::date AND COALESCE(has_photos, 0) = 1)                                                        AS new_vins,
-      COALESCE(SUM(output_image_count) FILTER (WHERE DATE(received_at::timestamp) = $2::date AND COALESCE(has_photos, 0) = 1), 0)                            AS images_received,
+      COUNT(*) FILTER (WHERE DATE(received_at::timestamptz AT TIME ZONE $3) = $2::date AND COALESCE(has_photos, 0) = 1)                                                        AS new_vins,
+      COALESCE(SUM(output_image_count) FILTER (WHERE DATE(received_at::timestamptz AT TIME ZONE $3) = $2::date AND COALESCE(has_photos, 0) = 1), 0)                            AS images_received,
       -- Vehicles published yesterday with photos (received_at date = yesterday, status = Delivered, has_photos = 1)
-      COUNT(*) FILTER (WHERE status = 'Delivered' AND COALESCE(has_photos, 0) = 1 AND DATE(received_at::timestamp) = $2::date)                              AS vins_delivered,
-      COALESCE(SUM(output_image_count) FILTER (WHERE status = 'Delivered' AND COALESCE(has_photos, 0) = 1 AND DATE(received_at::timestamp) = $2::date), 0) AS images_processed,
+      COUNT(*) FILTER (WHERE status = 'Delivered' AND COALESCE(has_photos, 0) = 1 AND DATE(received_at::timestamptz AT TIME ZONE $3) = $2::date)                              AS vins_delivered,
+      COALESCE(SUM(output_image_count) FILTER (WHERE status = 'Delivered' AND COALESCE(has_photos, 0) = 1 AND DATE(received_at::timestamptz AT TIME ZONE $3) = $2::date), 0) AS images_processed,
       -- Vehicles received yesterday with photos that are still not delivered
-      COUNT(*) FILTER (WHERE status != 'Delivered' AND COALESCE(has_photos, 0) = 1 AND DATE(received_at::timestamp) = $2::date) AS vins_pending,
+      COUNT(*) FILTER (WHERE status != 'Delivered' AND COALESCE(has_photos, 0) = 1 AND DATE(received_at::timestamptz AT TIME ZONE $3) = $2::date) AS vins_pending,
       -- Avg TAT for VINs received yesterday, published, with photos
       ROUND(AVG(
         EXTRACT(EPOCH FROM (processed_at::timestamptz - received_at::timestamptz)) / 3600.0
-      ) FILTER (WHERE status = 'Delivered' AND COALESCE(has_photos, 0) = 1 AND DATE(received_at::timestamp) = $2::date
+      ) FILTER (WHERE status = 'Delivered' AND COALESCE(has_photos, 0) = 1 AND DATE(received_at::timestamptz AT TIME ZONE $3) = $2::date
                   AND processed_at IS NOT NULL AND received_at IS NOT NULL)::numeric, 1) AS avg_ttd_hrs
     FROM vins
     WHERE rooftop_id = $1
-  `, [rooftopId, yesterday]);
+  `, [rooftopId, yesterday, timezone]);
 
   const { rows: [totals] } = await query(`
     SELECT
@@ -1160,38 +1174,49 @@ async function computeRooftopDailyReport(rooftopId, yesterday) {
       COUNT(*) FILTER (WHERE COALESCE(has_photos, 0) = 1)                             AS with_photos
     FROM vins
     WHERE rooftop_id = $1
-  `, [rooftopId]);
+      AND (received_at IS NULL OR DATE(received_at::timestamptz AT TIME ZONE $3) <= $2::date)
+  `, [rooftopId, yesterday, timezone]);
 
   const { rows: [rooftop] } = await query(`
     SELECT team_name, enterprise_id FROM rooftop_details WHERE team_id = $1
   `, [rooftopId]);
 
-  // Delivered VINs published yesterday — per-VIN table (max 5 for email)
-  const { rows: processedVins } = await query(`
-    SELECT
-      vin,
-      dealer_vin_id,
-      stock_number,
-      vehicle_price,
-      thumbnail_url,
-      make,
-      model,
-      year,
-      trim,
-      received_at,
-      processed_at,
-      ROUND(
-        EXTRACT(EPOCH FROM (processed_at::timestamptz - received_at::timestamptz)) / 3600.0
-        ::numeric, 2
-      )                                                  AS ttd_hrs
-    FROM vins
-    WHERE rooftop_id = $1
-      AND status = 'Delivered'
-      AND COALESCE(has_photos, 0) = 1
-      AND DATE(received_at::timestamp) = $2::date
-    ORDER BY received_at DESC
-    LIMIT 5
-  `, [rooftopId, yesterday]);
+  // Delivered VINs published yesterday — per-VIN table (max 5 for email) + total count
+  const [{ rows: processedVins }, { rows: [processedCount] }] = await Promise.all([
+    query(`
+      SELECT
+        vin,
+        dealer_vin_id,
+        stock_number,
+        vehicle_price,
+        thumbnail_url,
+        make,
+        model,
+        year,
+        trim,
+        received_at,
+        processed_at,
+        ROUND(
+          EXTRACT(EPOCH FROM (processed_at::timestamptz - received_at::timestamptz)) / 3600.0
+          ::numeric, 2
+        )                                                  AS ttd_hrs
+      FROM vins
+      WHERE rooftop_id = $1
+        AND status = 'Delivered'
+        AND COALESCE(has_photos, 0) = 1
+        AND DATE(received_at::timestamptz AT TIME ZONE $3) = $2::date
+      ORDER BY received_at DESC
+      LIMIT 5
+    `, [rooftopId, yesterday, timezone]),
+    query(`
+      SELECT COUNT(*)::int AS total
+      FROM vins
+      WHERE rooftop_id = $1
+        AND status = 'Delivered'
+        AND COALESCE(has_photos, 0) = 1
+        AND DATE(received_at::timestamptz AT TIME ZONE $3) = $2::date
+    `, [rooftopId, yesterday, timezone]),
+  ]);
 
   // VINs without images — top 5 for email display + total count for "+x more"
   const [{ rows: noImageVins }, { rows: [noImageCount] }] = await Promise.all([
@@ -1250,12 +1275,13 @@ async function computeRooftopDailyReport(rooftopId, yesterday) {
     pendingPct,
     // Per-VIN tables
     processedVins,
+    processedVinsTotal: Number(processedCount.total) || 0,
     noImageVins,
     noImagesTotal: Number(noImageCount.total) || 0,
   };
 }
 
-async function computeGroupDailyReport(enterpriseId, yesterday) {
+async function computeGroupDailyReport(enterpriseId, yesterday, timezone = "America/New_York") {
   const { rows: [kpi] } = await query(`
     SELECT
       COUNT(*)                                                                            AS new_vins,
@@ -1269,8 +1295,8 @@ async function computeGroupDailyReport(enterpriseId, yesterday) {
       ) FILTER (WHERE status = 'Delivered' AND processed_at IS NOT NULL)::numeric, 1)   AS avg_ttd_hrs
     FROM vins
     WHERE enterprise_id = $1
-      AND DATE(received_at::timestamp) = $2::date
-  `, [enterpriseId, yesterday]);
+      AND DATE(received_at::timestamptz AT TIME ZONE $3) = $2::date
+  `, [enterpriseId, yesterday, timezone]);
 
   const { rows: [totals] } = await query(`
     SELECT
@@ -1300,11 +1326,11 @@ async function computeGroupDailyReport(enterpriseId, yesterday) {
     FROM vins v
     LEFT JOIN rooftop_details rd ON v.rooftop_id = rd.team_id
     WHERE v.enterprise_id = $1
-      AND DATE(v.received_at::timestamp) = $2::date
+      AND DATE(v.received_at::timestamptz AT TIME ZONE $3) = $2::date
     GROUP BY v.rooftop_id
     ORDER BY new_vins DESC
     LIMIT 5
-  `, [enterpriseId, yesterday]);
+  `, [enterpriseId, yesterday, timezone]);
 
   // Top 5 rooftops by VINs without images
   const { rows: topNoImages } = await query(`
@@ -1355,6 +1381,23 @@ async function computeGroupDailyReport(enterpriseId, yesterday) {
   };
 }
 
+// ─── Daily Report Helpers ─────────────────────────────────────────────────────
+
+// Returns { yesterdayStr: "YYYY-MM-DD", dateLabel: "21 Apr 2026 (EDT)" }
+// for the calendar day before "today" in the given IANA timezone.
+function yesterdayFor(tz = "America/New_York") {
+  const todayLocal = new Date().toLocaleDateString("en-CA", { timeZone: tz }); // "YYYY-MM-DD"
+  const [yr, mo, dy] = todayLocal.split("-").map(Number);
+  const d = new Date(Date.UTC(yr, mo - 1, dy - 1)); // yesterday as UTC midnight
+  const yesterdayStr = d.toISOString().slice(0, 10);
+  const tzAbbr = new Date().toLocaleString("en-US", { timeZone: tz, timeZoneName: "short" })
+    .split(" ").pop(); // "EST" or "EDT"
+  const dateLabel = d.toLocaleDateString("en-GB", {
+    day: "numeric", month: "short", year: "numeric", timeZone: "UTC",
+  }) + ` (${tzAbbr})`;
+  return { yesterdayStr, dateLabel };
+}
+
 // ─── Daily Report Endpoint ────────────────────────────────────────────────────
 
 app.get("/api/send-daily-report", async (req, res) => {
@@ -1376,21 +1419,7 @@ app.get("/api/send-daily-report", async (req, res) => {
     return res.status(400).json({ error: "Test mode requires rooftopId and/or enterpriseId — pass at least one so only that report is sent." });
   }
 
-  // Yesterday in UTC date string (YYYY-MM-DD)
-  const now       = new Date();
-  const yesterday = new Date(now);
-  yesterday.setUTCDate(yesterday.getUTCDate() - 1);
-  const yesterdayStr = yesterday.toISOString().slice(0, 10); // "2026-04-16"
-
-  // Formatted date label for email template headers ("16 Apr 2026")
-  const dateLabel = yesterday.toLocaleDateString("en-GB", {
-    day:   "numeric",
-    month: "short",
-    year:  "numeric",
-    timeZone: "UTC",
-  });
-
-  console.log(`[daily-report] starting — reporting on ${yesterdayStr}${testMode ? ` (test mode → ${testTo.join(",")})` : ""}`);
+  console.log(`[daily-report] starting${testMode ? ` (test mode → ${testTo.join(",")})` : ""}`);
 
   const results = { groups: [], rooftops: [], errors: [] };
 
@@ -1399,13 +1428,16 @@ app.get("/api/send-daily-report", async (req, res) => {
   try {
     if (testMode && req.query.enterpriseId) {
       const { rows } = await query(
-        `SELECT enterprise_id, name, group_recipient_email FROM enterprise_details WHERE enterprise_id = $1`,
+        `SELECT enterprise_id, name, group_recipient_email,
+                COALESCE(timezone, 'America/New_York') AS timezone
+         FROM enterprise_details WHERE enterprise_id = $1`,
         [String(req.query.enterpriseId)]
       );
       enterprises = rows;
     } else if (!testMode) {
       const { rows } = await query(`
-        SELECT enterprise_id, name, group_recipient_email
+        SELECT enterprise_id, name, group_recipient_email,
+               COALESCE(timezone, 'America/New_York') AS timezone
         FROM enterprise_details
         WHERE group_recipient_email IS NOT NULL AND group_recipient_email != ''
       `);
@@ -1420,7 +1452,9 @@ app.get("/api/send-daily-report", async (req, res) => {
 
   for (const ent of enterprises) {
     try {
-      const data = await computeGroupDailyReport(ent.enterprise_id, yesterdayStr);
+      const tz = ent.timezone || "America/New_York";
+      const { yesterdayStr, dateLabel } = yesterdayFor(tz);
+      const data = await computeGroupDailyReport(ent.enterprise_id, yesterdayStr, tz);
       const html = buildGroupReportHtml(data, dateLabel);
       const sendOpts = testMode
         ? { to: testTo, ...(testCc && { cc: testCc }), subject: `[TEST] Studio AI Group Report — ${ent.name || ent.enterprise_id} — ${dateLabel}` }
@@ -1439,15 +1473,21 @@ app.get("/api/send-daily-report", async (req, res) => {
   try {
     if (testMode && req.query.rooftopId) {
       const { rows } = await query(
-        `SELECT team_id, team_name, recipient_email FROM rooftop_details WHERE team_id = $1`,
+        `SELECT rd.team_id, rd.team_name, rd.recipient_email,
+                COALESCE(ed.timezone, 'America/New_York') AS timezone
+         FROM rooftop_details rd
+         LEFT JOIN enterprise_details ed ON rd.enterprise_id = ed.enterprise_id
+         WHERE rd.team_id = $1`,
         [String(req.query.rooftopId)]
       );
       rooftops = rows;
     } else if (!testMode) {
       const { rows } = await query(`
-        SELECT team_id, team_name, recipient_email
-        FROM rooftop_details
-        WHERE recipient_email IS NOT NULL AND recipient_email != ''
+        SELECT rd.team_id, rd.team_name, rd.recipient_email,
+               COALESCE(ed.timezone, 'America/New_York') AS timezone
+        FROM rooftop_details rd
+        LEFT JOIN enterprise_details ed ON rd.enterprise_id = ed.enterprise_id
+        WHERE rd.recipient_email IS NOT NULL AND rd.recipient_email != ''
       `);
       rooftops = rows;
     } else {
@@ -1460,10 +1500,12 @@ app.get("/api/send-daily-report", async (req, res) => {
 
   for (const rt of rooftops) {
     try {
-      const data = await computeRooftopDailyReport(rt.team_id, yesterdayStr);
-      const html = buildRooftopReportHtml(data, dateLabel);
+      const tz = rt.timezone || "America/New_York";
+      const { yesterdayStr, dateLabel } = yesterdayFor(tz);
+      const data = await computeRooftopDailyReport(rt.team_id, yesterdayStr, tz);
+      const html = buildRooftopReportHtml(data, dateLabel, tz);
       const sendOpts = testMode
-        ? { to: testTo, ...(testCc && { cc: testCc }), subject: `[TEST] Studio AI Daily Report — ${rt.team_name || rt.team_id} — ${dateLabel}` }
+        ? { to: testTo, ...(testCc && { cc: testCc }), subject: `Studio AI Daily Report — ${rt.team_name || rt.team_id} — ${dateLabel}` }
         : { to: rt.recipient_email, subject: `Studio AI Daily Report — ${rt.team_name || rt.team_id} — ${dateLabel}` };
       await sendDailyReport(html, sendOpts);
       results.rooftops.push({ rooftopId: rt.team_id, name: rt.team_name, status: "sent" });
@@ -1475,7 +1517,141 @@ app.get("/api/send-daily-report", async (req, res) => {
   }
 
   console.log(`[daily-report] done — ${results.groups.length} group, ${results.rooftops.length} rooftop, ${results.errors.length} errors`);
-  return res.json({ ok: true, date: yesterdayStr, testMode, ...results });
+  return res.json({ ok: true, testMode, ...results });
+});
+
+// ─── Email Preview (browser, real DB data, no emails sent) ───────────────────
+
+function _prevDate(dateStr) {
+  const d = new Date(dateStr + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10);
+}
+function _nextDate(dateStr) {
+  const d = new Date(dateStr + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
+
+app.get("/api/preview-daily-report", async (req, res) => {
+  // Date: ?date=YYYY-MM-DD or yesterday (EST default — no enterprise context on index page)
+  let targetDate;
+  if (req.query.date) {
+    targetDate = String(req.query.date);
+  } else {
+    targetDate = yesterdayFor("America/New_York").yesterdayStr;
+  }
+  const dateLabel = new Date(targetDate + "T00:00:00Z").toLocaleDateString("en-GB", {
+    day: "numeric", month: "short", year: "numeric", timeZone: "UTC",
+  });
+
+  try {
+    // ── No rooftopId → index page listing all rooftops ──────────────────────
+    if (!req.query.rooftopId) {
+      const { rows } = await query(
+        `SELECT team_id, team_name FROM rooftop_details ORDER BY team_name ASC`
+      );
+      const links = rows.map(r =>
+        `<li style="margin-bottom:4px;">
+           <a href="/api/preview-daily-report?rooftopId=${encodeURIComponent(r.team_id)}&date=${targetDate}"
+              style="font-size:14px;color:#2563EB;text-decoration:none;">
+             ${r.team_name || r.team_id}
+           </a>
+         </li>`
+      ).join("\n");
+      return res.send(`<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Rooftop Preview Index</title></head>
+<body style="font-family:Arial,sans-serif;padding:32px;max-width:640px;">
+  <h2 style="margin-bottom:4px;color:#111827;">Rooftop Email Preview</h2>
+  <p style="color:#6B7280;margin-top:0;font-size:13px;">
+    Reporting date: <strong style="color:#111827;">${targetDate}</strong>
+    &nbsp;&middot;&nbsp;
+    <a href="?date=${_prevDate(targetDate)}" style="color:#2563EB;">&larr; prev day</a>
+    &nbsp;&middot;&nbsp;
+    <a href="?date=${_nextDate(targetDate)}" style="color:#2563EB;">next day &rarr;</a>
+  </p>
+  <ul style="list-style:none;padding:0;line-height:2;">${links}</ul>
+</body></html>`);
+    }
+
+    // ── Single rooftop → wrapper page with iframe ────────────────────────────
+    const rooftopId = encodeURIComponent(String(req.query.rooftopId));
+    const rawSrc    = `/api/preview-daily-report/raw?rooftopId=${rooftopId}&date=${targetDate}`;
+    return res.send(`<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Preview — ${targetDate}</title>
+<style>
+  * { box-sizing:border-box; }
+  body { margin:0; padding:0; background:#DEDEDE; font-family:Arial,sans-serif; }
+  .bar { display:flex; align-items:center; gap:16px; padding:10px 20px; background:#1a1a2e; font-size:12px; }
+  .bar a { color:#94a3b8; text-decoration:none; }
+  .bar a:hover { color:#fff; }
+  .bar .sep { color:#334155; }
+  .bar .title { color:#e2e8f0; font-weight:600; flex:1; }
+  iframe { display:block; width:640px; max-width:100%; margin:24px auto; border:none;
+           box-shadow:0 4px 24px rgba(0,0,0,0.18); background:#fff; }
+</style></head>
+<body>
+  <div class="bar">
+    <a href="/api/preview-daily-report?date=${targetDate}">&larr; All rooftops</a>
+    <span class="sep">|</span>
+    <span class="title">Reporting: ${targetDate}</span>
+    <a href="?rooftopId=${rooftopId}&date=${_prevDate(targetDate)}">&larr; prev day</a>
+    <a href="?rooftopId=${rooftopId}&date=${_nextDate(targetDate)}">next day &rarr;</a>
+  </div>
+  <iframe src="${rawSrc}" id="f" scrolling="no"></iframe>
+  <script>
+    const f = document.getElementById("f");
+    function resize() { f.style.height = f.contentDocument.body.scrollHeight + "px"; }
+    f.addEventListener("load", resize);
+  </script>
+</body></html>`);
+
+  } catch (e) {
+    console.error("[preview-daily-report] error:", e?.message);
+    return res.status(500).send(`<pre>Error: ${e?.message}</pre>`);
+  }
+});
+
+// Raw email HTML — loaded inside the iframe above, isolated from outer page styles.
+app.get("/api/preview-daily-report/raw", async (req, res) => {
+  try {
+    const rooftopId = String(req.query.rooftopId);
+
+    // Look up the enterprise timezone for this rooftop
+    const { rows: [rtTz] } = await query(
+      `SELECT COALESCE(ed.timezone, 'America/New_York') AS timezone
+       FROM rooftop_details rd
+       LEFT JOIN enterprise_details ed ON rd.enterprise_id = ed.enterprise_id
+       WHERE rd.team_id = $1`,
+      [rooftopId]
+    );
+    const tz = rtTz?.timezone || "America/New_York";
+
+    let targetDate;
+    if (req.query.date) {
+      targetDate = String(req.query.date);
+    } else {
+      targetDate = yesterdayFor(tz).yesterdayStr;
+    }
+    const tzAbbr = new Date().toLocaleString("en-US", { timeZone: tz, timeZoneName: "short" }).split(" ").pop();
+    const dateLabel = new Date(targetDate + "T00:00:00Z").toLocaleDateString("en-GB", {
+      day: "numeric", month: "short", year: "numeric", timeZone: "UTC",
+    }) + ` (${tzAbbr})`;
+    const data = await computeRooftopDailyReport(rooftopId, targetDate, tz);
+    const html = buildRooftopReportHtml(data, dateLabel, tz);
+    // Minimal reset — counteracts browser UA defaults without touching email layout
+    const reset = `<style>
+      body  { margin:0 !important; padding:0 !important; }
+      table { border-collapse:collapse !important; border-spacing:0 !important; }
+      img   { display:block !important; border:0 !important; }
+      p     { margin:0; padding:0; }
+    </style>`;
+    res.setHeader("Content-Type", "text/html");
+    return res.send(html.replace("</head>", reset + "</head>"));
+  } catch (e) {
+    console.error("[preview-daily-report/raw] error:", e?.message);
+    return res.status(500).send(`<pre>Error: ${e?.message}</pre>`);
+  }
 });
 
 export default app;
