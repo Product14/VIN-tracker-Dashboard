@@ -292,7 +292,7 @@ function FilterBar({ filters, setFilters, rooftopOptions = [], typeOptions = [],
   const enterpriseNames = useMemo(() => enterpriseObjects.map(e => e.name).sort(), [enterpriseObjects]);
   const selectedEnterpriseName = filters.enterpriseId ? (enterpriseIdToName[filters.enterpriseId] ?? filters.enterpriseId) : null;
 
-  const activeCount = [filters.enterpriseId, filters.rooftop, filters.rooftopType, filters.csm, filters.status, filters.after24h !== null ? "x" : null, filters.hasPhotos !== null && filters.hasPhotos !== undefined ? "x" : null, filters.reasonBucket].filter(Boolean).length;
+  const activeCount = [filters.enterpriseId, filters.rooftopId, filters.rooftop, filters.rooftopType, filters.csm, filters.status, filters.after24h !== null ? "x" : null, filters.hasPhotos !== null && filters.hasPhotos !== undefined ? "x" : null, filters.reasonBucket].filter(Boolean).length;
 
   return (
     <div style={{ marginBottom: 16 }}>
@@ -348,7 +348,7 @@ function FilterBar({ filters, setFilters, rooftopOptions = [], typeOptions = [],
           placeholder="All Buckets"
         />
         {activeCount > 0 && (
-          <button onClick={() => setFilters({ search: "", enterpriseId: null, rooftop: null, rooftopType: null, csm: null, status: null, after24h: null, hasPhotos: null, reasonBucket: null })}
+          <button onClick={() => setFilters({ search: "", enterpriseId: null, rooftopId: null, rooftop: null, rooftopType: null, csm: null, status: null, after24h: null, hasPhotos: null, reasonBucket: null })}
             style={{ padding: "7px 14px", borderRadius: 8, border: "1px solid #fca5a5", background: "#fef2f2", color: "#dc2626", fontSize: 13, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>
             Clear {activeCount} filter{activeCount > 1 ? "s" : ""}
           </button>
@@ -357,6 +357,7 @@ function FilterBar({ filters, setFilters, rooftopOptions = [], typeOptions = [],
       {activeCount > 0 && (
         <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
           {filters.enterpriseId && <Badge label={`Enterprise: ${selectedEnterpriseName}`} color="blue" />}
+          {filters.rooftopId && <Badge label={`Rooftop ID: ${filters.rooftopId}`} color="blue" />}
           {filters.rooftop && <Badge label={`Rooftop: ${filters.rooftop}`} color="blue" />}
           {filters.rooftopType && <Badge label={`Type: ${filters.rooftopType}`} color="blue" />}
           {filters.csm && <Badge label={`CSM: ${filters.csm}`} color="blue" />}
@@ -1477,6 +1478,10 @@ export default function Dashboard() {
   const [lastSync, setLastSync] = useState<string | null>(null);
   const [filterOptions, setFilterOptions] = useState<any>(null);
 
+  // Abort controller for in-flight /api/vins requests — cancels the previous
+  // request when a new one starts so stale responses never overwrite filtered data.
+  const rawAbortRef = useRef<AbortController | null>(null);
+
   // Raw paginated data — sourced from /api/vins, only used in VIN Data tab
   const [rawData, setRawData] = useState<any[]>([]);
   const [rawPage, setRawPage] = useState(1);
@@ -1575,6 +1580,14 @@ export default function Dashboard() {
 
   // Fetch paginated raw VIN rows
   const loadRawPage = useCallback((page: number, filters: any, sortCol: string | null = null, sortDir: string = "asc", df: string = "post") => {
+    // Cancel any in-flight request so a slow earlier response never overwrites
+    // a faster later one (e.g. switching filters quickly).
+    if (rawAbortRef.current) rawAbortRef.current.abort();
+    rawAbortRef.current = new AbortController();
+
+    // Clear stale data immediately so the shimmer shows instead of old rows
+    // bleeding through the loading overlay while the new request is in-flight.
+    setRawData([]);
     setRawLoading(true);
     const params = new URLSearchParams({ page: String(page), pageSize: "50" });
     if (filters.search)       params.set("search",       filters.search);
@@ -1590,7 +1603,7 @@ export default function Dashboard() {
     if (sortCol) { params.set("sortBy", sortCol); params.set("sortDir", sortDir); }
     params.set("dateFilter", df);
 
-    fetch(`${API_BASE}/api/vins?${params}`)
+    fetch(`${API_BASE}/api/vins?${params}`, { signal: rawAbortRef.current.signal })
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
       .then(({ data, total, pageCount }) => {
         setRawData(data);
@@ -1598,7 +1611,11 @@ export default function Dashboard() {
         setRawPageCount(pageCount);
         setRawLoading(false);
       })
-      .catch(err => { setFetchError(err.message); setRawLoading(false); });
+      .catch(err => {
+        if (err.name === "AbortError") return; // superseded by a newer request — ignore
+        setFetchError(err.message);
+        setRawLoading(false);
+      });
   }, []);
 
   // On mount: load DB. If empty, run a full sync (awaited — POST /api/sync blocks
