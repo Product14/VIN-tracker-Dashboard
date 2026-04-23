@@ -55,15 +55,6 @@ function kpiCard(label, value, color, width) {
     </td>`;
 }
 
-function bucketBadge(label, count, color) {
-  return `
-    <td style="padding:5px;" valign="top">
-      <div style="background:${color}18; border:1px solid ${color}40; border-radius:6px; padding:12px 14px; min-width:120px; text-align:center;">
-        <div style="font-size:20px; font-weight:700; color:${color};">${fmt(count)}</div>
-        <div style="font-size:11px; color:${TEXT_MUTED}; margin-top:3px; line-height:1.3;">${label}</div>
-      </div>
-    </td>`;
-}
 
 function tableHeader(cols) {
   const cells = cols.map(c =>
@@ -117,18 +108,7 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl) {
       })
     : "N/A";
 
-  // ── KPI row ───────────────────────────────────────────────────────────────
-  const kpiRow = `
-    <tr>
-      ${kpiCard("Total Inventory",      totals.total,                ACCENT_COLOR)}
-      ${kpiCard("With Photos",          totals.withPhotos,           "#0891b2")}
-      ${kpiCard("VIN Delivered",        totals.deliveredWithPhotos,  GREEN)}
-      ${kpiCard("Pending VINs",         totals.pendingWithPhotos,    AMBER)}
-      ${kpiCard("Pending VINs > 24 hr", totals.notProcessedAfter24,  RED)}
-    </tr>`;
-
   // ── Reason buckets ────────────────────────────────────────────────────────
-  // Use byBucket array (all buckets) or fall back to totals fields
   const bucketMap = Object.fromEntries((byBucket || []).map(b => [b.label, b.count]));
   const buckets = [
     { label: "Processing Pending", count: bucketMap["Processing Pending"] ?? totals.bucketProcessingPending, color: AMBER },
@@ -138,31 +118,60 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl) {
     { label: "Sold",               count: bucketMap["Sold"]               ?? totals.bucketSold,              color: GREEN },
     { label: "Others",             count: bucketMap["Others"]             ?? totals.bucketOthers,            color: TEXT_MUTED },
   ];
-  const bucketsHtml = `<tr>${buckets.filter(b => b.count > 0).map(b => bucketBadge(b.label, b.count, b.color)).join("")}</tr>`;
 
-  // Shared column headers for both tables
+  // ── KPI rows ──────────────────────────────────────────────────────────────
+  const activeBuckets = buckets.filter(b => b.count > 0);
+  const bucketPills = activeBuckets.map(b =>
+    `<span style="display:inline-block; background:${b.color}18; border:1px solid ${b.color}40; border-radius:999px; padding:2px 10px; font-size:11px; font-weight:600; color:${b.color}; margin-right:5px; margin-bottom:4px; white-space:nowrap;">${b.label}&nbsp;&nbsp;<strong>${fmt(b.count)}</strong></span>`
+  ).join("");
+
+  const pendingRow = `
+    <tr>
+      <td style="padding-bottom:6px;">
+        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+          <tr>
+            <td style="background:#fffbeb; border:1px solid #fde68a; border-radius:8px; padding:14px 20px;">
+              <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                <tr>
+                  <td valign="middle" style="white-space:nowrap; padding-right:24px; border-right:1px solid #fde68a; width:1%;">
+                    <div style="font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:#92400e; margin-bottom:4px;">Pending VINs &gt; 24hr</div>
+                    <div style="font-size:32px; font-weight:700; color:${RED}; line-height:1;">${fmt(totals.notProcessedAfter24)}</div>
+                  </td>
+                  <td valign="middle" style="padding-left:20px;">
+                    ${activeBuckets.length > 0 ? `<div style="font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:#9ca3af; margin-bottom:6px;">By Reason</div><div>${bucketPills}</div>` : ""}
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>`;
+
+  // 2×2 grid — each card is 50% wide so it reads comfortably on mobile
+  const kpiRow = `
+    <tr>
+      ${kpiCard("Total Inventory",  totals.total,               ACCENT_COLOR, "50%")}
+      ${kpiCard("With Photos",      totals.withPhotos,          "#0891b2",    "50%")}
+    </tr>
+    <tr>
+      ${kpiCard("VIN Delivered",    totals.deliveredWithPhotos, GREEN,        "50%")}
+      ${kpiCard("Pending VINs",     totals.pendingWithPhotos,   AMBER,        "50%")}
+    </tr>`;
+
+  // Shared column headers for both tables — trimmed to the 3 key metrics
   const sharedHeaders = (firstColLabel) => tableHeader([
     { label: firstColLabel,        align: "left" },
-    { label: "Enterprises"                       },
-    { label: "Rooftops"                          },
-    { label: "Inventory"                         },
-    { label: "With Photos"                       },
-    { label: "Delivered"                         },
-    { label: "Pending"                           },
     { label: "Pending >24hr"                     },
+    { label: "Total Pending"                     },
     { label: "Pending >24hr %"                   },
-    { label: "Avg Score"                         },
+    { label: "Website Score"                     },
   ]);
 
   const sharedRow = (firstCol, r, zebra) => tableRow([
     { value: firstCol,                                        align: "left"                                                         },
-    { value: fmt(r.enterpriseCount)                                                                                                  },
-    { value: fmt(r.rooftopCount)                                                                                                     },
-    { value: fmt(r.total)                                                                                                            },
-    { value: fmt(r.withPhotos)                                                                                                       },
-    { value: fmt(r.deliveredWithPhotos)                                                                                               },
-    { value: fmt(r.pendingWithPhotos),                        color: r.pendingWithPhotos > 0 ? AMBER : null                         },
     { value: fmt(r.notProcessedAfter24),                      color: r.notProcessedAfter24 > 0 ? RED : null                         },
+    { value: fmt(r.pendingWithPhotos),                        color: r.pendingWithPhotos > 0 ? AMBER : null                         },
     { value: pct(r.notProcessedAfter24, r.notProcessed),      color: r.notProcessedAfter24 > 0 ? RED : null                        },
     { value: score(r.avgWebsiteScore),                        muted: true                                                           },
   ], zebra);
@@ -175,7 +184,8 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl) {
 
   // ── By CSM table ──────────────────────────────────────────────────────────
   const csmHeaders = sharedHeaders("CSM");
-  const csmRows = (byCSM || []).map((r, i) =>
+  const sortedByCSM = (byCSM || []).slice().sort((a, b) => (b.notProcessedAfter24 ?? 0) - (a.notProcessedAfter24 ?? 0));
+  const csmRows = sortedByCSM.map((r, i) =>
     sharedRow(csmLabel(r.name), r, i % 2 === 0)
   ).join("");
 
@@ -239,19 +249,15 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl) {
             <td style="padding:24px 32px 32px;">
               <table width="100%" cellpadding="0" cellspacing="0" border="0">
 
+                <!-- Pending >24hr + reason buckets -->
+                ${pendingRow}
+
                 <!-- KPI row -->
                 <tr><td style="padding-bottom:6px;">
                   <table width="100%" cellpadding="0" cellspacing="0" border="0">
                     ${kpiRow}
                   </table>
                 </td></tr>
-
-                <!-- Reason Buckets section -->
-                ${sectionTitle("Pending Reason Buckets (with photos · after 24h)")}
-                <tr><td>
-                  <table cellpadding="0" cellspacing="0" border="0">
-                    ${bucketsHtml}
-                  </table>
                 </td></tr>
 
                 <!-- By Rooftop Type section -->
@@ -260,7 +266,7 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl) {
                   <table width="100%" cellpadding="0" cellspacing="0" border="0"
                          style="border:1px solid ${BORDER_COLOR}; border-radius:8px; overflow:hidden; border-collapse:separate; border-spacing:0;">
                     ${typeHeaders}
-                    ${typeRows || `<tr><td colspan="10" style="padding:16px; text-align:center; color:${TEXT_MUTED}; font-size:13px;">No data</td></tr>`}
+                    ${typeRows || `<tr><td colspan="5" style="padding:16px; text-align:center; color:${TEXT_MUTED}; font-size:13px;">No data</td></tr>`}
                   </table>
                 </td></tr>
 
@@ -270,7 +276,7 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl) {
                   <table width="100%" cellpadding="0" cellspacing="0" border="0"
                          style="border:1px solid ${BORDER_COLOR}; border-radius:8px; overflow:hidden; border-collapse:separate; border-spacing:0;">
                     ${csmHeaders}
-                    ${csmRows || `<tr><td colspan="10" style="padding:16px; text-align:center; color:${TEXT_MUTED}; font-size:13px;">No data</td></tr>`}
+                    ${csmRows || `<tr><td colspan="5" style="padding:16px; text-align:center; color:${TEXT_MUTED}; font-size:13px;">No data</td></tr>`}
                   </table>
                 </td></tr>
 

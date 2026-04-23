@@ -50,6 +50,22 @@ export async function initSchema() {
     ALTER TABLE vins ADD COLUMN IF NOT EXISTS trim         TEXT;
     ALTER TABLE vins ADD COLUMN IF NOT EXISTS stock_number TEXT;
 
+    -- Migration: swap PK from vin → dealer_vin_id on existing deployments.
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM information_schema.key_column_usage kcu
+        JOIN information_schema.table_constraints tc
+          ON kcu.constraint_name = tc.constraint_name AND kcu.table_name = tc.table_name
+        WHERE kcu.table_name = 'vins' AND kcu.column_name = 'vin'
+          AND tc.constraint_type = 'PRIMARY KEY'
+      ) THEN
+        ALTER TABLE vins DROP CONSTRAINT vins_pkey;
+        DELETE FROM vins WHERE dealer_vin_id IS NULL;
+        ALTER TABLE vins ADD PRIMARY KEY (dealer_vin_id);
+      END IF;
+    END $$;
+
     CREATE INDEX IF NOT EXISTS idx_vins_rooftop_id        ON vins(rooftop_id);
     CREATE INDEX IF NOT EXISTS idx_vins_enterprise_id     ON vins(enterprise_id);
     CREATE INDEX IF NOT EXISTS idx_vins_status            ON vins(status);

@@ -38,7 +38,12 @@ async function fetchFromMetabase(url, label, retries = 3, timeoutMs = 0) {
       const opts = timeoutMs > 0 ? { signal: AbortSignal.timeout(timeoutMs) } : {};
       const res = await fetch(url, opts);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return await res.json();
+      const json = await res.json();
+      if (Array.isArray(json)) return json;
+      // Metabase sometimes wraps rows in { data: [...] } — normalise to array.
+      if (Array.isArray(json?.data)) return json.data;
+      console.warn(`[sync:${label}] unexpected response shape:`, JSON.stringify(json).slice(0, 300));
+      return [];
     } catch (err) {
       lastErr = err;
       if (attempt < retries) {
@@ -62,12 +67,10 @@ async function syncVins() {
   // 65s timeout per attempt caps a hanging request just above Metabase's worst case.
   const rows    = await fetchFromMetabase(VIN_DETAILS_URL, "VIN_DETAILS", 1, 65000);
   const syncedAt = new Date().toISOString();
-  const all = Object.values(
-    rows.reduce((acc, row) => { acc[row.vinName ?? ""] = row; return acc; }, {})
+  // Deduplicate by dealerVinId (primary key). Skip rows with no dealerVinId.
+  const deduped = Object.values(
+    rows.reduce((acc, row) => { if (row["dealerVinId"]) acc[row["dealerVinId"]] = row; return acc; }, {})
   );
-  const skippedNull = all.filter(r => !r["m.dealerVinId"]).length;
-  if (skippedNull > 0) console.warn(`[sync:VIN_DETAILS] skipping ${skippedNull} rows with null dealer_vin_id`);
-  const deduped = all.filter(r => r["m.dealerVinId"]);
   if (deduped.length > 0) console.log("[sync:VIN_DETAILS] sample row keys:", Object.keys(deduped[0]), "| has_photos sample:", deduped[0].has_photos, "| output_image_count sample:", deduped[0].output_image_count);
 
   const vins = [], dealerVinIds = [], enterpriseIds = [], rooftopIds = [];
@@ -78,7 +81,7 @@ async function syncVins() {
 
   for (const row of deduped) {
     vins.push(row.vinName ?? "");
-    dealerVinIds.push(row["m.dealerVinId"] ?? null);
+    dealerVinIds.push(row["dealerVinId"] ?? null);
     enterpriseIds.push(row.enterpriseId ?? "");
     rooftopIds.push(String(row.teamId ?? ""));
     statuses.push(row.status ?? "");
@@ -111,7 +114,7 @@ async function syncVins() {
       const slice = (arr) => arr.slice(i, i + BATCH_SIZE);
       await client.query(`
         INSERT INTO vins
-          (vin, dealer_vin_id, enterprise_id, rooftop_id, status, after_24h, received_at, processed_at,
+          (dealer_vin_id, vin, enterprise_id, rooftop_id, status, after_24h, received_at, processed_at,
            reason_bucket, hold_reason, has_photos, output_image_count, thumbnail_url, vehicle_price,
            make, model, year, trim, stock_number, synced_at)
         SELECT
@@ -121,7 +124,7 @@ async function syncVins() {
           UNNEST($13::text[]),   UNNEST($14::real[]),
           UNNEST($15::text[]),   UNNEST($16::text[]),   UNNEST($17::text[]),    UNNEST($18::text[]),
           UNNEST($19::text[]),   UNNEST($20::text[])
-      `, [slice(vins), slice(dealerVinIds), slice(enterpriseIds), slice(rooftopIds),
+      `, [slice(dealerVinIds), slice(vins), slice(enterpriseIds), slice(rooftopIds),
           slice(statuses), slice(after24hs), slice(receivedAts), slice(processedAts),
           slice(reasonBuckets), slice(holdReasons), slice(hasPhotosArr), slice(outputImageCounts),
           slice(thumbnailUrls), slice(vehiclePrices),
@@ -252,10 +255,14 @@ async function syncEnterprises() {
 // completed_at is only stamped when VINs succeeds.
 async function runSync() {
   // Atomic claim: only one instance wins this UPDATE at a time.
+  // Also steal the lock if running = TRUE but started_at is older than 10 minutes —
+  // this handles the case where a previous Vercel function was killed by the 300s
+  // timeout before the finally block could release the lock.
   const { rows } = await query(`
     UPDATE sync_state
        SET running = TRUE, started_at = NOW(), completed_at = NULL
-     WHERE id = 'global' AND running = FALSE
+     WHERE id = 'global'
+       AND (running = FALSE OR started_at < NOW() - INTERVAL '10 minutes')
     RETURNING id
   `);
 
@@ -596,7 +603,7 @@ const VIN_SELECT = `
 // Builds a WHERE clause with PostgreSQL positional params ($1, $2, …).
 // Returns { where: string, params: any[] }.
 function buildVinFilters(queryParams) {
-  const { search, rooftop, rooftopId, rooftopType, csm, status, after24h, hasPhotos, enterprise, enterpriseId, reasonBucket, dateFilter } = queryParams;
+  const { search, rooftop, rooftopId, rooftopType, csm, status, after24h, hasPhotos, hasVin, enterprise, enterpriseId, reasonBucket, dateFilter } = queryParams;
   const conditions = [];
   const params = [];
 
@@ -618,6 +625,8 @@ function buildVinFilters(queryParams) {
   if (after24h === "false" || after24h === "0") conditions.push("COALESCE(v.after_24h, 0) = 0");
   if (hasPhotos === "true"  || hasPhotos === "1") conditions.push("COALESCE(v.has_photos, 0) = 1");
   if (hasPhotos === "false" || hasPhotos === "0") conditions.push("COALESCE(v.has_photos, 0) = 0");
+  if (hasVin === "true"  || hasVin === "1") conditions.push("(v.vin IS NOT NULL AND v.vin != '')");
+  if (hasVin === "false" || hasVin === "0") conditions.push("(v.vin IS NULL OR v.vin = '')");
   if (reasonBucket) conditions.push(`v.reason_bucket = ${p(reasonBucket)}`);
   const dc = getDateCondition(dateFilter, 'v');
   if (dc) conditions.push(dc);
@@ -850,7 +859,7 @@ async function computeFilterOptions() {
     rooftopBucketFlagsRes,
     enterpriseColFlagsRes,
   ] = await Promise.all([
-    query("SELECT DISTINCT name FROM v_by_rooftop WHERE name IS NOT NULL ORDER BY name"),
+    query("SELECT rooftop_id AS id, MAX(name) AS name, MAX(enterprise_id) AS enterprise_id FROM v_by_rooftop WHERE name IS NOT NULL GROUP BY rooftop_id ORDER BY MAX(name)"),
     query("SELECT DISTINCT type FROM v_by_rooftop WHERE type IS NOT NULL ORDER BY type"),
     query("SELECT DISTINCT csm  FROM v_by_rooftop WHERE csm  IS NOT NULL ORDER BY csm"),
     query("SELECT DISTINCT enterprise_id AS id, enterprise AS name FROM v_by_rooftop WHERE enterprise IS NOT NULL ORDER BY enterprise"),
@@ -876,7 +885,7 @@ async function computeFilterOptions() {
   const bf = rooftopBucketFlagsRes.rows[0] ?? {};
   const cf = enterpriseColFlagsRes.rows[0]  ?? {};
   return {
-    rooftopNames:    rooftopNamesRes.rows.map(r => r.name),
+    rooftops:        rooftopNamesRes.rows,
     rooftopTypes:    rooftopTypesRes.rows.map(r => r.type),
     rooftopCSMs:     rooftopCSMsRes.rows.map(r => r.csm),
     enterprises:     enterprisesRes.rows,
@@ -909,11 +918,30 @@ async function upsertFilterCache(payload) {
 // Falls back to computing on-demand if cache is empty (first deploy).
 
 app.get("/api/filter-options", async (_req, res) => {
-  const { rows } = await query(
-    "SELECT payload FROM filter_cache WHERE id = 'global'"
-  );
-  if (rows.length > 0) return res.json(rows[0].payload);
-  // Cache not yet populated — compute and store so the next request is instant.
+  const [cacheRes, syncRes] = await Promise.all([
+    query("SELECT payload, computed_at FROM filter_cache WHERE id = 'global'"),
+    query("SELECT completed_at FROM sync_state WHERE id = 'global'"),
+  ]);
+
+  const row        = cacheRes.rows[0];
+  const lastSync   = syncRes.rows[0]?.completed_at;
+  const cached     = row?.payload;
+  const computedAt = row?.computed_at;
+
+  // Shape check: rooftops must be the current {id, name, enterprise_id}[] format.
+  const hasValidShape = cached &&
+    Array.isArray(cached.rooftops) &&
+    (cached.rooftops.length === 0 || cached.rooftops[0]?.enterprise_id !== undefined);
+
+  // Freshness check: cache must have been computed after the last completed sync.
+  // If a sync ran more recently, the materialized views were refreshed and the
+  // cache may be missing newly added rooftops (like Forrester Lincoln).
+  const isFresh = computedAt && lastSync
+    ? new Date(computedAt) >= new Date(lastSync)
+    : true; // no sync yet — treat existing cache as fresh
+
+  if (hasValidShape && isFresh) return res.json(cached);
+
   const payload = await computeFilterOptions();
   await upsertFilterCache(payload);
   res.json(payload);
@@ -1111,22 +1139,25 @@ app.get("/api/scheduled-report", async (req, res) => {
 
   const dashboardUrl = process.env.DASHBOARD_URL || "";
 
-  console.log(`[scheduled-report] starting — ${timeLabel}`);
+  const skipSync = req.query["skip-sync"] === "true";
+  console.log(`[scheduled-report] starting — ${timeLabel}${skipSync ? " (skip-sync)" : ""}`);
 
   // ── Step 1: Sync data from Metabase ───────────────────────────────────────
-  let syncSkipped = false;
-  try {
-    const result = await runSync();
-    syncSkipped = result.skipped;
-    if (syncSkipped) {
-      console.warn("[scheduled-report] sync was already running — sending email with cached data");
-    } else {
-      console.log("[scheduled-report] sync complete");
+  let syncSkipped = skipSync;
+  if (!skipSync) {
+    try {
+      const result = await runSync();
+      syncSkipped = result.skipped;
+      if (syncSkipped) {
+        console.warn("[scheduled-report] sync was already running — sending email with cached data");
+      } else {
+        console.log("[scheduled-report] sync complete");
+      }
+    } catch (err) {
+      // Sync failed (VINs critical failure). Log and fall through to send email
+      // with the last cached summary so recipients still get a report.
+      console.error("[scheduled-report] sync failed — sending email with cached data:", err?.message);
     }
-  } catch (err) {
-    // Sync failed (VINs critical failure). Log and fall through to send email
-    // with the last cached summary so recipients still get a report.
-    console.error("[scheduled-report] sync failed — sending email with cached data:", err?.message);
   }
 
   // ── Step 2: Compute fresh summary directly from DB ───────────────────────

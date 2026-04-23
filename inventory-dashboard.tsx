@@ -56,7 +56,7 @@ function isAfter24h(item) {
 
 function applyRawFilters(data, filters) {
   return data.filter(d => {
-    if (filters.rooftop && d.rooftop !== filters.rooftop) return false;
+    if (filters.rooftopId && d.rooftopId !== filters.rooftopId) return false;
     if (filters.rooftopType && d.rooftopType !== filters.rooftopType) return false;
     if (filters.csm && d.csm !== filters.csm) return false;
     if (filters.status && d.status !== filters.status) return false;
@@ -155,25 +155,25 @@ function ClickableNum({ value, color, onClick, title = "" }) {
   );
 }
 
-function StatCard({ label, value, sub, color = "#6366f1", onClick, loading = false }: { label: string; value: any; sub?: string; color?: string; onClick?: any; loading?: boolean }) {
+function StatCard({ label, value, sub, color = "#6366f1", onClick, loading = false, compact = false }: { label: string; value: any; sub?: string; color?: string; onClick?: any; loading?: boolean; compact?: boolean }) {
   const interactive = !!onClick;
   return (
-    <div onClick={!loading ? onClick : undefined} style={{ background: "#fff", borderRadius: 12, padding: "20px 24px", boxShadow: "0 1px 3px rgba(0,0,0,0.08)", border: "1px solid #e5e7eb", flex: 1, minWidth: 160, cursor: interactive && !loading ? "pointer" : "default", transition: "all 0.15s" }}
+    <div onClick={!loading ? onClick : undefined} style={{ background: "#fff", borderRadius: 12, padding: compact ? "12px 16px" : "20px 24px", boxShadow: "0 1px 3px rgba(0,0,0,0.08)", border: "1px solid #e5e7eb", flex: 1, minWidth: 160, cursor: interactive && !loading ? "pointer" : "default", transition: "all 0.15s" }}
       onMouseEnter={e => { if (interactive && !loading) { e.currentTarget.style.boxShadow = "0 4px 12px rgba(0,0,0,0.12)"; e.currentTarget.style.transform = "translateY(-2px)"; } }}
       onMouseLeave={e => { if (interactive && !loading) { e.currentTarget.style.boxShadow = "0 1px 3px rgba(0,0,0,0.08)"; e.currentTarget.style.transform = "translateY(0)"; } }}>
-      <div style={{ fontSize: 13, color: "#6b7280", fontWeight: 500, marginBottom: 4 }}>{label}</div>
+      <div style={{ fontSize: compact ? 12 : 13, color: "#6b7280", fontWeight: 500, marginBottom: 4 }}>{label}</div>
       {loading ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 4 }}>
-          <div className="shimmer-cell" style={{ height: 32, borderRadius: 6, width: "60%" }} />
+          <div className="shimmer-cell" style={{ height: compact ? 24 : 32, borderRadius: 6, width: "60%" }} />
           {sub !== undefined && <div className="shimmer-cell" style={{ height: 14, borderRadius: 4, width: "45%" }} />}
         </div>
       ) : (
         <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
-          <div style={{ fontSize: 28, fontWeight: 700, color }}>{typeof value === "number" ? value.toLocaleString() : value}</div>
-          {sub && <div style={{ fontSize: 13, color: "#9ca3af", fontWeight: 500 }}>({sub})</div>}
+          <div style={{ fontSize: compact ? 22 : 28, fontWeight: 700, color }}>{typeof value === "number" ? value.toLocaleString() : value}</div>
+          {sub && <div style={{ fontSize: compact ? 12 : 13, color: "#9ca3af", fontWeight: 500 }}>({sub})</div>}
         </div>
       )}
-      {interactive && !loading && <div style={{ fontSize: 11, color: "#a5b4fc", marginTop: 6 }}>Click to view details →</div>}
+      {interactive && !loading && <div style={{ fontSize: 11, color: "#a5b4fc", marginTop: compact ? 4 : 6 }}>Click to view details →</div>}
     </div>
   );
 }
@@ -203,6 +203,7 @@ function SearchableSelect({ value, onChange, options, placeholder = "All" }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const ref = useRef(null);
+  const inputRef = useRef(null);
 
   useEffect(() => {
     if (!open) return;
@@ -216,10 +217,27 @@ function SearchableSelect({ value, onChange, options, placeholder = "All" }) {
     return () => document.removeEventListener("mousedown", handleOutside);
   }, [open]);
 
+  useEffect(() => {
+    if (open && inputRef.current) {
+      inputRef.current.focus();
+    }
+  }, [open]);
+
   const filtered = useMemo(() => {
     if (!query) return options;
     const q = query.toLowerCase();
-    return options.filter(o => o.toLowerCase().includes(q));
+    const tokens = q.split(/\s+/).filter(Boolean);
+    return options
+      .filter(o => {
+        const ol = o.toLowerCase();
+        return tokens.every(t => ol.includes(t));
+      })
+      .sort((a, b) => {
+        const al = a.toLowerCase(), bl = b.toLowerCase();
+        const aStarts = al.startsWith(q), bStarts = bl.startsWith(q);
+        if (aStarts !== bStarts) return aStarts ? -1 : 1;
+        return al.localeCompare(bl);
+      });
   }, [options, query]);
 
   const baseStyle = {
@@ -239,7 +257,7 @@ function SearchableSelect({ value, onChange, options, placeholder = "All" }) {
         <span style={{ fontSize: 10, color: "#6b7280", flexShrink: 0 }}>{open ? "▲" : "▼"}</span>
       </div>
       {open && (
-        <div style={{
+        <div onClick={e => e.stopPropagation()} style={{
           position: "absolute", top: "calc(100% + 4px)", left: 0, zIndex: 50,
           background: "#fff", border: "1px solid #d1d5db", borderRadius: 8,
           boxShadow: "0 4px 16px rgba(0,0,0,0.12)", minWidth: "100%", maxWidth: 280,
@@ -247,7 +265,7 @@ function SearchableSelect({ value, onChange, options, placeholder = "All" }) {
         }}>
           <div style={{ padding: "8px 10px", borderBottom: "1px solid #e5e7eb" }}>
             <input
-              autoFocus
+              ref={inputRef}
               value={query}
               onChange={e => setQuery(e.target.value)}
               placeholder="Search..."
@@ -289,10 +307,20 @@ function FilterBar({ filters, setFilters, rooftopOptions = [], typeOptions = [],
   // Build id→name and name→id maps for display vs filter
   const enterpriseIdToName = useMemo(() => Object.fromEntries(enterpriseObjects.map(e => [e.id, e.name])), [enterpriseObjects]);
   const enterpriseNameToId = useMemo(() => Object.fromEntries(enterpriseObjects.map(e => [e.name, e.id])), [enterpriseObjects]);
-  const enterpriseNames = useMemo(() => enterpriseObjects.map(e => e.name).sort(), [enterpriseObjects]);
+  const enterpriseNames = useMemo(() => [...new Set(enterpriseObjects.map(e => e.name).filter(Boolean))].sort(), [enterpriseObjects]);
   const selectedEnterpriseName = filters.enterpriseId ? (enterpriseIdToName[filters.enterpriseId] ?? filters.enterpriseId) : null;
 
-  const activeCount = [filters.enterpriseId, filters.rooftop, filters.rooftopType, filters.csm, filters.status, filters.after24h !== null ? "x" : null, filters.hasPhotos !== null && filters.hasPhotos !== undefined ? "x" : null, filters.reasonBucket].filter(Boolean).length;
+  // When an enterprise is selected, narrow the rooftop dropdown to that enterprise's rooftops only.
+  const availableRooftops = useMemo(
+    () => filters.enterpriseId ? rooftopOptions.filter(r => r.enterprise_id === filters.enterpriseId) : rooftopOptions,
+    [rooftopOptions, filters.enterpriseId]
+  );
+  const rooftopIdToName = useMemo(() => Object.fromEntries(availableRooftops.map(r => [r.id, r.name])), [availableRooftops]);
+  const rooftopNameToId = useMemo(() => Object.fromEntries(availableRooftops.map(r => [r.name, r.id])), [availableRooftops]);
+  const rooftopNames = useMemo(() => [...new Set(availableRooftops.map(r => r.name).filter(Boolean))].sort(), [availableRooftops]);
+  const selectedRooftopName = filters.rooftopId ? (rooftopIdToName[filters.rooftopId] ?? filters.rooftopId) : null;
+
+  const activeCount = [filters.enterpriseId, filters.rooftopId, filters.rooftopType, filters.csm, filters.status, filters.after24h !== null ? "x" : null, filters.hasPhotos !== null && filters.hasPhotos !== undefined ? "x" : null, filters.hasVin !== null && filters.hasVin !== undefined ? "x" : null, filters.reasonBucket].filter(Boolean).length;
 
   return (
     <div style={{ marginBottom: 16 }}>
@@ -301,14 +329,14 @@ function FilterBar({ filters, setFilters, rooftopOptions = [], typeOptions = [],
           style={{ flex: 1, minWidth: 180, padding: "7px 14px", borderRadius: 8, border: "1px solid #d1d5db", fontSize: 13, outline: "none" }} />
         <SearchableSelect
           value={selectedEnterpriseName}
-          onChange={v => setFilters(f => ({ ...f, enterpriseId: v ? (enterpriseNameToId[v] ?? null) : null }))}
+          onChange={v => setFilters(f => ({ ...f, enterpriseId: v ? (enterpriseNameToId[v] ?? null) : null, rooftopId: null }))}
           options={enterpriseNames}
           placeholder="All Enterprises"
         />
         <SearchableSelect
-          value={filters.rooftop}
-          onChange={v => setFilters(f => ({ ...f, rooftop: v }))}
-          options={rooftopOptions}
+          value={selectedRooftopName}
+          onChange={v => setFilters(f => ({ ...f, rooftopId: v ? (rooftopNameToId[v] ?? null) : null }))}
+          options={rooftopNames}
           placeholder="All Rooftops"
         />
         <SearchableSelect
@@ -342,13 +370,19 @@ function FilterBar({ filters, setFilters, rooftopOptions = [], typeOptions = [],
           placeholder="All Photos"
         />
         <SearchableSelect
+          value={filters.hasVin === null || filters.hasVin === undefined ? null : filters.hasVin ? "Has VIN" : "No VIN"}
+          onChange={v => setFilters(f => ({ ...f, hasVin: v === null ? null : v === "Has VIN" }))}
+          options={["Has VIN", "No VIN"]}
+          placeholder="All VINs"
+        />
+        <SearchableSelect
           value={filters.reasonBucket}
           onChange={v => setFilters(f => ({ ...f, reasonBucket: v }))}
           options={BUCKETS.map(b => b.label)}
           placeholder="All Buckets"
         />
         {activeCount > 0 && (
-          <button onClick={() => setFilters({ search: "", enterpriseId: null, rooftop: null, rooftopType: null, csm: null, status: null, after24h: null, hasPhotos: null, reasonBucket: null })}
+          <button onClick={() => setFilters({ search: "", enterpriseId: null, rooftopId: null, rooftopType: null, csm: null, status: null, after24h: null, hasPhotos: null, hasVin: null, reasonBucket: null })}
             style={{ padding: "7px 14px", borderRadius: 8, border: "1px solid #fca5a5", background: "#fef2f2", color: "#dc2626", fontSize: 13, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>
             Clear {activeCount} filter{activeCount > 1 ? "s" : ""}
           </button>
@@ -357,12 +391,13 @@ function FilterBar({ filters, setFilters, rooftopOptions = [], typeOptions = [],
       {activeCount > 0 && (
         <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
           {filters.enterpriseId && <Badge label={`Enterprise: ${selectedEnterpriseName}`} color="blue" />}
-          {filters.rooftop && <Badge label={`Rooftop: ${filters.rooftop}`} color="blue" />}
+          {filters.rooftopId && <Badge label={`Rooftop: ${rooftopIdToName[filters.rooftopId] ?? filters.rooftopId}`} color="blue" />}
           {filters.rooftopType && <Badge label={`Type: ${filters.rooftopType}`} color="blue" />}
           {filters.csm && <Badge label={`CSM: ${filters.csm}`} color="blue" />}
           {filters.status && <Badge label={`Status: ${filters.status}`} color={filters.status === "Delivered" ? "green" : "red"} />}
           {filters.after24h !== null && <Badge label={filters.after24h ? "After 24h" : "Within 24h"} color="amber" />}
           {filters.hasPhotos !== null && filters.hasPhotos !== undefined && <Badge label={filters.hasPhotos ? "Has Photos" : "No Photos"} color="blue" />}
+          {filters.hasVin !== null && filters.hasVin !== undefined && <Badge label={filters.hasVin ? "Has VIN" : "No VIN"} color="blue" />}
           {filters.reasonBucket && <Badge label={`Bucket: ${filters.reasonBucket}`} color="amber" />}
         </div>
       )}
@@ -418,12 +453,12 @@ function RawTab({ data, loading, filters, setFilters, total, page, pageCount, on
     if (filters.search)       params.set("search",       filters.search);
     if (filters.enterpriseId) params.set("enterpriseId", filters.enterpriseId);
     if (filters.rooftopId)    params.set("rooftopId",    filters.rooftopId);
-    if (filters.rooftop)      params.set("rooftop",      filters.rooftop);
     if (filters.rooftopType)  params.set("rooftopType",  filters.rooftopType);
     if (filters.csm)          params.set("csm",          filters.csm);
     if (filters.status)       params.set("status",       filters.status);
     if (filters.after24h !== null) params.set("after24h", filters.after24h ? "true" : "false");
     if (filters.hasPhotos !== null && filters.hasPhotos !== undefined) params.set("hasPhotos", filters.hasPhotos ? "true" : "false");
+    if (filters.hasVin !== null && filters.hasVin !== undefined) params.set("hasVin", filters.hasVin ? "true" : "false");
     if (filters.reasonBucket)      params.set("reasonBucket", filters.reasonBucket);
     if (sortCol) { params.set("sortBy", sortCol); params.set("sortDir", sortDir); }
     try {
@@ -477,15 +512,16 @@ function RawTab({ data, loading, filters, setFilters, total, page, pageCount, on
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}><Truncated value={fmtCsm(d.csm)} maxWidth={130} /></td>
                 <td style={{ padding: "10px 14px", fontFamily: "monospace", fontSize: 12, borderBottom: "1px solid #f3f4f6" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    {d.vin || <span style={{ color: "#9ca3af" }}>—</span>}
+                    {d.vin && <CopyButton value={d.vin} />}
                     {d.dealerVinId
-                      ? <a href={`https://console.spyne.ai/inventory/v2/listings/${d.dealerVinId}?enterprise_id=${d.enterpriseId}&team_id=${d.rooftopId}`} target="_blank" rel="noreferrer"
-                          style={{ color: "#4f46e5", textDecoration: "none", fontWeight: 600 }}
-                          onMouseEnter={e => (e.currentTarget.style.textDecoration = "underline")}
-                          onMouseLeave={e => (e.currentTarget.style.textDecoration = "none")}>
-                          {d.vin}
+                      ? <a href={`https://console.spyne.ai/inventory/v2/listings/${d.dealerVinId}?enterprise_id=${d.enterpriseId}&team_id=${d.rooftopId}`} target="_blank" rel="noreferrer" title="Open in Console"
+                          style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 28, height: 28, borderRadius: 6, border: "1px solid #e5e7eb", background: "#f9fafb", color: "#6b7280", textDecoration: "none", transition: "all 0.15s" }}
+                          onMouseEnter={e => { e.currentTarget.style.borderColor = "#818cf8"; e.currentTarget.style.color = "#4f46e5"; e.currentTarget.style.background = "#eef2ff"; }}
+                          onMouseLeave={e => { e.currentTarget.style.borderColor = "#e5e7eb"; e.currentTarget.style.color = "#6b7280"; e.currentTarget.style.background = "#f9fafb"; }}>
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
                         </a>
-                      : d.vin}
-                    <CopyButton value={d.vin} />
+                      : null}
                   </div>
                 </td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6", textAlign: "center" }}>
@@ -1243,13 +1279,13 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
               <tr ref={row1Ref} style={{ background: "#f9fafb" }}>
                 <th rowSpan={2} style={{ ...thBase, textAlign: "center", width: 36 }}>#</th>
                 <th rowSpan={2} style={{ ...thBase, textAlign: "left", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("label")}>{nameCol}{si("label")}</th>
+                <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("notProcessedAfter24")}>Pending &gt;24h{si("notProcessedAfter24")}</th>
                 <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("enterpriseCount")}>Enterprises{si("enterpriseCount")}</th>
                 <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("rooftopCount")}>Rooftops{si("rooftopCount")}</th>
                 <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("total")}>Inventory{si("total")}</th>
                 <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("withPhotos")}>With Photos{si("withPhotos")}</th>
                 <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("deliveredWithPhotos")}>Delivered{si("deliveredWithPhotos")}</th>
                 <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("pendingWithPhotos")}>Pending{si("pendingWithPhotos")}</th>
-                <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("notProcessedAfter24")}>Pending &gt;24h{si("notProcessedAfter24")}</th>
                 <th rowSpan={2} style={{ ...thBase, textAlign: "center" }}>Pending &gt;24h %</th>
                 <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("avgWebsiteScore")}>Avg Score{si("avgWebsiteScore")}</th>
                 {activeBuckets.length > 0 && (
@@ -1298,18 +1334,18 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
                         {filterKey === "csm" ? fmtCsm(r.label) : r.label}
                       </span>
                     </td>
-                    <td style={{ ...td, textAlign: "center" }}><ClickableNum value={r.enterpriseCount ?? 0} color="#6b7280" onClick={() => onRooftopDrillDown({ [filterKey]: r.label })} /></td>
-                    <td style={{ ...td, textAlign: "center" }}><ClickableNum value={r.rooftopCount} color="#6b7280" onClick={() => onRooftopDrillDown({ [filterKey]: r.label })} /></td>
-                    <td style={{ ...td, textAlign: "center" }}><ClickableNum value={r.total} color="#4f46e5" onClick={() => onDrillDown(base)} /></td>
-                    <td style={{ ...td, textAlign: "center" }}><ClickableNum value={r.withPhotos ?? 0} color="#0ea5e9" onClick={() => onDrillDown({ ...base, hasPhotos: true })} /></td>
-                    <td style={{ ...td, textAlign: "center" }}><ClickableNum value={r.deliveredWithPhotos ?? 0} color="#166534" onClick={() => onDrillDown({ ...base, status: "Delivered", hasPhotos: true })} /></td>
-                    <td style={{ ...td, textAlign: "center" }}><ClickableNum value={r.pendingWithPhotos ?? 0} color="#991b1b" onClick={() => onDrillDown({ ...base, status: "Not Delivered", hasPhotos: true })} /></td>
                     {/* Standalone: Pending >24h count */}
                     <td style={{ ...td, textAlign: "center" }}>
                       {r.notProcessedAfter24 > 0
                         ? <span onClick={() => onDrillDown({ ...base, status: "Not Delivered", after24h: true, hasPhotos: true })} style={{ cursor: "pointer" }}><Badge label={r.notProcessedAfter24} color="red" /></span>
                         : <span style={{ color: "#9ca3af" }}>0</span>}
                     </td>
+                    <td style={{ ...td, textAlign: "center" }}><ClickableNum value={r.enterpriseCount ?? 0} color="#6b7280" onClick={() => onRooftopDrillDown({ [filterKey]: r.label })} /></td>
+                    <td style={{ ...td, textAlign: "center" }}><ClickableNum value={r.rooftopCount} color="#6b7280" onClick={() => onRooftopDrillDown({ [filterKey]: r.label })} /></td>
+                    <td style={{ ...td, textAlign: "center" }}><ClickableNum value={r.total} color="#4f46e5" onClick={() => onDrillDown(base)} /></td>
+                    <td style={{ ...td, textAlign: "center" }}><ClickableNum value={r.withPhotos ?? 0} color="#0ea5e9" onClick={() => onDrillDown({ ...base, hasPhotos: true })} /></td>
+                    <td style={{ ...td, textAlign: "center" }}><ClickableNum value={r.deliveredWithPhotos ?? 0} color="#166534" onClick={() => onDrillDown({ ...base, status: "Delivered", hasPhotos: true })} /></td>
+                    <td style={{ ...td, textAlign: "center" }}><ClickableNum value={r.pendingWithPhotos ?? 0} color="#991b1b" onClick={() => onDrillDown({ ...base, status: "Not Delivered", hasPhotos: true })} /></td>
                     {/* Standalone: Pending >24h % */}
                     <td style={{ ...td, textAlign: "center", color: "#6b7280", fontSize: 12 }}>{rate.toFixed(0)}%</td>
                     {/* Avg Score */}
@@ -1355,18 +1391,18 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
               <tr>
                 <td style={{ ...totTd }} />
                 <td style={{ ...totTd }}>Total</td>
-                <td style={{ ...totTd, textAlign: "center", color: "#6b7280" }}>{(totRow.enterpriseCount ?? 0).toLocaleString()}</td>
-                <td style={{ ...totTd, textAlign: "center", color: "#6b7280" }}>{totRow.rooftopCount?.toLocaleString()}</td>
-                <td style={{ ...totTd, textAlign: "center" }}><ClickableNum value={totRow.total} color="#4f46e5" onClick={() => onDrillDown({})} /></td>
-                <td style={{ ...totTd, textAlign: "center" }}><ClickableNum value={totRow.withPhotos ?? 0} color="#0ea5e9" onClick={() => onDrillDown({ hasPhotos: true })} /></td>
-                <td style={{ ...totTd, textAlign: "center" }}><ClickableNum value={totRow.deliveredWithPhotos ?? 0} color="#166534" onClick={() => onDrillDown({ status: "Delivered", hasPhotos: true })} /></td>
-                <td style={{ ...totTd, textAlign: "center" }}><ClickableNum value={totRow.pendingWithPhotos ?? 0} color="#991b1b" onClick={() => onDrillDown({ status: "Not Delivered", hasPhotos: true })} /></td>
                 {/* Standalone: Pending >24h total count */}
                 <td style={{ ...totTd, textAlign: "center" }}>
                   {totRow.notProcessedAfter24 > 0
                     ? <span onClick={() => onDrillDown({ status: "Not Delivered", after24h: true, hasPhotos: true })} style={{ cursor: "pointer" }}><Badge label={totRow.notProcessedAfter24} color="red" /></span>
                     : <span style={{ color: "#9ca3af" }}>0</span>}
                 </td>
+                <td style={{ ...totTd, textAlign: "center", color: "#6b7280" }}>{(totRow.enterpriseCount ?? 0).toLocaleString()}</td>
+                <td style={{ ...totTd, textAlign: "center", color: "#6b7280" }}>{totRow.rooftopCount?.toLocaleString()}</td>
+                <td style={{ ...totTd, textAlign: "center" }}><ClickableNum value={totRow.total} color="#4f46e5" onClick={() => onDrillDown({})} /></td>
+                <td style={{ ...totTd, textAlign: "center" }}><ClickableNum value={totRow.withPhotos ?? 0} color="#0ea5e9" onClick={() => onDrillDown({ hasPhotos: true })} /></td>
+                <td style={{ ...totTd, textAlign: "center" }}><ClickableNum value={totRow.deliveredWithPhotos ?? 0} color="#166534" onClick={() => onDrillDown({ status: "Delivered", hasPhotos: true })} /></td>
+                <td style={{ ...totTd, textAlign: "center" }}><ClickableNum value={totRow.pendingWithPhotos ?? 0} color="#991b1b" onClick={() => onDrillDown({ status: "Not Delivered", hasPhotos: true })} /></td>
                 {/* Standalone: Pending >24h % */}
                 <td style={{ ...totTd, textAlign: "center", color: "#6b7280", fontSize: 12 }}>{totRate.toFixed(0)}%</td>
                 {/* Avg Score */}
@@ -1393,28 +1429,46 @@ function OverviewTab({ totals, byType, byCSM, byBucket = [], onDrillDown, onRoof
   const activeBuckets = byBucket;
   return (
     <div>
-      <div style={{ display: "flex", gap: 14, marginBottom: activeBuckets.length > 0 ? 10 : 28, flexWrap: "wrap" }}>
-        <StatCard label="Total Inventory" value={totals.total} color="#6366f1" onClick={() => onDrillDown({})} loading={loading} />
-        <StatCard label="With Photos" value={totals.withPhotos ?? 0} sub={totals.total > 0 ? `${(((totals.withPhotos ?? 0) / totals.total) * 100).toFixed(0)}% of total` : ""} color="#0ea5e9" onClick={() => onDrillDown({ hasPhotos: true })} loading={loading} />
-        <StatCard label="VIN Delivered" value={totals.deliveredWithPhotos ?? 0} sub={totals.withPhotos > 0 ? `${(((totals.deliveredWithPhotos ?? 0) / totals.withPhotos) * 100).toFixed(0)}% of with photos` : ""} color="#22c55e" onClick={() => onDrillDown({ status: "Delivered", hasPhotos: true })} loading={loading} />
-        <StatCard label="Pending VINs" value={totals.pendingWithPhotos ?? 0} sub={totals.withPhotos > 0 ? `${(((totals.pendingWithPhotos ?? 0) / totals.withPhotos) * 100).toFixed(0)}% of with photos` : ""} color="#ef4444" onClick={() => onDrillDown({ status: "Not Delivered", hasPhotos: true })} loading={loading} />
-        <StatCard label="Pending VINs >24h" value={totals.notProcessedAfter24} sub={totals.withPhotos > 0 ? `${((totals.notProcessedAfter24 / totals.withPhotos) * 100).toFixed(0)}% of with photos` : ""} color="#f59e0b" onClick={() => onDrillDown({ status: "Not Delivered", after24h: true, hasPhotos: true })} loading={loading} />
-      </div>
-      {activeBuckets.length > 0 && (
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 28, alignItems: "center", opacity: loading ? 0.45 : 1, transition: "opacity 0.2s" }}>
-          <span style={{ fontSize: 11, fontWeight: 600, color: "#9ca3af", textTransform: "uppercase" as const, letterSpacing: 0.5, marginRight: 2 }}>Pending &gt;24h by reason:</span>
-          {activeBuckets.map((b: { label: string; count: number }) => (
-            <span key={b.label} onClick={loading ? undefined : () => onDrillDown({ status: "Not Delivered", after24h: true, reasonBucket: b.label })}
-              style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "3px 10px", borderRadius: 999, fontSize: 12, fontWeight: 600, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", cursor: loading ? "default" : "pointer", transition: "all 0.15s" }}
-              onMouseEnter={e => { if (!loading) { e.currentTarget.style.background = "#fee2e2"; e.currentTarget.style.borderColor = "#fca5a5"; } }}
-              onMouseLeave={e => { if (!loading) { e.currentTarget.style.background = "#fef2f2"; e.currentTarget.style.borderColor = "#fecaca"; } }}>
-              {b.label} <span style={{ fontWeight: 700, color: "#ef4444" }}>{b.count.toLocaleString()}</span>
-            </span>
-          ))}
+      <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 28 }}>
+        {/* Row 1: Pending >24h card with pills directly below */}
+        <div style={{ display: "inline-flex", flexDirection: "column", gap: 8, background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 12, padding: "10px 16px" }}>
+          <div onClick={!loading ? () => onDrillDown({ status: "Not Delivered", after24h: true, hasPhotos: true }) : undefined}
+            style={{ display: "inline-flex", alignItems: "center", gap: 10, background: "#fff", borderRadius: 10, padding: "10px 16px", border: "1px solid #e5e7eb", boxShadow: "0 1px 3px rgba(0,0,0,0.08)", cursor: loading ? "default" : "pointer", transition: "all 0.15s" }}
+            onMouseEnter={e => { if (!loading) { e.currentTarget.style.boxShadow = "0 4px 12px rgba(0,0,0,0.12)"; e.currentTarget.style.transform = "translateY(-2px)"; } }}
+            onMouseLeave={e => { if (!loading) { e.currentTarget.style.boxShadow = "0 1px 3px rgba(0,0,0,0.08)"; e.currentTarget.style.transform = "translateY(0)"; } }}>
+            <div style={{ fontSize: 15, fontWeight: 600, color: "#374151" }}>Pending VINs &gt;24h</div>
+            {loading
+              ? <div className="shimmer-cell" style={{ height: 28, width: 50, borderRadius: 6 }} />
+              : <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                  <div style={{ fontSize: 28, fontWeight: 700, color: "#f59e0b", lineHeight: 1 }}>{totals.notProcessedAfter24.toLocaleString()}</div>
+                  <div style={{ fontSize: 14, color: "#f59e0b" }}>→</div>
+                </div>
+            }
+          </div>
+          {activeBuckets.length > 0 && (
+            <div style={{ display: "flex", gap: 5, flexWrap: "nowrap", alignItems: "center", opacity: loading ? 0.45 : 1, transition: "opacity 0.2s" }}>
+              <span style={{ fontSize: 11, fontWeight: 600, color: "#9ca3af", textTransform: "uppercase" as const, letterSpacing: 0.5, whiteSpace: "nowrap", marginRight: 2 }}>By reason:</span>
+              {activeBuckets.map((b: { label: string; count: number }) => (
+                <span key={b.label} onClick={loading ? undefined : () => onDrillDown({ status: "Not Delivered", after24h: true, reasonBucket: b.label })}
+                  style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 8px", borderRadius: 999, fontSize: 11, fontWeight: 600, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", cursor: loading ? "default" : "pointer", transition: "all 0.15s", whiteSpace: "nowrap" }}
+                  onMouseEnter={e => { if (!loading) { e.currentTarget.style.background = "#fee2e2"; e.currentTarget.style.borderColor = "#fca5a5"; } }}
+                  onMouseLeave={e => { if (!loading) { e.currentTarget.style.background = "#fef2f2"; e.currentTarget.style.borderColor = "#fecaca"; } }}>
+                  {b.label} <span style={{ fontWeight: 700, color: "#ef4444" }}>{b.count.toLocaleString()}</span>
+                </span>
+              ))}
+            </div>
+          )}
         </div>
-      )}
+        {/* Row 2: Remaining KPI cards */}
+        <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
+          <StatCard label="Total Inventory" value={totals.total} color="#6366f1" onClick={() => onDrillDown({})} loading={loading} />
+          <StatCard label="With Photos" value={totals.withPhotos ?? 0} sub={totals.total > 0 ? `${(((totals.withPhotos ?? 0) / totals.total) * 100).toFixed(0)}% of total` : ""} color="#0ea5e9" onClick={() => onDrillDown({ hasPhotos: true })} loading={loading} />
+          <StatCard label="VIN Delivered" value={totals.deliveredWithPhotos ?? 0} sub={totals.withPhotos > 0 ? `${(((totals.deliveredWithPhotos ?? 0) / totals.withPhotos) * 100).toFixed(0)}% of with photos` : ""} color="#22c55e" onClick={() => onDrillDown({ status: "Delivered", hasPhotos: true })} loading={loading} />
+          <StatCard label="Pending VINs" value={totals.pendingWithPhotos ?? 0} sub={totals.withPhotos > 0 ? `${(((totals.pendingWithPhotos ?? 0) / totals.withPhotos) * 100).toFixed(0)}% of with photos` : ""} color="#ef4444" onClick={() => onDrillDown({ status: "Not Delivered", hasPhotos: true })} loading={loading} />
+        </div>
+      </div>
       <SummaryTable title="By Rooftop Type" rows={byType} colorHeader="#6366f1" filterKey="rooftopType" onDrillDown={onDrillDown} onRooftopDrillDown={onRooftopDrillDown} loading={loading} defaultSortCol={null} />
-      <SummaryTable title="By CSM" rows={byCSM} colorHeader="#0ea5e9" filterKey="csm" onDrillDown={onDrillDown} onRooftopDrillDown={onRooftopDrillDown} loading={loading} defaultSortCol="rooftopCount" />
+      <SummaryTable title="By CSM" rows={byCSM} colorHeader="#0ea5e9" filterKey="csm" onDrillDown={onDrillDown} onRooftopDrillDown={onRooftopDrillDown} loading={loading} defaultSortCol="notProcessedAfter24" />
     </div>
   );
 }
@@ -1427,7 +1481,7 @@ function timeAgo(isoString: string): string {
   const d = Math.floor(diff / 86400); return `${d} day${d > 1 ? "s" : ""} ago`;
 }
 
-const DEFAULT_FILTERS = { search: "", enterpriseId: null, rooftop: null, rooftopId: null, rooftopType: null, csm: null, status: null, after24h: null, hasPhotos: null, reasonBucket: null };
+const DEFAULT_FILTERS = { search: "", enterpriseId: null, rooftopId: null, rooftopType: null, csm: null, status: null, after24h: null, hasPhotos: null, hasVin: null, reasonBucket: null };
 const DEFAULT_ROOFTOP_FILTERS = { search: "", rooftopType: null, csm: null, enterprise: null, websiteScore: null, imsIntegration: null, publishingStatus: null };
 const DEFAULT_ENTERPRISE_FILTERS = { search: "", csm: null, accountType: null, websiteScore: null };
 
@@ -1457,6 +1511,10 @@ export default function Dashboard() {
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [lastSync, setLastSync] = useState<string | null>(null);
   const [filterOptions, setFilterOptions] = useState<any>(null);
+
+  // Abort controller for in-flight /api/vins requests — cancels the previous
+  // request when a new one starts so stale responses never overwrite filtered data.
+  const rawAbortRef = useRef<AbortController | null>(null);
 
   // Raw paginated data — sourced from /api/vins, only used in VIN Data tab
   const [rawData, setRawData] = useState<any[]>([]);
@@ -1556,22 +1614,30 @@ export default function Dashboard() {
 
   // Fetch paginated raw VIN rows
   const loadRawPage = useCallback((page: number, filters: any, sortCol: string | null = null, sortDir: string = "asc", df: string = "post") => {
+    // Cancel any in-flight request so a slow earlier response never overwrites
+    // a faster later one (e.g. switching filters quickly).
+    if (rawAbortRef.current) rawAbortRef.current.abort();
+    rawAbortRef.current = new AbortController();
+
+    // Clear stale data immediately so the shimmer shows instead of old rows
+    // bleeding through the loading overlay while the new request is in-flight.
+    setRawData([]);
     setRawLoading(true);
     const params = new URLSearchParams({ page: String(page), pageSize: "50" });
     if (filters.search)       params.set("search",       filters.search);
     if (filters.enterpriseId) params.set("enterpriseId", filters.enterpriseId);
     if (filters.rooftopId)    params.set("rooftopId",    filters.rooftopId);
-    if (filters.rooftop)      params.set("rooftop",      filters.rooftop);
     if (filters.rooftopType)  params.set("rooftopType",  filters.rooftopType);
     if (filters.csm)          params.set("csm",          filters.csm);
     if (filters.status)       params.set("status",       filters.status);
     if (filters.after24h !== null) params.set("after24h", filters.after24h ? "true" : "false");
     if (filters.hasPhotos !== null && filters.hasPhotos !== undefined) params.set("hasPhotos", filters.hasPhotos ? "true" : "false");
+    if (filters.hasVin !== null && filters.hasVin !== undefined) params.set("hasVin", filters.hasVin ? "true" : "false");
     if (filters.reasonBucket)      params.set("reasonBucket", filters.reasonBucket);
     if (sortCol) { params.set("sortBy", sortCol); params.set("sortDir", sortDir); }
     params.set("dateFilter", df);
 
-    fetch(`${API_BASE}/api/vins?${params}`)
+    fetch(`${API_BASE}/api/vins?${params}`, { signal: rawAbortRef.current.signal })
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
       .then(({ data, total, pageCount }) => {
         setRawData(data);
@@ -1579,7 +1645,11 @@ export default function Dashboard() {
         setRawPageCount(pageCount);
         setRawLoading(false);
       })
-      .catch(err => { setFetchError(err.message); setRawLoading(false); });
+      .catch(err => {
+        if (err.name === "AbortError") return; // superseded by a newer request — ignore
+        setFetchError(err.message);
+        setRawLoading(false);
+      });
   }, []);
 
   // On mount: load DB. If empty, run a full sync (awaited — POST /api/sync blocks
@@ -1666,7 +1736,7 @@ export default function Dashboard() {
 
   // Derive filter dropdown options from /api/filter-options (lightweight distinct-value queries)
   const fo = filterOptions ?? {};
-  const rooftopOptions    = (fo.rooftopNames    ?? []) as string[];
+  const rooftopOptions    = (fo.rooftops        ?? []) as { id: string; name: string; enterprise_id: string }[];
   const typeOptions       = (fo.rooftopTypes    ?? []) as string[];
   const csmOptions        = useMemo(() => [...new Set((s.byCSM ?? []).map((r: any) => r.name))].sort() as string[], [s.byCSM]);
   const enterpriseObjects = (fo.enterprises     ?? []) as { id: string; name: string }[];
