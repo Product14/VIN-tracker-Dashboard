@@ -62,10 +62,10 @@ async function fetchFromMetabase(url, label, retries = 3, timeoutMs = 0) {
 
 async function syncVins() {
   console.log("[sync:VIN_DETAILS] fetching…");
-  // 1 retry (not 3) — Metabase VIN fetch can take ~60s, so 3 retries would consume
-  // ~240s of the 300s Vercel budget before the other syncs even get a chance.
-  // 65s timeout per attempt caps a hanging request just above Metabase's worst case.
-  const rows    = await fetchFromMetabase(VIN_DETAILS_URL, "VIN_DETAILS", 1, 65000);
+  // 1 retry (not 3) — Metabase VIN fetch can take 60-120s for 130K rows, so 3 retries
+  // would consume the entire 300s Vercel budget before DB writes even start.
+  // 180s timeout per attempt gives Metabase headroom while leaving ~120s for DB writes.
+  const rows    = await fetchFromMetabase(VIN_DETAILS_URL, "VIN_DETAILS", 1, 180000);
   const syncedAt = new Date().toISOString();
   // Deduplicate by dealerVinId (primary key). Skip rows with no dealerVinId.
   const deduped = Object.values(
@@ -102,42 +102,63 @@ async function syncVins() {
     syncedAts.push(syncedAt);
   }
 
-  const BATCH_SIZE = 10000;
-  const client = await getClient();
+  const BATCH_SIZE   = 25000;
+  const PARALLEL     = 3;      // concurrent inserts — stay within pool max (5)
+
+  // Step 1: Delete all existing rows in its own committed transaction.
+  // This must commit before parallel inserts begin so they don't conflict.
+  const deleteClient = await getClient();
   try {
-    await client.query("BEGIN");
-    // Disable statement timeout for this transaction — the bulk insert across
-    // many batches can otherwise hit Supabase's default per-statement limit.
-    await client.query("SET LOCAL statement_timeout = 0");
-    await client.query("DELETE FROM vins");
-    for (let i = 0; i < deduped.length; i += BATCH_SIZE) {
+    await deleteClient.query("BEGIN");
+    await deleteClient.query("SET LOCAL statement_timeout = 0");
+    await deleteClient.query("DELETE FROM vins");
+    await deleteClient.query("COMMIT");
+  } catch (e) {
+    await deleteClient.query("ROLLBACK");
+    throw e;
+  } finally {
+    deleteClient.release();
+  }
+
+  // Step 2: Build batch index list and run inserts PARALLEL at a time.
+  const INSERT_SQL = `
+    INSERT INTO vins
+      (dealer_vin_id, vin, enterprise_id, rooftop_id, status, after_24h, received_at, processed_at,
+       reason_bucket, hold_reason, has_photos, output_image_count, thumbnail_url, vehicle_price,
+       make, model, year, trim, stock_number, synced_at)
+    SELECT
+      UNNEST($1::text[]),    UNNEST($2::text[]),     UNNEST($3::text[]),     UNNEST($4::text[]),
+      UNNEST($5::text[]),    UNNEST($6::smallint[]), UNNEST($7::text[]),     UNNEST($8::text[]),
+      UNNEST($9::text[]),    UNNEST($10::text[]),    UNNEST($11::smallint[]),UNNEST($12::int[]),
+      UNNEST($13::text[]),   UNNEST($14::real[]),
+      UNNEST($15::text[]),   UNNEST($16::text[]),   UNNEST($17::text[]),    UNNEST($18::text[]),
+      UNNEST($19::text[]),   UNNEST($20::text[])
+  `;
+
+  const batchStarts = [];
+  for (let i = 0; i < deduped.length; i += BATCH_SIZE) batchStarts.push(i);
+
+  for (let g = 0; g < batchStarts.length; g += PARALLEL) {
+    const group = batchStarts.slice(g, g + PARALLEL);
+    await Promise.all(group.map(async (i) => {
+      const batchNum = Math.floor(i / BATCH_SIZE) + 1;
       const slice = (arr) => arr.slice(i, i + BATCH_SIZE);
-      await client.query(`
-        INSERT INTO vins
-          (dealer_vin_id, vin, enterprise_id, rooftop_id, status, after_24h, received_at, processed_at,
-           reason_bucket, hold_reason, has_photos, output_image_count, thumbnail_url, vehicle_price,
-           make, model, year, trim, stock_number, synced_at)
-        SELECT
-          UNNEST($1::text[]),    UNNEST($2::text[]),     UNNEST($3::text[]),     UNNEST($4::text[]),
-          UNNEST($5::text[]),    UNNEST($6::smallint[]), UNNEST($7::text[]),     UNNEST($8::text[]),
-          UNNEST($9::text[]),    UNNEST($10::text[]),    UNNEST($11::smallint[]),UNNEST($12::int[]),
-          UNNEST($13::text[]),   UNNEST($14::real[]),
-          UNNEST($15::text[]),   UNNEST($16::text[]),   UNNEST($17::text[]),    UNNEST($18::text[]),
-          UNNEST($19::text[]),   UNNEST($20::text[])
-      `, [slice(dealerVinIds), slice(vins), slice(enterpriseIds), slice(rooftopIds),
+      const client = await getClient();
+      try {
+        await client.query("SET statement_timeout = 0");
+        await client.query(INSERT_SQL, [
+          slice(dealerVinIds), slice(vins), slice(enterpriseIds), slice(rooftopIds),
           slice(statuses), slice(after24hs), slice(receivedAts), slice(processedAts),
           slice(reasonBuckets), slice(holdReasons), slice(hasPhotosArr), slice(outputImageCounts),
           slice(thumbnailUrls), slice(vehiclePrices),
           slice(makes), slice(models), slice(years), slice(trims),
-          slice(stockNumbers), slice(syncedAts)]);
-      console.log(`[sync:VIN_DETAILS] inserted batch ${Math.floor(i / BATCH_SIZE) + 1} (rows ${i + 1}–${Math.min(i + BATCH_SIZE, deduped.length)})`);
-    }
-    await client.query("COMMIT");
-  } catch (e) {
-    await client.query("ROLLBACK");
-    throw e;
-  } finally {
-    client.release();
+          slice(stockNumbers), slice(syncedAts),
+        ]);
+        console.log(`[sync:VIN_DETAILS] batch ${batchNum} done (rows ${i + 1}–${Math.min(i + BATCH_SIZE, deduped.length)})`);
+      } finally {
+        client.release();
+      }
+    }));
   }
 
   console.log(`[sync:VIN_DETAILS] done — ${deduped.length} rows`);
@@ -1540,7 +1561,9 @@ app.get("/api/send-daily-report", async (req, res) => {
     return res.status(400).json({ error: "Test mode requires rooftopId (reportType=Rooftop) or enterpriseId (reportType=Group)" });
   }
 
-  console.log(`[daily-report] starting${testMode ? ` (test mode → ${testTo.join(",")})` : ""}`);
+  const runId  = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const runAt  = new Date().toISOString();
+  console.log(`[daily-report] starting run ${runId}${testMode ? ` (test mode → ${testTo.join(",")})` : ""}`);
 
   // ── Load recipients ────────────────────────────────────────────────────────
   let recipients;
@@ -1586,7 +1609,7 @@ app.get("/api/send-daily-report", async (req, res) => {
 
   async function hasStalePendingVins(field, id, tz, yesterdayStr) {
     // Pending = has photos, received on or before yesterday, not yet delivered.
-    // Skip if any such VINs exist (count > 1).
+    // Skip if count > 1.
     const { rows: [r] } = await query(
       `SELECT COUNT(*) AS pending_count
        FROM vins
@@ -1597,6 +1620,48 @@ app.get("/api/send-daily-report", async (req, res) => {
       [id, tz, yesterdayStr]
     );
     return Number(r.pending_count) > 1;
+  }
+
+  async function hasNegativeTat(field, id, tz, yesterdayStr) {
+    // Check only the 5 VINs actually shown in the report's TAT table:
+    // top 5 delivered VINs with photos received yesterday, ordered by received_at DESC.
+    // Skip if any of those have processed_at < received_at.
+    const { rows: [r] } = await query(
+      `SELECT COUNT(*) AS negative_count
+       FROM (
+         SELECT processed_at, received_at
+         FROM vins
+         WHERE ${field} = $1
+           AND status = 'Delivered'
+           AND COALESCE(has_photos, 0) = 1
+           AND DATE(received_at::timestamptz AT TIME ZONE $2) = $3::date
+         ORDER BY received_at DESC
+         LIMIT 5
+       ) sub
+       WHERE processed_at IS NOT NULL
+         AND received_at IS NOT NULL
+         AND processed_at::timestamptz < received_at::timestamptz`,
+      [id, tz, yesterdayStr]
+    );
+    return Number(r.negative_count) > 0;
+  }
+
+  async function hasLowPhotoCoverage(field, id, tz, yesterdayStr) {
+    // Skip if fewer than 75% of active inventory VINs have photos.
+    // Active = received on or before yesterday (same definition as report totals).
+    const { rows: [r] } = await query(
+      `SELECT
+         COUNT(*) AS total_active,
+         COUNT(*) FILTER (WHERE COALESCE(has_photos, 0) = 1) AS with_photos
+       FROM vins
+       WHERE ${field} = $1
+         AND (received_at IS NULL OR DATE(received_at::timestamptz AT TIME ZONE $2) <= $3::date)`,
+      [id, tz, yesterdayStr]
+    );
+    const total = Number(r.total_active) || 0;
+    if (total === 0) return false; // no VINs → don't skip on data absence
+    const pct = Number(r.with_photos) / total * 100;
+    return pct < 75;
   }
 
   // ── Process each recipient ─────────────────────────────────────────────────
@@ -1634,6 +1699,20 @@ app.get("/api/send-daily-report", async (req, res) => {
         if (await hasStalePendingVins("rooftop_id", rooftop_id, tz, yesterdayStr)) {
           results.skipped.push({ type: "rooftop", id: rooftop_id, name: rt.team_name, reason: "pending_vins" });
           console.log(`[daily-report] rooftop ${rooftop_id} skipped — pending VINs > 1`);
+          continue;
+        }
+
+        // ── Negative TAT gate ─────────────────────────────────────────────────
+        if (await hasNegativeTat("rooftop_id", rooftop_id, tz, yesterdayStr)) {
+          results.skipped.push({ type: "rooftop", id: rooftop_id, name: rt.team_name, reason: "negative_tat" });
+          console.log(`[daily-report] rooftop ${rooftop_id} skipped — negative TAT detected`);
+          continue;
+        }
+
+        // ── Low photo coverage gate (<75%) ────────────────────────────────────
+        if (await hasLowPhotoCoverage("rooftop_id", rooftop_id, tz, yesterdayStr)) {
+          results.skipped.push({ type: "rooftop", id: rooftop_id, name: rt.team_name, reason: "low_photo_coverage" });
+          console.log(`[daily-report] rooftop ${rooftop_id} skipped — photo coverage < 75%`);
           continue;
         }
 
@@ -1678,6 +1757,20 @@ app.get("/api/send-daily-report", async (req, res) => {
           continue;
         }
 
+        // ── Negative TAT gate ─────────────────────────────────────────────────
+        if (await hasNegativeTat("enterprise_id", enterprise_id, tz, yesterdayStr)) {
+          results.skipped.push({ type: "group", id: enterprise_id, name: ent.name, reason: "negative_tat" });
+          console.log(`[daily-report] enterprise ${enterprise_id} skipped — negative TAT detected`);
+          continue;
+        }
+
+        // ── Low photo coverage gate (<75%) ────────────────────────────────────
+        if (await hasLowPhotoCoverage("enterprise_id", enterprise_id, tz, yesterdayStr)) {
+          results.skipped.push({ type: "group", id: enterprise_id, name: ent.name, reason: "low_photo_coverage" });
+          console.log(`[daily-report] enterprise ${enterprise_id} skipped — photo coverage < 75%`);
+          continue;
+        }
+
         // ── Send ──────────────────────────────────────────────────────────────
         const data = await computeGroupDailyReport(enterprise_id, yesterdayStr, tz);
         const html = buildGroupReportHtml(data, dateLabel);
@@ -1694,12 +1787,82 @@ app.get("/api/send-daily-report", async (req, res) => {
     } catch (e) {
       const id = rooftop_id || enterprise_id;
       results.errors.push({ type: report_type?.toLowerCase() || "unknown", id, error: e?.message });
-      console.error(`[daily-report] failed for ${id}:`, e?.message);
+      console.error(`[daily-report] ERROR — type=${report_type} id=${id} email=${email} run_id=${runId}:`, e?.message);
+      console.error(e);
     }
   }
 
   console.log(`[daily-report] done — ${results.groups.length} group, ${results.rooftops.length} rooftop, ${results.skipped.length} skipped, ${results.errors.length} errors`);
-  return res.json({ ok: true, testMode, ...results });
+
+  // ── Write audit log ───────────────────────────────────────────────────────
+  const logRows = [
+    ...results.rooftops.map(r => ({ type: "Rooftop", id: r.rooftopId,     name: r.name,  email: recipients.find(rec => rec.rooftop_id   === r.rooftopId)?.email,    status: "sent",    reason: null })),
+    ...results.groups  .map(r => ({ type: "Group",   id: r.enterpriseId,  name: r.name,  email: recipients.find(rec => rec.enterprise_id === r.enterpriseId)?.email, status: "sent",    reason: null })),
+    ...results.skipped .map(r => ({ type: r.type,    id: r.id,            name: r.name,  email: recipients.find(rec => (rec.rooftop_id || rec.enterprise_id) === r.id)?.email, status: "skipped", reason: r.reason })),
+    ...results.errors  .map(r => ({ type: r.type,    id: r.id,            name: null,    email: recipients.find(rec => (rec.rooftop_id || rec.enterprise_id) === r.id)?.email, status: "error", reason: r.error })),
+  ];
+  try {
+    for (const row of logRows) {
+      await query(
+        `INSERT INTO report_run_logs (run_id, run_at, test_mode, report_type, entity_id, name, email, status, reason)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        [runId, runAt, testMode, row.type, row.id, row.name, row.email, row.status, row.reason]
+      );
+    }
+    console.log(`[daily-report] logged ${logRows.length} rows with run_id ${runId}`);
+  } catch (e) {
+    console.error("[daily-report] failed to write audit log:", e?.message);
+  }
+
+  return res.json({ ok: true, testMode, runId, ...results });
+});
+
+// ─── Daily Report Audit Log Download ─────────────────────────────────────────
+// GET /api/send-daily-report/logs.csv
+// Optional query params:
+//   ?runId=<id>   — filter to a single run
+//   ?limit=<n>    — max rows to return (default 1000)
+
+app.get("/api/send-daily-report/logs.csv", async (req, res) => {
+  const cronSecret = process.env.CRON_SECRET;
+  if (cronSecret && req.headers.authorization !== `Bearer ${cronSecret}`) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  const limit  = Math.min(Number(req.query.limit) || 1000, 10000);
+  const runId  = req.query.runId ? String(req.query.runId) : null;
+
+  let rows;
+  try {
+    const { rows: r } = await query(
+      `SELECT run_id, run_at, test_mode, report_type, entity_id, name, email, status, reason
+       FROM report_run_logs
+       ${runId ? "WHERE run_id = $1" : ""}
+       ORDER BY run_at DESC, id ASC
+       LIMIT ${runId ? "$2" : "$1"}`,
+      runId ? [runId, limit] : [limit]
+    );
+    rows = r;
+  } catch (e) {
+    return res.status(500).json({ error: "DB error fetching logs" });
+  }
+
+  const escape = (v) => {
+    if (v == null) return "";
+    const s = String(v);
+    return s.includes(",") || s.includes('"') || s.includes("\n") ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+
+  const headers = ["run_id", "run_at", "test_mode", "report_type", "entity_id", "name", "email", "status", "reason"];
+  const csv = [
+    headers.join(","),
+    ...rows.map(r => headers.map(h => escape(r[h])).join(",")),
+  ].join("\n");
+
+  const filename = runId ? `report-log-${runId}.csv` : `report-logs.csv`;
+  res.setHeader("Content-Type", "text/csv");
+  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+  return res.send(csv);
 });
 
 // ─── Email Preview (browser, real DB data, no emails sent) ───────────────────
@@ -1723,10 +1886,6 @@ app.get("/api/preview-daily-report", async (req, res) => {
   } else {
     targetDate = yesterdayFor("America/New_York").yesterdayStr;
   }
-  const dateLabel = new Date(targetDate + "T00:00:00Z").toLocaleDateString("en-GB", {
-    day: "numeric", month: "short", year: "numeric", timeZone: "UTC",
-  });
-
   try {
     // ── No rooftopId → index page listing all rooftops ──────────────────────
     if (!req.query.rooftopId) {

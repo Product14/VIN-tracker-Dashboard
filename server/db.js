@@ -3,13 +3,12 @@ const { Pool } = pg;
 
 // For Vercel serverless: keep pool small to avoid exhausting Supabase connections.
 // Use the Supabase transaction-mode pooler URL (port 6543) in DATABASE_URL.
-// max 1: every Lambda instance holds at most 1 connection at a time.
-// All queries (summary + sync) run sequentially, so 1 is sufficient.
-// idleTimeoutMillis 1000: release connections quickly between Lambda invocations.
+// max 5: allows up to 3 parallel batch inserts during sync + headroom for other queries.
+// idleTimeoutMillis: release connections quickly between Lambda invocations.
 const pool = new Pool({
   connectionString: process.env.VIN_TRACKER_DATABASE_URL,
   ssl: { rejectUnauthorized: false },
-  max: 1,
+  max: 5,
   idleTimeoutMillis: 10000,
   connectionTimeoutMillis: 10000,
 });
@@ -131,6 +130,22 @@ export async function initSchema() {
       payload      JSONB NOT NULL,
       computed_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+
+    -- Audit log for every /api/send-daily-report run — one row per recipient.
+    CREATE TABLE IF NOT EXISTS report_run_logs (
+      id          SERIAL PRIMARY KEY,
+      run_id      TEXT        NOT NULL,
+      run_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      test_mode   BOOLEAN     NOT NULL DEFAULT FALSE,
+      report_type TEXT,
+      entity_id   TEXT,
+      name        TEXT,
+      email       TEXT,
+      status      TEXT        NOT NULL,
+      reason      TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_report_run_logs_run_id ON report_run_logs(run_id);
+    CREATE INDEX IF NOT EXISTS idx_report_run_logs_run_at ON report_run_logs(run_at DESC);
   `);
 
   // Materialized views — dropped and recreated on every cold start so schema changes
