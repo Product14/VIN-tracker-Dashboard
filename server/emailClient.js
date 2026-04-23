@@ -68,8 +68,9 @@ export async function sendReport(html, timeLabel) {
     throw new Error(`Email API responded HTTP ${res.status}: ${body}`);
   }
 
-  console.log("[email] sent successfully");
-  return res.json().catch(() => ({}));
+  const responseBody = await res.json().catch(() => ({}));
+  console.log("[email] sent successfully — api response:", JSON.stringify(responseBody));
+  return responseBody;
 }
 
 /**
@@ -113,6 +114,7 @@ export async function sendDailyReport(html, { to, cc, subject }) {
     throw new Error(`Email API responded HTTP ${res.status}: ${body}`);
   }
 
-  console.log("[email:daily] sent successfully");
-  return res.json().catch(() => ({}));
+  const responseBody = await res.json().catch(() => ({}));
+  console.log("[email:daily] sent successfully — api response:", JSON.stringify(responseBody));
+  return responseBody;
 }
