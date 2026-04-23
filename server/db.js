@@ -23,8 +23,8 @@ export const getClient = ()             => pool.connect();
 export async function initSchema() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS vins (
-      vin                  TEXT PRIMARY KEY,
-      dealer_vin_id        TEXT,
+      dealer_vin_id        TEXT PRIMARY KEY,
+      vin                  TEXT,
       enterprise_id        TEXT,
       rooftop_id           TEXT,
       status               TEXT,
@@ -67,21 +67,27 @@ export async function initSchema() {
       website_listing_url    TEXT,
       ims_integration_status TEXT,
       publishing_status      TEXT,
-      recipient_email        TEXT,
       synced_at              TEXT
     );
-    ALTER TABLE rooftop_details ADD COLUMN IF NOT EXISTS recipient_email TEXT;
 
     CREATE TABLE IF NOT EXISTS enterprise_details (
-      enterprise_id         TEXT PRIMARY KEY,
-      name                  TEXT,
-      type                  TEXT,
-      website_url           TEXT,
-      poc_email             TEXT,
-      group_recipient_email TEXT,
-      synced_at             TEXT
+      enterprise_id TEXT PRIMARY KEY,
+      name          TEXT,
+      type          TEXT,
+      website_url   TEXT,
+      poc_email     TEXT,
+      synced_at     TEXT
     );
-    ALTER TABLE enterprise_details ADD COLUMN IF NOT EXISTS group_recipient_email TEXT;
+    ALTER TABLE enterprise_details ADD COLUMN IF NOT EXISTS timezone TEXT;
+
+    -- Recipient config uploaded via CSV — maps email addresses to rooftop/enterprise IDs.
+    CREATE TABLE IF NOT EXISTS email_recipients (
+      id            SERIAL PRIMARY KEY,
+      email         TEXT NOT NULL,
+      rooftop_id    TEXT,
+      enterprise_id TEXT,
+      report_type   TEXT NOT NULL   -- 'Rooftop' | 'Group'
+    );
 
     -- Single-row table used as a distributed sync lock (survives Lambda restarts).
     CREATE TABLE IF NOT EXISTS sync_state (

@@ -62,9 +62,12 @@ async function syncVins() {
   // 65s timeout per attempt caps a hanging request just above Metabase's worst case.
   const rows    = await fetchFromMetabase(VIN_DETAILS_URL, "VIN_DETAILS", 1, 65000);
   const syncedAt = new Date().toISOString();
-  const deduped = Object.values(
+  const all = Object.values(
     rows.reduce((acc, row) => { acc[row.vinName ?? ""] = row; return acc; }, {})
   );
+  const skippedNull = all.filter(r => !r["m.dealerVinId"]).length;
+  if (skippedNull > 0) console.warn(`[sync:VIN_DETAILS] skipping ${skippedNull} rows with null dealer_vin_id`);
+  const deduped = all.filter(r => r["m.dealerVinId"]);
   if (deduped.length > 0) console.log("[sync:VIN_DETAILS] sample row keys:", Object.keys(deduped[0]), "| has_photos sample:", deduped[0].has_photos, "| output_image_count sample:", deduped[0].output_image_count);
 
   const vins = [], dealerVinIds = [], enterpriseIds = [], rooftopIds = [];
@@ -96,11 +99,16 @@ async function syncVins() {
     syncedAts.push(syncedAt);
   }
 
+  const BATCH_SIZE = 10000;
   const client = await getClient();
   try {
     await client.query("BEGIN");
+    // Disable statement timeout for this transaction — the bulk insert across
+    // many batches can otherwise hit Supabase's default per-statement limit.
+    await client.query("SET LOCAL statement_timeout = 0");
     await client.query("DELETE FROM vins");
-    if (deduped.length > 0) {
+    for (let i = 0; i < deduped.length; i += BATCH_SIZE) {
+      const slice = (arr) => arr.slice(i, i + BATCH_SIZE);
       await client.query(`
         INSERT INTO vins
           (vin, dealer_vin_id, enterprise_id, rooftop_id, status, after_24h, received_at, processed_at,
@@ -113,9 +121,13 @@ async function syncVins() {
           UNNEST($13::text[]),   UNNEST($14::real[]),
           UNNEST($15::text[]),   UNNEST($16::text[]),   UNNEST($17::text[]),    UNNEST($18::text[]),
           UNNEST($19::text[]),   UNNEST($20::text[])
-      `, [vins, dealerVinIds, enterpriseIds, rooftopIds, statuses, after24hs, receivedAts, processedAts,
-          reasonBuckets, holdReasons, hasPhotosArr, outputImageCounts, thumbnailUrls, vehiclePrices,
-          makes, models, years, trims, stockNumbers, syncedAts]);
+      `, [slice(vins), slice(dealerVinIds), slice(enterpriseIds), slice(rooftopIds),
+          slice(statuses), slice(after24hs), slice(receivedAts), slice(processedAts),
+          slice(reasonBuckets), slice(holdReasons), slice(hasPhotosArr), slice(outputImageCounts),
+          slice(thumbnailUrls), slice(vehiclePrices),
+          slice(makes), slice(models), slice(years), slice(trims),
+          slice(stockNumbers), slice(syncedAts)]);
+      console.log(`[sync:VIN_DETAILS] inserted batch ${Math.floor(i / BATCH_SIZE) + 1} (rows ${i + 1}–${Math.min(i + BATCH_SIZE, deduped.length)})`);
     }
     await client.query("COMMIT");
   } catch (e) {
@@ -1398,6 +1410,84 @@ function yesterdayFor(tz = "America/New_York") {
   return { yesterdayStr, dateLabel };
 }
 
+// ─── Email Recipients Upload ──────────────────────────────────────────────────
+// POST /api/email-recipients/upload
+// Body: text/csv with header row: email,rooftop_id,enterprise_id,report_type
+// Replaces all rows in email_recipients with the uploaded CSV content.
+
+app.post(
+  "/api/email-recipients/upload",
+  express.text({ type: "text/csv" }),
+  async (req, res) => {
+    const cronSecret = process.env.CRON_SECRET;
+    if (cronSecret && req.headers.authorization !== `Bearer ${cronSecret}`) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const body = req.body;
+    if (!body || typeof body !== "string") {
+      return res.status(400).json({ error: "Expected text/csv body" });
+    }
+
+    const lines = body.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    if (lines.length < 2) {
+      return res.status(400).json({ error: "CSV must have a header row and at least one data row" });
+    }
+
+    // Parse header to find column indices (case-insensitive)
+    const headers = lines[0].split(",").map(h => h.trim().toLowerCase());
+    const col = (name) => headers.indexOf(name);
+    const iEmail = col("email");
+    const iRooftopId = col("rooftop_id");
+    const iEnterpriseId = col("enterprise_id");
+    const iReportType = col("report_type");
+
+    if ([iEmail, iReportType].some(i => i === -1)) {
+      return res.status(400).json({ error: "CSV must have columns: email, report_type (and rooftop_id / enterprise_id)" });
+    }
+
+    const valid = [];
+    const invalid = [];
+
+    for (let i = 1; i < lines.length; i++) {
+      const cells = lines[i].split(",").map(c => c.trim());
+      const email       = iEmail       >= 0 ? (cells[iEmail]       ?? "") : "";
+      const rooftopId   = iRooftopId   >= 0 ? (cells[iRooftopId]   ?? "") : "";
+      const enterpriseId = iEnterpriseId >= 0 ? (cells[iEnterpriseId] ?? "") : "";
+      const reportType  = iReportType  >= 0 ? (cells[iReportType]  ?? "") : "";
+
+      const reason =
+        !email                                         ? "missing email" :
+        (reportType !== "Rooftop" && reportType !== "Group") ? "report_type must be Rooftop or Group" :
+        (reportType === "Rooftop" && !rooftopId)       ? "Rooftop report requires rooftop_id" :
+        (reportType === "Group"   && !enterpriseId)    ? "Group report requires enterprise_id" :
+        null;
+
+      if (reason) {
+        invalid.push({ row: i + 1, data: lines[i], reason });
+      } else {
+        valid.push({ email, rooftop_id: rooftopId || null, enterprise_id: enterpriseId || null, report_type: reportType });
+      }
+    }
+
+    try {
+      await query("DELETE FROM email_recipients");
+      for (const r of valid) {
+        await query(
+          "INSERT INTO email_recipients (email, rooftop_id, enterprise_id, report_type) VALUES ($1, $2, $3, $4)",
+          [r.email, r.rooftop_id, r.enterprise_id, r.report_type]
+        );
+      }
+    } catch (e) {
+      console.error("[email-recipients] DB error:", e?.message);
+      return res.status(500).json({ error: "DB error saving recipients" });
+    }
+
+    console.log(`[email-recipients] uploaded ${valid.length} recipients, ${invalid.length} invalid rows`);
+    return res.json({ ok: true, inserted: valid.length, invalid });
+  }
+);
+
 // ─── Daily Report Endpoint ────────────────────────────────────────────────────
 
 app.get("/api/send-daily-report", async (req, res) => {
@@ -1408,115 +1498,176 @@ app.get("/api/send-daily-report", async (req, res) => {
   }
 
   // ── Test-mode override ─────────────────────────────────────────────────────
-  // ?to=a@b.com&cc=c@d.com&rooftopId=123  — send a single report for the
-  // specified rooftop or enterprise to the given addresses.
-  // rooftopId and/or enterpriseId are required when to is present.
-  const testTo  = req.query.to ? String(req.query.to).split(",").map(s => s.trim()).filter(Boolean) : null;
-  const testCc  = req.query.cc ? String(req.query.cc).split(",").map(s => s.trim()).filter(Boolean) : null;
+  // ?to=a@b.com&cc=c@d.com&rooftopId=123&reportType=Rooftop
+  // ?to=a@b.com&cc=c@d.com&enterpriseId=456&reportType=Group
+  // Bypasses the email_recipients table but still applies IMS + pending gates.
+  const testTo   = req.query.to ? String(req.query.to).split(",").map(s => s.trim()).filter(Boolean) : null;
+  const testCc   = req.query.cc ? String(req.query.cc).split(",").map(s => s.trim()).filter(Boolean) : null;
   const testMode = testTo !== null;
 
   if (testMode && !req.query.rooftopId && !req.query.enterpriseId) {
-    return res.status(400).json({ error: "Test mode requires rooftopId and/or enterpriseId — pass at least one so only that report is sent." });
+    return res.status(400).json({ error: "Test mode requires rooftopId (reportType=Rooftop) or enterpriseId (reportType=Group)" });
   }
 
   console.log(`[daily-report] starting${testMode ? ` (test mode → ${testTo.join(",")})` : ""}`);
 
-  const results = { groups: [], rooftops: [], errors: [] };
-
-  // ── Group Reports ─────────────────────────────────────────────────────────
-  let enterprises;
+  // ── Load recipients ────────────────────────────────────────────────────────
+  let recipients;
   try {
-    if (testMode && req.query.enterpriseId) {
-      const { rows } = await query(
-        `SELECT enterprise_id, name, group_recipient_email,
-                COALESCE(timezone, 'America/New_York') AS timezone
-         FROM enterprise_details WHERE enterprise_id = $1`,
-        [String(req.query.enterpriseId)]
-      );
-      enterprises = rows;
-    } else if (!testMode) {
-      const { rows } = await query(`
-        SELECT enterprise_id, name, group_recipient_email,
-               COALESCE(timezone, 'America/New_York') AS timezone
-        FROM enterprise_details
-        WHERE group_recipient_email IS NOT NULL AND group_recipient_email != ''
-      `);
-      enterprises = rows;
+    if (testMode) {
+      // Build synthetic recipient(s) from query params
+      recipients = [];
+      if (req.query.rooftopId) {
+        recipients.push({ email: testTo, rooftop_id: String(req.query.rooftopId), enterprise_id: null, report_type: "Rooftop" });
+      }
+      if (req.query.enterpriseId) {
+        recipients.push({ email: testTo, rooftop_id: null, enterprise_id: String(req.query.enterpriseId), report_type: "Group" });
+      }
     } else {
-      enterprises = [];
+      const { rows } = await query("SELECT email, rooftop_id, enterprise_id, report_type FROM email_recipients");
+      recipients = rows;
     }
   } catch (e) {
-    console.error("[daily-report] failed to fetch enterprise recipients:", e?.message);
-    return res.status(500).json({ error: "DB error fetching enterprise recipients" });
+    console.error("[daily-report] failed to load recipients:", e?.message);
+    return res.status(500).json({ error: "DB error loading recipients" });
   }
 
-  for (const ent of enterprises) {
+  const results = { groups: [], rooftops: [], skipped: [], errors: [] };
+
+  // ── Gate helpers ───────────────────────────────────────────────────────────
+  async function imsOffForRooftop(rooftopId) {
+    const { rows: [rt] } = await query(
+      "SELECT ims_integration_status FROM rooftop_details WHERE team_id = $1",
+      [rooftopId]
+    );
+    return !rt || rt.ims_integration_status !== "true";
+  }
+
+  async function imsOffForEnterprise(enterpriseId) {
+    const { rows: [r] } = await query(
+      `SELECT COUNT(*) AS not_integrated
+       FROM rooftop_details
+       WHERE enterprise_id = $1 AND ims_integration_status != 'true'`,
+      [enterpriseId]
+    );
+    return Number(r.not_integrated) > 0;
+  }
+
+  async function hasStalePendingVins(field, id, tz, yesterdayStr) {
+    // Pending = has photos, received on or before yesterday, not yet delivered.
+    // Skip if any such VINs exist (count > 1).
+    const { rows: [r] } = await query(
+      `SELECT COUNT(*) AS pending_count
+       FROM vins
+       WHERE ${field} = $1
+         AND COALESCE(has_photos, 0) = 1
+         AND DATE(received_at::timestamptz AT TIME ZONE $2) <= $3::date
+         AND status != 'Delivered'`,
+      [id, tz, yesterdayStr]
+    );
+    return Number(r.pending_count) > 1;
+  }
+
+  // ── Process each recipient ─────────────────────────────────────────────────
+  for (const recipient of recipients) {
+    const { email, rooftop_id, enterprise_id, report_type } = recipient;
+
     try {
-      const tz = ent.timezone || "America/New_York";
-      const { yesterdayStr, dateLabel } = yesterdayFor(tz);
-      const data = await computeGroupDailyReport(ent.enterprise_id, yesterdayStr, tz);
-      const html = buildGroupReportHtml(data, dateLabel);
-      const sendOpts = testMode
-        ? { to: testTo, ...(testCc && { cc: testCc }), subject: `[TEST] Studio AI Group Report — ${ent.name || ent.enterprise_id} — ${dateLabel}` }
-        : { to: ent.group_recipient_email, subject: `Studio AI Group Report — ${ent.name || ent.enterprise_id} — ${dateLabel}` };
-      await sendDailyReport(html, sendOpts);
-      results.groups.push({ enterpriseId: ent.enterprise_id, name: ent.name, status: "sent" });
-      console.log(`[daily-report] group report sent → ${sendOpts.to} (${ent.name})`);
+      if (report_type === "Rooftop") {
+        // ── Fetch rooftop + enterprise info ──────────────────────────────────
+        const { rows: [rt] } = await query(
+          `SELECT rd.team_id, rd.team_name, rd.enterprise_id,
+                  COALESCE(ed.timezone, 'America/New_York') AS timezone,
+                  ed.poc_email
+           FROM rooftop_details rd
+           LEFT JOIN enterprise_details ed ON rd.enterprise_id = ed.enterprise_id
+           WHERE rd.team_id = $1`,
+          [rooftop_id]
+        );
+        if (!rt) {
+          results.errors.push({ type: "rooftop", id: rooftop_id, error: "Rooftop not found" });
+          continue;
+        }
+
+        const tz = rt.timezone || "America/New_York";
+        const { yesterdayStr, dateLabel } = yesterdayFor(tz);
+
+        // ── IMS gate ─────────────────────────────────────────────────────────
+        if (await imsOffForRooftop(rooftop_id)) {
+          results.skipped.push({ type: "rooftop", id: rooftop_id, name: rt.team_name, reason: "ims_off" });
+          console.log(`[daily-report] rooftop ${rooftop_id} skipped — IMS not active`);
+          continue;
+        }
+
+        // ── Pending VINs gate ─────────────────────────────────────────────────
+        if (await hasStalePendingVins("rooftop_id", rooftop_id, tz, yesterdayStr)) {
+          results.skipped.push({ type: "rooftop", id: rooftop_id, name: rt.team_name, reason: "pending_vins" });
+          console.log(`[daily-report] rooftop ${rooftop_id} skipped — pending VINs > 1`);
+          continue;
+        }
+
+        // ── Send ──────────────────────────────────────────────────────────────
+        const data = await computeRooftopDailyReport(rooftop_id, yesterdayStr, tz);
+        const html = buildRooftopReportHtml(data, dateLabel, tz);
+        const to   = testMode ? testTo : email;
+        const cc   = testMode ? testCc  : (rt.poc_email || undefined);
+        const subject = `${testMode ? "[TEST] " : ""}Studio AI Daily Report — ${rt.team_name || rooftop_id} — ${dateLabel}`;
+        await sendDailyReport(html, { to, ...(cc && { cc }), subject });
+        results.rooftops.push({ rooftopId: rooftop_id, name: rt.team_name, status: "sent" });
+        console.log(`[daily-report] rooftop report sent → ${to} (${rt.team_name})`);
+
+      } else if (report_type === "Group") {
+        // ── Fetch enterprise info ─────────────────────────────────────────────
+        const { rows: [ent] } = await query(
+          `SELECT enterprise_id, name,
+                  COALESCE(timezone, 'America/New_York') AS timezone,
+                  poc_email
+           FROM enterprise_details WHERE enterprise_id = $1`,
+          [enterprise_id]
+        );
+        if (!ent) {
+          results.errors.push({ type: "group", id: enterprise_id, error: "Enterprise not found" });
+          continue;
+        }
+
+        const tz = ent.timezone || "America/New_York";
+        const { yesterdayStr, dateLabel } = yesterdayFor(tz);
+
+        // ── IMS gate (all rooftops in enterprise) ─────────────────────────────
+        if (await imsOffForEnterprise(enterprise_id)) {
+          results.skipped.push({ type: "group", id: enterprise_id, name: ent.name, reason: "ims_off" });
+          console.log(`[daily-report] enterprise ${enterprise_id} skipped — one or more rooftops have IMS off`);
+          continue;
+        }
+
+        // ── Pending VINs gate ─────────────────────────────────────────────────
+        if (await hasStalePendingVins("enterprise_id", enterprise_id, tz, yesterdayStr)) {
+          results.skipped.push({ type: "group", id: enterprise_id, name: ent.name, reason: "pending_vins" });
+          console.log(`[daily-report] enterprise ${enterprise_id} skipped — pending VINs > 1`);
+          continue;
+        }
+
+        // ── Send ──────────────────────────────────────────────────────────────
+        const data = await computeGroupDailyReport(enterprise_id, yesterdayStr, tz);
+        const html = buildGroupReportHtml(data, dateLabel);
+        const to   = testMode ? testTo : email;
+        const cc   = testMode ? testCc  : (ent.poc_email || undefined);
+        const subject = `${testMode ? "[TEST] " : ""}Studio AI Group Report — ${ent.name || enterprise_id} — ${dateLabel}`;
+        await sendDailyReport(html, { to, ...(cc && { cc }), subject });
+        results.groups.push({ enterpriseId: enterprise_id, name: ent.name, status: "sent" });
+        console.log(`[daily-report] group report sent → ${to} (${ent.name})`);
+
+      } else {
+        results.errors.push({ type: "unknown", id: rooftop_id || enterprise_id, error: `Unknown report_type: ${report_type}` });
+      }
     } catch (e) {
-      results.errors.push({ type: "group", enterpriseId: ent.enterprise_id, error: e?.message });
-      console.error(`[daily-report] group report failed for ${ent.enterprise_id}:`, e?.message);
+      const id = rooftop_id || enterprise_id;
+      results.errors.push({ type: report_type?.toLowerCase() || "unknown", id, error: e?.message });
+      console.error(`[daily-report] failed for ${id}:`, e?.message);
     }
   }
 
-  // ── Rooftop Reports ───────────────────────────────────────────────────────
-  let rooftops;
-  try {
-    if (testMode && req.query.rooftopId) {
-      const { rows } = await query(
-        `SELECT rd.team_id, rd.team_name, rd.recipient_email,
-                COALESCE(ed.timezone, 'America/New_York') AS timezone
-         FROM rooftop_details rd
-         LEFT JOIN enterprise_details ed ON rd.enterprise_id = ed.enterprise_id
-         WHERE rd.team_id = $1`,
-        [String(req.query.rooftopId)]
-      );
-      rooftops = rows;
-    } else if (!testMode) {
-      const { rows } = await query(`
-        SELECT rd.team_id, rd.team_name, rd.recipient_email,
-               COALESCE(ed.timezone, 'America/New_York') AS timezone
-        FROM rooftop_details rd
-        LEFT JOIN enterprise_details ed ON rd.enterprise_id = ed.enterprise_id
-        WHERE rd.recipient_email IS NOT NULL AND rd.recipient_email != ''
-      `);
-      rooftops = rows;
-    } else {
-      rooftops = [];
-    }
-  } catch (e) {
-    console.error("[daily-report] failed to fetch rooftop recipients:", e?.message);
-    return res.status(500).json({ error: "DB error fetching rooftop recipients" });
-  }
-
-  for (const rt of rooftops) {
-    try {
-      const tz = rt.timezone || "America/New_York";
-      const { yesterdayStr, dateLabel } = yesterdayFor(tz);
-      const data = await computeRooftopDailyReport(rt.team_id, yesterdayStr, tz);
-      const html = buildRooftopReportHtml(data, dateLabel, tz);
-      const sendOpts = testMode
-        ? { to: testTo, ...(testCc && { cc: testCc }), subject: `Studio AI Daily Report — ${rt.team_name || rt.team_id} — ${dateLabel}` }
-        : { to: rt.recipient_email, subject: `Studio AI Daily Report — ${rt.team_name || rt.team_id} — ${dateLabel}` };
-      await sendDailyReport(html, sendOpts);
-      results.rooftops.push({ rooftopId: rt.team_id, name: rt.team_name, status: "sent" });
-      console.log(`[daily-report] rooftop report sent → ${sendOpts.to} (${rt.team_name})`);
-    } catch (e) {
-      results.errors.push({ type: "rooftop", rooftopId: rt.team_id, error: e?.message });
-      console.error(`[daily-report] rooftop report failed for ${rt.team_id}:`, e?.message);
-    }
-  }
-
-  console.log(`[daily-report] done — ${results.groups.length} group, ${results.rooftops.length} rooftop, ${results.errors.length} errors`);
+  console.log(`[daily-report] done — ${results.groups.length} group, ${results.rooftops.length} rooftop, ${results.skipped.length} skipped, ${results.errors.length} errors`);
   return res.json({ ok: true, testMode, ...results });
 });
 
