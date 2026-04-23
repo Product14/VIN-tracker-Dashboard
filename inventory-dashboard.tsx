@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import ReactDOM from "react-dom";
+import ViniDashboard from "./src/vini/ViniDashboard.tsx";
 
 const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
 
@@ -1439,247 +1440,36 @@ const EMPTY_SUMMARY = {
 };
 
 export default function Dashboard() {
-  const [tab, setTab] = useState("Overview");
-  const [dateFilter, setDateFilter] = useState<"post" | "pre" | "all">(() => {
-    const saved = typeof window !== "undefined" ? localStorage.getItem("vin_dateFilter") : null;
-    return (saved === "post" || saved === "pre" || saved === "all") ? saved : "post";
-  });
-  const [rawFilters, setRawFilters] = useState(DEFAULT_FILTERS);
-  const [rooftopFilters, setRooftopFilters] = useState(DEFAULT_ROOFTOP_FILTERS);
-  const [enterpriseFilters, setEnterpriseFilters] = useState(DEFAULT_ENTERPRISE_FILTERS);
-  const [, setTick] = useState(0);
-
-  // Summary data — sourced from /api/summary (DB views, full dataset)
-  const [summary, setSummary] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
-  const [summaryLoading, setSummaryLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
-  const [lastSync, setLastSync] = useState<string | null>(null);
-  const [filterOptions, setFilterOptions] = useState<any>(null);
+  /** Bumps after successful POST /api/sync so Vini reloads Metabase-backed rows. */
+  const [viniRefresh, setViniRefresh] = useState(0);
+  const [viniMeta, setViniMeta] = useState<{ rowCount: number; syncedAt: string | null } | null>(null);
 
-  // Raw paginated data — sourced from /api/vins, only used in VIN Data tab
-  const [rawData, setRawData] = useState<any[]>([]);
-  const [rawPage, setRawPage] = useState(1);
-  const [rawPageCount, setRawPageCount] = useState(1);
-  const [rawTotal, setRawTotal] = useState(0);
-  const [rawLoading, setRawLoading] = useState(false);
-  const [rawSortCol, setRawSortCol] = useState<string | null>(null);
-  const [rawSortDir, setRawSortDir] = useState<"asc" | "desc">("asc");
-
-  // Rooftop paginated data — sourced from /api/rooftops
-  const [rooftopRows, setRooftopRows] = useState<any[]>([]);
-  const [rooftopPage, setRooftopPage] = useState(1);
-  const [rooftopPageCount, setRooftopPageCount] = useState(1);
-  const [rooftopTotal, setRooftopTotal] = useState(0);
-  const [rooftopLoading, setRooftopLoading] = useState(false);
-  const [rooftopSortCol, setRooftopSortCol] = useState<string | null>("notProcessedAfter24");
-  const [rooftopSortDir, setRooftopSortDir] = useState<"asc" | "desc">("desc");
-
-  // Enterprise paginated data — sourced from /api/enterprises
-  const [enterpriseRows, setEnterpriseRows] = useState<any[]>([]);
-  const [enterprisePage, setEnterprisePage] = useState(1);
-  const [enterprisePageCount, setEnterprisePageCount] = useState(1);
-  const [enterpriseTotal, setEnterpriseTotal] = useState(0);
-  const [enterpriseLoading, setEnterpriseLoading] = useState(false);
-  const [enterpriseSortCol, setEnterpriseSortCol] = useState<string | null>("notProcessedAfter24");
-  const [enterpriseSortDir, setEnterpriseSortDir] = useState<"asc" | "desc">("desc");
-
-  const tabs = ["Overview", "Enterprise View", "Rooftop View", "VIN Data"];
-  // Track whether the initial mount load has completed so the dateFilter
-  // effect can safely skip its first run (mount effect handles it).
-  const initialLoadDone = useRef(false);
-
-  // Fetch summary data from DB views.
-  // showLoader: true when triggered by a user filter toggle (not the initial page load).
-  const loadSummary = useCallback((df: string = "post", showLoader = false) => {
-    if (showLoader) setSummaryLoading(true);
-    return fetch(`${API_BASE}/api/summary?dateFilter=${df}`)
-      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
-      .then(json => {
-        if (json.totalRows === 0) return null; // DB empty
-        setSummary(json);
-        setLastSync(json.lastSync);
-        setSummaryLoading(false);
-        return json;
+  const loadViniMeta = useCallback(() => {
+    fetch(`${API_BASE}/api/vini/rooftops`)
+      .then(r => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((j) => {
+        const n = typeof j.rowCount === "number" ? j.rowCount : (j.rooftops?.length ?? 0);
+        setViniMeta({ rowCount: n, syncedAt: j.syncedAt ?? null });
       })
-      .catch(err => { setSummaryLoading(false); throw err; });
-  }, [setSummaryLoading]);
-
-  // Fetch lightweight filter dropdown options (distinct values + column flags)
-  const loadFilterOptions = useCallback(() => {
-    return fetch(`${API_BASE}/api/filter-options`)
-      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
-      .then(json => setFilterOptions(json));
+      .catch(() => setViniMeta(null));
   }, []);
 
-  // Fetch paginated rooftop rows
-  const loadRooftopPage = useCallback((page: number, filters: any, sortCol: string | null, sortDir: string, df: string = "post") => {
-    setRooftopLoading(true);
-    const params = new URLSearchParams({ page: String(page), pageSize: "50" });
-    if (filters.search)           params.set("search",          filters.search);
-    if (filters.rooftopType)      params.set("type",            filters.rooftopType);
-    if (filters.csm)              params.set("csm",             filters.csm);
-    if (filters.enterprise)       params.set("enterprise",      filters.enterprise);
-    if (filters.imsIntegration)   params.set("imsIntegration",  filters.imsIntegration);
-    if (filters.publishingStatus) params.set("publishingStatus", filters.publishingStatus);
-    if (filters.websiteScore)     params.set("websiteScore",    filters.websiteScore);
-    if (sortCol) { params.set("sortBy", sortCol); params.set("sortDir", sortDir); }
-    params.set("dateFilter", df);
-    fetch(`${API_BASE}/api/rooftops?${params}`)
-      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
-      .then(({ data, total, pageCount }) => {
-        setRooftopRows(data); setRooftopTotal(total); setRooftopPageCount(pageCount); setRooftopPage(page);
-        setRooftopLoading(false);
-      })
-      .catch(err => { setFetchError(err.message); setRooftopLoading(false); });
-  }, []);
-
-  // Fetch paginated enterprise rows
-  const loadEnterprisePage = useCallback((page: number, filters: any, sortCol: string | null, sortDir: string, df: string = "post") => {
-    setEnterpriseLoading(true);
-    const params = new URLSearchParams({ page: String(page), pageSize: "50" });
-    if (filters.search)       params.set("search",      filters.search);
-    if (filters.csm)          params.set("csm",         filters.csm);
-    if (filters.accountType)  params.set("accountType", filters.accountType);
-    if (filters.websiteScore) params.set("websiteScore", filters.websiteScore);
-    if (sortCol) { params.set("sortBy", sortCol); params.set("sortDir", sortDir); }
-    params.set("dateFilter", df);
-    fetch(`${API_BASE}/api/enterprises?${params}`)
-      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
-      .then(({ data, total, pageCount }) => {
-        setEnterpriseRows(data); setEnterpriseTotal(total); setEnterprisePageCount(pageCount); setEnterprisePage(page);
-        setEnterpriseLoading(false);
-      })
-      .catch(err => { setFetchError(err.message); setEnterpriseLoading(false); });
-  }, []);
-
-  // Fetch paginated raw VIN rows
-  const loadRawPage = useCallback((page: number, filters: any, sortCol: string | null = null, sortDir: string = "asc", df: string = "post") => {
-    setRawLoading(true);
-    const params = new URLSearchParams({ page: String(page), pageSize: "50" });
-    if (filters.search)       params.set("search",       filters.search);
-    if (filters.enterpriseId) params.set("enterpriseId", filters.enterpriseId);
-    if (filters.rooftopId)    params.set("rooftopId",    filters.rooftopId);
-    if (filters.rooftop)      params.set("rooftop",      filters.rooftop);
-    if (filters.rooftopType)  params.set("rooftopType",  filters.rooftopType);
-    if (filters.csm)          params.set("csm",          filters.csm);
-    if (filters.status)       params.set("status",       filters.status);
-    if (filters.after24h !== null) params.set("after24h", filters.after24h ? "true" : "false");
-    if (filters.hasPhotos !== null && filters.hasPhotos !== undefined) params.set("hasPhotos", filters.hasPhotos ? "true" : "false");
-    if (filters.reasonBucket)      params.set("reasonBucket", filters.reasonBucket);
-    if (sortCol) { params.set("sortBy", sortCol); params.set("sortDir", sortDir); }
-    params.set("dateFilter", df);
-
-    fetch(`${API_BASE}/api/vins?${params}`)
-      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
-      .then(({ data, total, pageCount }) => {
-        setRawData(data);
-        setRawTotal(total);
-        setRawPageCount(pageCount);
-        setRawLoading(false);
-      })
-      .catch(err => { setFetchError(err.message); setRawLoading(false); });
-  }, []);
-
-  // On mount: load DB. If empty, run a full sync (awaited — POST /api/sync blocks
-  // until Metabase fetch + DB insert are complete, then we reload summary).
   useEffect(() => {
-    loadFilterOptions().catch(() => {});
-    loadSummary(dateFilter)
-      .then(data => {
-        setLoading(false);
-        initialLoadDone.current = true;
-        if (!data) {
-          setSyncing(true);
-          fetch(`${API_BASE}/api/sync`, { method: "POST" })
-            .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
-            .then(() => Promise.all([loadSummary(dateFilter), loadFilterOptions()]))
-            .then(() => setSyncing(false))
-            .catch(err => { setFetchError(err.message); setSyncing(false); });
-        }
-      })
-      .catch(err => { setFetchError(err.message); setLoading(false); initialLoadDone.current = true; });
-  }, []);
+    loadViniMeta();
+  }, [loadViniMeta, viniRefresh]);
 
-  // Persist dateFilter selection across page refreshes
-  useEffect(() => {
-    localStorage.setItem("vin_dateFilter", dateFilter);
-  }, [dateFilter]);
-
-  // Reload summary when dateFilter changes (skip the initial mount — handled above)
-  useEffect(() => {
-    if (!initialLoadDone.current) return;
-    loadSummary(dateFilter, true).catch(() => {});
-  }, [dateFilter]);
-
-  // Load rooftop page when switching to Rooftop View or when filters/sort/dateFilter change
-  useEffect(() => {
-    if (tab === "Rooftop View") loadRooftopPage(1, rooftopFilters, rooftopSortCol, rooftopSortDir, dateFilter);
-  }, [tab, rooftopFilters, rooftopSortCol, rooftopSortDir, dateFilter]);
-
-  // Load enterprise page when switching to Enterprise View or when filters/sort/dateFilter change
-  useEffect(() => {
-    if (tab === "Enterprise View") loadEnterprisePage(1, enterpriseFilters, enterpriseSortCol, enterpriseSortDir, dateFilter);
-  }, [tab, enterpriseFilters, enterpriseSortCol, enterpriseSortDir, dateFilter]);
-
-  // Load raw page when switching to VIN Data tab or when filters/page/sort/dateFilter change
-  useEffect(() => {
-    if (tab === "VIN Data") loadRawPage(rawPage, rawFilters, rawSortCol, rawSortDir, dateFilter);
-  }, [tab, rawPage, rawFilters, rawSortCol, rawSortDir, dateFilter]);
-
-  // Tick every 30s so relative "synced X ago" label stays fresh
-  useEffect(() => {
-    const id = setInterval(() => setTick(n => n + 1), 30000);
-    return () => clearInterval(id);
-  }, []);
-
-  // Sort change for VIN Data — resets to page 1 and re-fetches from server
-  const handleRawSort = useCallback((col: string | null, dir: "asc" | "desc") => {
-    setRawSortCol(col);
-    setRawSortDir(dir);
-    setRawPage(1);
-  }, []);
-
-  const handleRooftopSort = useCallback((col: string | null, dir: "asc" | "desc") => {
-    setRooftopSortCol(col);
-    setRooftopSortDir(dir);
-  }, []);
-
-  const handleEnterpriseSort = useCallback((col: string | null, dir: "asc" | "desc") => {
-    setEnterpriseSortCol(col);
-    setEnterpriseSortDir(dir);
-  }, []);
-
-  // Sync from Metabase — awaits full sync, then reloads summary and filter options
   const syncNow = useCallback(() => {
     setSyncing(true);
     setFetchError(null);
     fetch(`${API_BASE}/api/sync`, { method: "POST" })
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
-      .then(() => Promise.all([loadSummary(dateFilter), loadFilterOptions()]))
-      .then(() => setSyncing(false))
-      .catch(err => { setFetchError(err.message); setSyncing(false); });
-  }, [loadSummary, loadFilterOptions, dateFilter]);
-
-  const s = summary ?? EMPTY_SUMMARY;
-
-  // Derive filter dropdown options from /api/filter-options (lightweight distinct-value queries)
-  const fo = filterOptions ?? {};
-  const rooftopOptions    = (fo.rooftopNames    ?? []) as string[];
-  const typeOptions       = (fo.rooftopTypes    ?? []) as string[];
-  const csmOptions        = useMemo(() => [...new Set((s.byCSM ?? []).map((r: any) => r.name))].sort() as string[], [s.byCSM]);
-  const enterpriseObjects = (fo.enterprises     ?? []) as { id: string; name: string }[];
-
-  const handleDrillDown = useCallback((filters) => {
-    setRawFilters({ ...DEFAULT_FILTERS, ...filters });
-    setRawPage(1);
-    setTab("VIN Data");
-  }, []);
-
-  const handleRooftopDrillDown = useCallback((filters) => {
-    setRooftopFilters({ ...DEFAULT_ROOFTOP_FILTERS, ...filters });
-    setTab("Rooftop View");
+      .then(() => {
+        setViniRefresh((x) => x + 1);
+      })
+      .catch(err => { setFetchError(err.message); })
+      .finally(() => { setSyncing(false); });
   }, []);
 
   return (
@@ -1723,132 +1513,54 @@ export default function Dashboard() {
           animation: cellSweep 1.3s ease-in-out infinite;
         }
       `}</style>
-      {(syncing || loading) && (
+      {syncing && (
         <div className="sync-banner" style={{ width: "100%", height: 36, display: "flex", alignItems: "center", justifyContent: "center", gap: 10, color: "#fff", fontSize: 13, fontWeight: 600, letterSpacing: 0.2, marginBottom: 0 }}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ animation: "spin 1s linear infinite" }}>
             <path d="M21 12a9 9 0 1 1-6.219-8.56" />
           </svg>
           <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-          {loading ? "Loading dashboard…" : "Refreshing data from Metabase…"}
+          Refreshing data from Metabase…
         </div>
       )}
       <div style={{ padding: "20px 32px" }}>
       <div style={{ marginBottom: 24, display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
         <div>
-          <h1 style={{ fontSize: 22, fontWeight: 800, color: "#111827", margin: 0 }}>VIN Inventory Dashboard</h1>
-          <p style={{ fontSize: 13, color: "#6b7280", margin: "4px 0 0" }}>Tracking VIN processing across rooftops and CSMs — click any number to drill down</p>
+          <h1 style={{ fontSize: 22, fontWeight: 800, color: "#111827", margin: 0 }}>
+            Vini Dashboard
+          </h1>
+          <p style={{ fontSize: 13, color: "#6b7280", margin: "4px 0 0", maxWidth: 640 }}>
+            Spyne AI — rooftop account health and call analytics. Numbers come from your Metabase sync (set <span style={{ fontFamily: "monospace", fontSize: 12, background: "#f3f4f6", padding: "1px 6px", borderRadius: 4 }}>VINI_ROOFTOP_METABASE_URL</span> on the server), then click Refresh.
+          </p>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10, paddingTop: 4 }}>
-          {!loading && !syncing && fetchError && <span style={{ fontSize: 12, color: "#dc2626" }} title={fetchError}>⚠ {fetchError}</span>}
-          {!loading && summary && (
+          <a href="/agents"
+            style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 12px", borderRadius: 8, border: "1px solid #c7d2fe", background: "#eef2ff", fontSize: 12, fontWeight: 600, color: "#4338ca", textDecoration: "none", transition: "all 0.15s" }}
+            onMouseEnter={e => { e.currentTarget.style.background = "#e0e7ff"; }}
+            onMouseLeave={e => { e.currentTarget.style.background = "#eef2ff"; }}>
+            📊 Agents — Day on Day
+          </a>
+          {!syncing && fetchError && <span style={{ fontSize: 12, color: "#dc2626" }} title={fetchError}>⚠ {fetchError}</span>}
+          {viniMeta !== null && (
             <span style={{ fontSize: 12, color: "#16a34a" }}>
-              ● {(summary?.totalRows ?? 0).toLocaleString()} records
-              {lastSync && <span style={{ color: "#9ca3af" }}> · synced {timeAgo(lastSync)}</span>}
+              ● {viniMeta.rowCount.toLocaleString()} rooftop{viniMeta.rowCount === 1 ? "" : "s"} in cache
+              {viniMeta.syncedAt && (
+                <span style={{ color: "#9ca3af" }}>
+                  {" "}
+                  · synced {timeAgo(new Date(viniMeta.syncedAt).toISOString())}
+                </span>
+              )}
             </span>
           )}
-          <div style={{ display: "flex", gap: 2, background: "#f3f4f6", borderRadius: 8, padding: 3 }}>
-            {([
-              { key: "post", label: "Post 1st Apr" },
-              { key: "pre",  label: "Pre 1st Apr"  },
-              { key: "all",  label: "All"           },
-            ] as const).map(({ key, label }) => (
-              <button key={key} onClick={() => setDateFilter(key)}
-                style={{
-                  padding: "5px 14px", borderRadius: 6, border: "none", cursor: "pointer",
-                  fontSize: 12, fontWeight: 600,
-                  background: dateFilter === key
-                    ? key === "post" ? "#4f46e5" : key === "pre" ? "#d97706" : "#374151"
-                    : "transparent",
-                  color: dateFilter === key ? "#fff" : "#6b7280",
-                  boxShadow: dateFilter === key ? "0 1px 3px rgba(0,0,0,0.15)" : "none",
-                  transition: "all 0.15s",
-                }}>
-                {label}
-              </button>
-            ))}
-          </div>
-          <button onClick={syncNow} disabled={loading || syncing}
-            style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 12px", borderRadius: 8, border: "1px solid #d1d5db", background: (loading || syncing) ? "#f3f4f6" : "#fff", fontSize: 12, fontWeight: 600, cursor: (loading || syncing) ? "not-allowed" : "pointer", color: (loading || syncing) ? "#9ca3af" : "#374151", transition: "all 0.15s" }}
-            onMouseEnter={e => { if (!loading && !syncing) e.currentTarget.style.borderColor = "#9ca3af"; }}
+          <button onClick={syncNow} disabled={syncing}
+            style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 12px", borderRadius: 8, border: "1px solid #d1d5db", background: syncing ? "#f3f4f6" : "#fff", fontSize: 12, fontWeight: 600, cursor: syncing ? "not-allowed" : "pointer", color: syncing ? "#9ca3af" : "#374151", transition: "all 0.15s" }}
+            onMouseEnter={e => { if (!syncing) e.currentTarget.style.borderColor = "#9ca3af"; }}
             onMouseLeave={e => { e.currentTarget.style.borderColor = "#d1d5db"; }}>
             ↻ Refresh
           </button>
         </div>
       </div>
 
-      <div style={{ display: "flex", gap: 4, marginBottom: 24, background: "#f3f4f6", borderRadius: 10, padding: 4, width: "fit-content" }}>
-        {tabs.map(t => (
-          <button key={t} onClick={() => { setTab(t); }} style={{
-            padding: "8px 20px", borderRadius: 8, border: "none", cursor: "pointer", fontSize: 14, fontWeight: 600,
-            background: tab === t ? "#fff" : "transparent", color: tab === t ? "#111827" : "#6b7280",
-            boxShadow: tab === t ? "0 1px 3px rgba(0,0,0,0.1)" : "none", transition: "all 0.15s"
-          }}>
-            {t}
-          </button>
-        ))}
-      </div>
-
-      {tab === "Overview" && <OverviewTab totals={s.totals} byType={s.byType} byCSM={s.byCSM} byBucket={s.byBucket ?? []} onDrillDown={handleDrillDown} onRooftopDrillDown={handleRooftopDrillDown} loading={summaryLoading} />}
-      {tab === "Rooftop View" && (
-        <RooftopTab
-          typeOptions={fo.rooftopTypes ?? []}
-          csmOptions={fo.rooftopCSMs ?? []}
-          enterpriseOptions={(fo.enterprises ?? []).map((e: any) => e.name)}
-          bucketFlags={fo.bucketFlags ?? {}}
-          rows={rooftopRows}
-          total={rooftopTotal}
-          page={rooftopPage}
-          pageCount={rooftopPageCount}
-          loading={rooftopLoading}
-          onPageChange={(p) => loadRooftopPage(Math.max(1, Math.min(p, rooftopPageCount)), rooftopFilters, rooftopSortCol, rooftopSortDir, dateFilter)}
-          onDrillDown={handleDrillDown}
-          filters={rooftopFilters}
-          setFilters={(f) => { setRooftopFilters(f); }}
-          sortCol={rooftopSortCol}
-          sortDir={rooftopSortDir}
-          onSortChange={handleRooftopSort}
-        />
-      )}
-      {tab === "Enterprise View" && (
-        <EnterpriseTab
-          csmOptions={fo.enterpriseCSMs ?? []}
-          typeOptions={fo.enterpriseTypes ?? []}
-          hasNotIntegrated={fo.hasNotIntegrated ?? false}
-          hasPublishingDisabled={fo.hasPublishingDisabled ?? false}
-          bucketFlags={fo.bucketFlags ?? {}}
-          rows={enterpriseRows}
-          total={enterpriseTotal}
-          page={enterprisePage}
-          pageCount={enterprisePageCount}
-          loading={enterpriseLoading}
-          onPageChange={(p) => loadEnterprisePage(Math.max(1, Math.min(p, enterprisePageCount)), enterpriseFilters, enterpriseSortCol, enterpriseSortDir, dateFilter)}
-          onDrillDown={handleDrillDown}
-          filters={enterpriseFilters}
-          setFilters={(f) => { setEnterpriseFilters(f); }}
-          sortCol={enterpriseSortCol}
-          sortDir={enterpriseSortDir}
-          onSortChange={handleEnterpriseSort}
-        />
-      )}
-      {tab === "VIN Data" && (
-        <RawTab
-          data={rawData}
-          loading={rawLoading}
-          filters={rawFilters}
-          setFilters={(f) => { setRawFilters(f); setRawPage(1); }}
-          total={rawTotal}
-          page={rawPage}
-          pageCount={rawPageCount}
-          onPageChange={(p) => setRawPage(Math.max(1, Math.min(p, rawPageCount)))}
-          rooftopOptions={rooftopOptions}
-          typeOptions={typeOptions}
-          csmOptions={csmOptions}
-          enterpriseObjects={enterpriseObjects}
-          sortCol={rawSortCol}
-          sortDir={rawSortDir}
-          onSortChange={handleRawSort}
-        />
-      )}
+      <ViniDashboard refreshToken={String(viniRefresh)} embeddedChrome />
       </div>
     </div>
   );

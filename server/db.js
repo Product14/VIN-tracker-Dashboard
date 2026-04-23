@@ -94,6 +94,13 @@ export async function initSchema() {
       payload      JSONB NOT NULL,
       computed_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+
+    -- Latest Vini Account Health metrics from Metabase (see VINI_ROOFTOP_METABASE_URL).
+    CREATE TABLE IF NOT EXISTS vini_metrics_cache (
+      id           TEXT PRIMARY KEY DEFAULT 'global',
+      rows_json    JSONB NOT NULL DEFAULT '[]',
+      synced_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
   `);
 
   // Materialized views — dropped and recreated on every cold start so schema changes

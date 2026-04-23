@@ -5,15 +5,19 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "server": "node --env-file=database_url.env server/index.js",
+    "server": "node server/index.js",
     "start": "concurrently \"npm run dev\" \"npm run server\"",
     "build": "vite build",
     "preview": "vite preview"
   },
   "dependencies": {
-    "pg": "^8.13.3",
+    "@supabase/supabase-js": "^2.103.2",
     "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
     "express": "^5.2.1",
+    "lucide-react": "^1.8.0",
+    "papaparse": "^5.5.3",
+    "pg": "^8.13.3",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
@@ -21,7 +25,10 @@
     "@types/react": "^18.3.1",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.5.0",
     "concurrently": "^9.2.1",
+    "postcss": "^8.5.10",
+    "tailwindcss": "^3.4.19",
     "vite": "^6.3.1"
   }
 }

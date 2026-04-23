@@ -1,3 +1,4 @@
+import "../server/loadEnv.js";
 import { initSchema } from "../server/db.js";
 import app from "../server/app.js";
 

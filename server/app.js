@@ -3,6 +3,8 @@ import cors from "cors";
 import { query, getClient } from "./db.js";
 import { buildEmailHtml } from "./emailTemplate.js";
 import { sendReport }     from "./emailClient.js";
+import { getAllDeploymentStatuses, upsertDeploymentStatus } from "./viniStatuses.js";
+import { mapMetabaseRows } from "./viniRooftopMap.js";
 
 const app = express();
 app.use(cors());
@@ -16,6 +18,9 @@ const ROOFTOP_DETAILS_URL =
 
 const ENTERPRISE_DETAILS_URL =
   "https://metabase.spyne.ai/api/public/card/b8f1271c-cc5a-470f-badf-807711f74af4/query/json";
+
+/** Metabase public card JSON URL for Vini Account Health (same columns as vini-dashboard CSV). Optional — when set, sync pulls automatically with POST /api/sync. */
+const VINI_ROOFTOP_METABASE_URL = process.env.VINI_ROOFTOP_METABASE_URL?.trim() || "";
 
 // ─── Sync helpers ────────────────────────────────────────────────────────────
 
@@ -201,6 +206,23 @@ async function syncEnterprises() {
   console.log(`[sync:ENTERPRISE_DETAILS] done — ${deduped.length} rows`);
 }
 
+async function syncViniRooftopMetrics() {
+  if (!VINI_ROOFTOP_METABASE_URL) {
+    console.log("[sync:VINI_METRICS] skipped — set VINI_ROOFTOP_METABASE_URL (Metabase public card …/query/json)");
+    return;
+  }
+  console.log("[sync:VINI_METRICS] fetching…");
+  const rows = await fetchFromMetabase(VINI_ROOFTOP_METABASE_URL, "VINI_METRICS", 1, 120000);
+  const payload = Array.isArray(rows) ? rows : [];
+  await query(
+    `INSERT INTO vini_metrics_cache (id, rows_json, synced_at)
+     VALUES ('global', $1::jsonb, NOW())
+     ON CONFLICT (id) DO UPDATE SET rows_json = EXCLUDED.rows_json, synced_at = NOW()`,
+    [JSON.stringify(payload)]
+  );
+  console.log(`[sync:VINI_METRICS] done — ${payload.length} rows`);
+}
+
 // Atomically claims a sync lock in the DB, runs all three syncs sequentially,
 // then releases the lock. Returns { skipped: true } if already running.
 // VINs is treated as critical — its failure propagates as an HTTP 500.
@@ -261,6 +283,11 @@ async function runSync() {
         await upsertFilterCache(filterPayload);
       } catch (e) {
         console.error(`[sync] filter-options precompute failed:`, e?.message);
+      }
+      try {
+        await syncViniRooftopMetrics();
+      } catch (e) {
+        console.error("[sync] Vini metrics failed:", e?.message);
       }
     } else {
       await query(`UPDATE sync_state SET running = FALSE WHERE id = 'global'`);
@@ -1105,6 +1132,85 @@ app.get("/api/scheduled-report", async (req, res) => {
   } catch (err) {
     console.error("[scheduled-report] email send failed:", err?.message);
     return res.status(500).json({ error: err?.message });
+  }
+});
+
+// ─── Vini Account Health — deployment statuses (Supabase, optional) ─────────
+// Mirrors Product14/vini-dashboard GET/POST /api/statuses.
+
+app.get("/api/statuses", async (_req, res) => {
+  try {
+    const statuses = await getAllDeploymentStatuses();
+    return res.json(statuses);
+  } catch (err) {
+    console.error("GET /api/statuses error:", err?.message);
+    return res.json({});
+  }
+});
+
+app.post("/api/statuses", async (req, res) => {
+  try {
+    const { rooftopKey, rooftopName, enterprise, statuses } = req.body ?? {};
+    if (!rooftopKey || !statuses) {
+      return res.status(400).json({ error: "Missing required fields" });
+    }
+    await upsertDeploymentStatus(rooftopKey, rooftopName ?? "", enterprise ?? "", statuses);
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("POST /api/statuses error:", err?.message);
+    return res.status(500).json({ error: err?.message ?? "Failed to save" });
+  }
+});
+
+// ─── GET /api/agents — Day-on-day agent calls per rooftop (Metabase passthrough) ──
+
+const AGENTS_METABASE_URL =
+  "https://metabase.spyne.ai/api/public/card/524f9fb4-b27c-49f4-a670-7d2c406e77a2/query/json";
+
+let agentsCache = { data: null, fetchedAt: 0 };
+const AGENTS_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+app.get("/api/agents", async (req, res) => {
+  try {
+    const force = req.query.refresh === "1";
+    const fresh = !force && agentsCache.data && (Date.now() - agentsCache.fetchedAt) < AGENTS_TTL_MS;
+    if (!fresh) {
+      const rows = await fetchFromMetabase(AGENTS_METABASE_URL, "AGENTS", 1, 60000);
+      agentsCache = { data: Array.isArray(rows) ? rows : [], fetchedAt: Date.now() };
+    }
+    return res.json({
+      rowCount: agentsCache.data.length,
+      fetchedAt: new Date(agentsCache.fetchedAt).toISOString(),
+      rows: agentsCache.data,
+    });
+  } catch (err) {
+    console.error("GET /api/agents error:", err?.message);
+    return res.status(500).json({ error: err?.message ?? "Failed to load agents data" });
+  }
+});
+
+// ─── GET /api/vini/rooftops — Vini Account Health rows (Metabase → DB cache) ──
+
+app.get("/api/vini/rooftops", async (_req, res) => {
+  try {
+    const { rows } = await query(
+      "SELECT rows_json, synced_at FROM vini_metrics_cache WHERE id = 'global'"
+    );
+    if (!rows.length) {
+      return res.json({ source: "none", syncedAt: null, rowCount: 0, rooftops: [] });
+    }
+    const raw = rows[0].rows_json;
+    const arr = Array.isArray(raw) ? raw : [];
+    const rooftops = mapMetabaseRows(arr);
+    return res.json({
+      source: arr.length ? "metabase" : "none",
+      syncedAt: rows[0].synced_at,
+      rowCount: arr.length,
+      rooftops,
+    });
+  } catch (err) {
+    console.error("GET /api/vini/rooftops error:", err?.message);
+    return res.status(500).json({ error: err?.message ?? "Failed to load" });
   }
 });
 
