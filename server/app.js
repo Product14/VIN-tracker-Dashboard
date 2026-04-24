@@ -1723,7 +1723,7 @@ app.get("/api/send-daily-report", async (req, res) => {
         const cc   = testMode ? testCc  : (rt.poc_email || undefined);
         const subject = `${testMode ? "[TEST] " : ""}Studio AI Daily Report — ${rt.team_name || rooftop_id} — ${dateLabel}`;
         await sendDailyReport(html, { to, ...(cc && { cc }), subject });
-        results.rooftops.push({ rooftopId: rooftop_id, name: rt.team_name, status: "sent" });
+        results.rooftops.push({ rooftopId: rooftop_id, name: rt.team_name, status: "sent", to: Array.isArray(to) ? to : [to], ...(cc && { cc: Array.isArray(cc) ? cc : [cc] }) });
         console.log(`[daily-report] rooftop report sent → ${to} (${rt.team_name})`);
 
       } else if (report_type === "Group") {
@@ -1778,7 +1778,7 @@ app.get("/api/send-daily-report", async (req, res) => {
         const cc   = testMode ? testCc  : (ent.poc_email || undefined);
         const subject = `${testMode ? "[TEST] " : ""}Studio AI Group Report — ${ent.name || enterprise_id} — ${dateLabel}`;
         await sendDailyReport(html, { to, ...(cc && { cc }), subject });
-        results.groups.push({ enterpriseId: enterprise_id, name: ent.name, status: "sent" });
+        results.groups.push({ enterpriseId: enterprise_id, name: ent.name, status: "sent", to: Array.isArray(to) ? to : [to], ...(cc && { cc: Array.isArray(cc) ? cc : [cc] }) });
         console.log(`[daily-report] group report sent → ${to} (${ent.name})`);
 
       } else {
