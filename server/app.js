@@ -1541,6 +1541,18 @@ app.post(
 );
 
 // ─── Daily Report Endpoint ────────────────────────────────────────────────────
+// Returns 202 immediately. Stores the job in daily_report_runs, then fires a
+// self-fetch to /api/send-daily-report/worker which runs in its own Vercel
+// invocation (up to 300s) so 500 recipients never hit the caller's timeout.
+//
+// Requires DB migration:
+//   CREATE TABLE daily_report_runs (
+//     run_id TEXT PRIMARY KEY, run_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+//     test_mode BOOLEAN NOT NULL DEFAULT FALSE,
+//     status TEXT NOT NULL DEFAULT 'pending',   -- pending | processing | done | failed
+//     recipient_count INT, sent INT, skipped INT, errors INT,
+//     completed_at TIMESTAMPTZ, params JSONB
+//   );
 
 app.get("/api/send-daily-report", async (req, res) => {
   // ── Auth ───────────────────────────────────────────────────────────────────
@@ -1561,22 +1573,17 @@ app.get("/api/send-daily-report", async (req, res) => {
     return res.status(400).json({ error: "Test mode requires rooftopId (reportType=Rooftop) or enterpriseId (reportType=Group)" });
   }
 
-  const runId  = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const runAt  = new Date().toISOString();
-  console.log(`[daily-report] starting run ${runId}${testMode ? ` (test mode → ${testTo.join(",")})` : ""}`);
+  const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const runAt = new Date().toISOString();
+  console.log(`[daily-report] queuing run ${runId}${testMode ? ` (test mode → ${testTo.join(",")})` : ""}`);
 
-  // ── Load recipients ────────────────────────────────────────────────────────
+  // ── Load recipients (fast DB query, done before 202) ──────────────────────
   let recipients;
   try {
     if (testMode) {
-      // Build synthetic recipient(s) from query params
       recipients = [];
-      if (req.query.rooftopId) {
-        recipients.push({ email: testTo, rooftop_id: String(req.query.rooftopId), enterprise_id: null, report_type: "Rooftop" });
-      }
-      if (req.query.enterpriseId) {
-        recipients.push({ email: testTo, rooftop_id: null, enterprise_id: String(req.query.enterpriseId), report_type: "Group" });
-      }
+      if (req.query.rooftopId)   recipients.push({ email: testTo, rooftop_id: String(req.query.rooftopId), enterprise_id: null, report_type: "Rooftop" });
+      if (req.query.enterpriseId) recipients.push({ email: testTo, rooftop_id: null, enterprise_id: String(req.query.enterpriseId), report_type: "Group" });
     } else {
       const { rows } = await query("SELECT email, rooftop_id, enterprise_id, report_type FROM email_recipients");
       recipients = rows;
@@ -1586,7 +1593,81 @@ app.get("/api/send-daily-report", async (req, res) => {
     return res.status(500).json({ error: "DB error loading recipients" });
   }
 
-  const results = { groups: [], rooftops: [], skipped: [], errors: [] };
+  // ── Store run as pending ───────────────────────────────────────────────────
+  try {
+    await query(
+      `INSERT INTO daily_report_runs (run_id, run_at, test_mode, status, recipient_count, params)
+       VALUES ($1, $2, $3, 'pending', $4, $5)`,
+      [runId, runAt, testMode, recipients.length, JSON.stringify({ testTo, testCc, recipients })]
+    );
+  } catch (e) {
+    console.error("[daily-report] failed to store run:", e?.message);
+    return res.status(500).json({ error: "DB error creating run" });
+  }
+
+  // ── Fire-and-forget worker (new Vercel invocation, own 300s budget) ────────
+  const host = process.env.VERCEL_URL
+    ? `https://${process.env.VERCEL_URL}`
+    : `${req.protocol}://${req.get("host")}`;
+  fetch(`${host}/api/send-daily-report/worker`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": req.headers.authorization ?? `Bearer ${cronSecret}`,
+    },
+    body: JSON.stringify({ runId, offset: 0, batchSize: 50 }),
+  }).catch(e => console.error(`[daily-report] worker trigger failed for ${runId}:`, e?.message));
+
+  return res.status(202).json({
+    ok: true,
+    runId,
+    status: "pending",
+    recipientCount: recipients.length,
+    statusUrl: `/api/send-daily-report/status?runId=${runId}`,
+  });
+});
+
+// ─── Daily Report Worker (internal, self-chaining batches) ───────────────────
+// Each invocation processes one batch of recipients then fires the next batch
+// as a fire-and-forget, so total recipients is unbounded regardless of the
+// 300s Vercel function limit.
+// Not intended to be called directly by clients.
+
+app.post("/api/send-daily-report/worker", async (req, res) => {
+  const cronSecret = process.env.CRON_SECRET;
+  if (cronSecret && req.headers.authorization !== `Bearer ${cronSecret}`) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  const { runId, offset = 0, batchSize = 50 } = req.body;
+  if (!runId) return res.status(400).json({ error: "runId required" });
+
+  // ── Load run from DB ───────────────────────────────────────────────────────
+  let run;
+  try {
+    const { rows: [r] } = await query(
+      `SELECT run_id, run_at, test_mode, params FROM daily_report_runs WHERE run_id = $1`,
+      [runId]
+    );
+    run = r;
+  } catch (e) {
+    return res.status(500).json({ error: "DB error loading run" });
+  }
+  if (!run) return res.status(404).json({ error: "Run not found" });
+
+  // Mark processing only on the first batch so status doesn't regress
+  if (offset === 0) {
+    await query(`UPDATE daily_report_runs SET status = 'processing' WHERE run_id = $1`, [runId]);
+  }
+
+  const { testTo, testCc, recipients } = run.params;
+  const testMode    = run.test_mode;
+  const runAt       = run.run_at;
+  const batch       = recipients.slice(offset, offset + batchSize);
+  const isLastBatch = offset + batchSize >= recipients.length;
+  const results     = { groups: [], rooftops: [], skipped: [], errors: [] };
+
+  console.log(`[daily-report] worker batch offset=${offset} size=${batch.length} last=${isLastBatch} run=${runId}`);
 
   // ── Gate helpers ───────────────────────────────────────────────────────────
   async function imsOffForRooftop(rooftopId) {
@@ -1608,8 +1689,6 @@ app.get("/api/send-daily-report", async (req, res) => {
   }
 
   async function hasStalePendingVins(field, id, tz, yesterdayStr) {
-    // Pending = has photos, received on or before yesterday, not yet delivered.
-    // Skip if count > 1.
     const { rows: [r] } = await query(
       `SELECT COUNT(*) AS pending_count
        FROM vins
@@ -1623,9 +1702,6 @@ app.get("/api/send-daily-report", async (req, res) => {
   }
 
   async function hasNegativeTat(field, id, tz, yesterdayStr) {
-    // Check only the 5 VINs actually shown in the report's TAT table:
-    // top 5 delivered VINs with photos received yesterday, ordered by received_at DESC.
-    // Skip if any of those have processed_at < received_at.
     const { rows: [r] } = await query(
       `SELECT COUNT(*) AS negative_count
        FROM (
@@ -1647,8 +1723,6 @@ app.get("/api/send-daily-report", async (req, res) => {
   }
 
   async function hasLowPhotoCoverage(field, id, tz, yesterdayStr) {
-    // Skip if fewer than 75% of active inventory VINs have photos.
-    // Active = received on or before yesterday (same definition as report totals).
     const { rows: [r] } = await query(
       `SELECT
          COUNT(*) AS total_active,
@@ -1659,18 +1733,16 @@ app.get("/api/send-daily-report", async (req, res) => {
       [id, tz, yesterdayStr]
     );
     const total = Number(r.total_active) || 0;
-    if (total === 0) return false; // no VINs → don't skip on data absence
-    const pct = Number(r.with_photos) / total * 100;
-    return pct < 75;
+    if (total === 0) return false;
+    return Number(r.with_photos) / total * 100 < 75;
   }
 
-  // ── Process each recipient ─────────────────────────────────────────────────
-  for (const recipient of recipients) {
+  // ── Process this batch ────────────────────────────────────────────────────
+  for (const recipient of batch) {
     const { email, rooftop_id, enterprise_id, report_type } = recipient;
 
     try {
       if (report_type === "Rooftop") {
-        // ── Fetch rooftop + enterprise info ──────────────────────────────────
         const { rows: [rt] } = await query(
           `SELECT rd.team_id, rd.team_name, rd.enterprise_id,
                   COALESCE(ed.timezone, 'America/New_York') AS timezone,
@@ -1680,43 +1752,32 @@ app.get("/api/send-daily-report", async (req, res) => {
            WHERE rd.team_id = $1`,
           [rooftop_id]
         );
-        if (!rt) {
-          results.errors.push({ type: "rooftop", id: rooftop_id, error: "Rooftop not found" });
-          continue;
-        }
+        if (!rt) { results.errors.push({ type: "rooftop", id: rooftop_id, error: "Rooftop not found" }); continue; }
 
         const tz = rt.timezone || "America/New_York";
         const { yesterdayStr, dateLabel } = yesterdayFor(tz);
 
-        // ── IMS gate ─────────────────────────────────────────────────────────
         if (await imsOffForRooftop(rooftop_id)) {
           results.skipped.push({ type: "rooftop", id: rooftop_id, name: rt.team_name, reason: "ims_off" });
           console.log(`[daily-report] rooftop ${rooftop_id} skipped — IMS not active`);
           continue;
         }
-
-        // ── Pending VINs gate ─────────────────────────────────────────────────
         if (await hasStalePendingVins("rooftop_id", rooftop_id, tz, yesterdayStr)) {
           results.skipped.push({ type: "rooftop", id: rooftop_id, name: rt.team_name, reason: "pending_vins" });
           console.log(`[daily-report] rooftop ${rooftop_id} skipped — pending VINs > 1`);
           continue;
         }
-
-        // ── Negative TAT gate ─────────────────────────────────────────────────
         if (await hasNegativeTat("rooftop_id", rooftop_id, tz, yesterdayStr)) {
           results.skipped.push({ type: "rooftop", id: rooftop_id, name: rt.team_name, reason: "negative_tat" });
           console.log(`[daily-report] rooftop ${rooftop_id} skipped — negative TAT detected`);
           continue;
         }
-
-        // ── Low photo coverage gate (<75%) ────────────────────────────────────
         if (await hasLowPhotoCoverage("rooftop_id", rooftop_id, tz, yesterdayStr)) {
           results.skipped.push({ type: "rooftop", id: rooftop_id, name: rt.team_name, reason: "low_photo_coverage" });
           console.log(`[daily-report] rooftop ${rooftop_id} skipped — photo coverage < 75%`);
           continue;
         }
 
-        // ── Send ──────────────────────────────────────────────────────────────
         const data = await computeRooftopDailyReport(rooftop_id, yesterdayStr, tz);
         const html = buildRooftopReportHtml(data, dateLabel, tz);
         const to   = testMode ? testTo : email;
@@ -1727,7 +1788,6 @@ app.get("/api/send-daily-report", async (req, res) => {
         console.log(`[daily-report] rooftop report sent → ${to} (${rt.team_name})`);
 
       } else if (report_type === "Group") {
-        // ── Fetch enterprise info ─────────────────────────────────────────────
         const { rows: [ent] } = await query(
           `SELECT enterprise_id, name,
                   COALESCE(timezone, 'America/New_York') AS timezone,
@@ -1735,43 +1795,32 @@ app.get("/api/send-daily-report", async (req, res) => {
            FROM enterprise_details WHERE enterprise_id = $1`,
           [enterprise_id]
         );
-        if (!ent) {
-          results.errors.push({ type: "group", id: enterprise_id, error: "Enterprise not found" });
-          continue;
-        }
+        if (!ent) { results.errors.push({ type: "group", id: enterprise_id, error: "Enterprise not found" }); continue; }
 
         const tz = ent.timezone || "America/New_York";
         const { yesterdayStr, dateLabel } = yesterdayFor(tz);
 
-        // ── IMS gate (all rooftops in enterprise) ─────────────────────────────
         if (await imsOffForEnterprise(enterprise_id)) {
           results.skipped.push({ type: "group", id: enterprise_id, name: ent.name, reason: "ims_off" });
           console.log(`[daily-report] enterprise ${enterprise_id} skipped — one or more rooftops have IMS off`);
           continue;
         }
-
-        // ── Pending VINs gate ─────────────────────────────────────────────────
         if (await hasStalePendingVins("enterprise_id", enterprise_id, tz, yesterdayStr)) {
           results.skipped.push({ type: "group", id: enterprise_id, name: ent.name, reason: "pending_vins" });
           console.log(`[daily-report] enterprise ${enterprise_id} skipped — pending VINs > 1`);
           continue;
         }
-
-        // ── Negative TAT gate ─────────────────────────────────────────────────
         if (await hasNegativeTat("enterprise_id", enterprise_id, tz, yesterdayStr)) {
           results.skipped.push({ type: "group", id: enterprise_id, name: ent.name, reason: "negative_tat" });
           console.log(`[daily-report] enterprise ${enterprise_id} skipped — negative TAT detected`);
           continue;
         }
-
-        // ── Low photo coverage gate (<75%) ────────────────────────────────────
         if (await hasLowPhotoCoverage("enterprise_id", enterprise_id, tz, yesterdayStr)) {
           results.skipped.push({ type: "group", id: enterprise_id, name: ent.name, reason: "low_photo_coverage" });
           console.log(`[daily-report] enterprise ${enterprise_id} skipped — photo coverage < 75%`);
           continue;
         }
 
-        // ── Send ──────────────────────────────────────────────────────────────
         const data = await computeGroupDailyReport(enterprise_id, yesterdayStr, tz);
         const html = buildGroupReportHtml(data, dateLabel);
         const to   = testMode ? testTo : email;
@@ -1792,29 +1841,89 @@ app.get("/api/send-daily-report", async (req, res) => {
     }
   }
 
-  console.log(`[daily-report] done — ${results.groups.length} group, ${results.rooftops.length} rooftop, ${results.skipped.length} skipped, ${results.errors.length} errors`);
+  const sentCount    = results.rooftops.length + results.groups.length;
+  const skippedCount = results.skipped.length;
+  const errorCount   = results.errors.length;
+  console.log(`[daily-report] batch offset=${offset} — sent=${sentCount} skipped=${skippedCount} errors=${errorCount}`);
 
-  // ── Write audit log ───────────────────────────────────────────────────────
+  // ── Write audit log for this batch ────────────────────────────────────────
+  // Migration: ALTER TABLE report_run_logs ADD COLUMN to_emails TEXT[], ADD COLUMN cc_emails TEXT[], ADD COLUMN bcc_emails TEXT[];
   const logRows = [
-    ...results.rooftops.map(r => ({ type: "Rooftop", id: r.rooftopId,     name: r.name,  email: recipients.find(rec => rec.rooftop_id   === r.rooftopId)?.email,    status: "sent",    reason: null })),
-    ...results.groups  .map(r => ({ type: "Group",   id: r.enterpriseId,  name: r.name,  email: recipients.find(rec => rec.enterprise_id === r.enterpriseId)?.email, status: "sent",    reason: null })),
-    ...results.skipped .map(r => ({ type: r.type,    id: r.id,            name: r.name,  email: recipients.find(rec => (rec.rooftop_id || rec.enterprise_id) === r.id)?.email, status: "skipped", reason: r.reason })),
-    ...results.errors  .map(r => ({ type: r.type,    id: r.id,            name: null,    email: recipients.find(rec => (rec.rooftop_id || rec.enterprise_id) === r.id)?.email, status: "error", reason: r.error })),
+    ...results.rooftops.map(r => ({ type: "Rooftop", id: r.rooftopId,    name: r.name, email: batch.find(rec => rec.rooftop_id   === r.rooftopId)?.email,    status: "sent",    reason: null,     to: r.to ?? null, cc: r.cc ?? null, bcc: r.bcc ?? null })),
+    ...results.groups  .map(r => ({ type: "Group",   id: r.enterpriseId, name: r.name, email: batch.find(rec => rec.enterprise_id === r.enterpriseId)?.email, status: "sent",    reason: null,     to: r.to ?? null, cc: r.cc ?? null, bcc: r.bcc ?? null })),
+    ...results.skipped .map(r => ({ type: r.type,    id: r.id,           name: r.name, email: batch.find(rec => (rec.rooftop_id || rec.enterprise_id) === r.id)?.email, status: "skipped", reason: r.reason, to: null,         cc: null,         bcc: null })),
+    ...results.errors  .map(r => ({ type: r.type,    id: r.id,           name: null,   email: batch.find(rec => (rec.rooftop_id || rec.enterprise_id) === r.id)?.email, status: "error",   reason: r.error,  to: null,         cc: null,         bcc: null })),
   ];
   try {
     for (const row of logRows) {
       await query(
-        `INSERT INTO report_run_logs (run_id, run_at, test_mode, report_type, entity_id, name, email, status, reason)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-        [runId, runAt, testMode, row.type, row.id, row.name, row.email, row.status, row.reason]
+        `INSERT INTO report_run_logs (run_id, run_at, test_mode, report_type, entity_id, name, email, status, reason, to_emails, cc_emails, bcc_emails)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+        [runId, runAt, testMode, row.type, row.id, row.name, row.email, row.status, row.reason, row.to, row.cc, row.bcc]
       );
     }
-    console.log(`[daily-report] logged ${logRows.length} rows with run_id ${runId}`);
   } catch (e) {
-    console.error("[daily-report] failed to write audit log:", e?.message);
+    console.error(`[daily-report] failed to write audit log for batch offset=${offset}:`, e?.message);
   }
 
-  return res.json({ ok: true, testMode, runId, ...results });
+  // ── Incrementally update aggregate counts in daily_report_runs ────────────
+  await query(
+    `UPDATE daily_report_runs
+        SET sent    = COALESCE(sent,    0) + $2,
+            skipped = COALESCE(skipped, 0) + $3,
+            errors  = COALESCE(errors,  0) + $4
+      WHERE run_id = $1`,
+    [runId, sentCount, skippedCount, errorCount]
+  ).catch(e => console.error("[daily-report] failed to update counts:", e?.message));
+
+  // ── Chain next batch or mark complete ─────────────────────────────────────
+  if (!isLastBatch) {
+    const host = process.env.VERCEL_URL
+      ? `https://${process.env.VERCEL_URL}`
+      : `${req.protocol}://${req.get("host")}`;
+    fetch(`${host}/api/send-daily-report/worker`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": req.headers.authorization ?? `Bearer ${cronSecret}`,
+      },
+      body: JSON.stringify({ runId, offset: offset + batchSize, batchSize }),
+    }).catch(e => console.error(`[daily-report] failed to chain next batch (offset=${offset + batchSize}):`, e?.message));
+
+    return res.json({ ok: true, runId, offset, processed: batch.length, nextOffset: offset + batchSize });
+  }
+
+  // Last batch — stamp final status
+  await query(
+    `UPDATE daily_report_runs SET status = 'done', completed_at = NOW() WHERE run_id = $1`,
+    [runId]
+  ).catch(e => console.error("[daily-report] failed to mark run done:", e?.message));
+
+  console.log(`[daily-report] run ${runId} complete`);
+  return res.json({ ok: true, runId, offset, processed: batch.length, status: "done" });
+});
+
+// ─── Daily Report Status ──────────────────────────────────────────────────────
+// GET /api/send-daily-report/status?runId=xxx
+// Poll this after the 202 to check if the worker has finished.
+
+app.get("/api/send-daily-report/status", async (req, res) => {
+  const cronSecret = process.env.CRON_SECRET;
+  if (cronSecret && req.headers.authorization !== `Bearer ${cronSecret}`) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  const { runId } = req.query;
+  if (!runId) return res.status(400).json({ error: "runId required" });
+
+  const { rows: [run] } = await query(
+    `SELECT run_id, run_at, test_mode, status, recipient_count, sent, skipped, errors, completed_at
+       FROM daily_report_runs WHERE run_id = $1`,
+    [runId]
+  );
+  if (!run) return res.status(404).json({ error: "Run not found" });
+
+  return res.json(run);
 });
 
 // ─── Daily Report Audit Log Download ─────────────────────────────────────────

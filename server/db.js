@@ -144,8 +144,27 @@ export async function initSchema() {
       status      TEXT        NOT NULL,
       reason      TEXT
     );
+    ALTER TABLE report_run_logs ADD COLUMN IF NOT EXISTS to_emails  TEXT[];
+    ALTER TABLE report_run_logs ADD COLUMN IF NOT EXISTS cc_emails  TEXT[];
+    ALTER TABLE report_run_logs ADD COLUMN IF NOT EXISTS bcc_emails TEXT[];
     CREATE INDEX IF NOT EXISTS idx_report_run_logs_run_id ON report_run_logs(run_id);
     CREATE INDEX IF NOT EXISTS idx_report_run_logs_run_at ON report_run_logs(run_at DESC);
+
+    -- Job tracking table for async /api/send-daily-report runs.
+    -- Each run is split into self-chaining batches of 50 recipients per Vercel invocation.
+    CREATE TABLE IF NOT EXISTS daily_report_runs (
+      run_id          TEXT        PRIMARY KEY,
+      run_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      test_mode       BOOLEAN     NOT NULL DEFAULT FALSE,
+      status          TEXT        NOT NULL DEFAULT 'pending',
+      recipient_count INT,
+      sent            INT,
+      skipped         INT,
+      errors          INT,
+      completed_at    TIMESTAMPTZ,
+      params          JSONB
+    );
+    CREATE INDEX IF NOT EXISTS idx_daily_report_runs_run_at ON daily_report_runs(run_at DESC);
   `);
 
   // Materialized views — dropped and recreated on every cold start so schema changes
