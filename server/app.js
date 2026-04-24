@@ -1611,6 +1611,7 @@ app.get("/api/send-daily-report", async (req, res) => {
   const host = process.env.VERCEL_URL
     ? `https://${process.env.VERCEL_URL}`
     : `${req.protocol}://${req.get("host")}`;
+  console.log(`[daily-report] triggering worker at ${host}/api/send-daily-report/worker for ${runId}`);
   try {
     const workerRes = await fetch(`${host}/api/send-daily-report/worker`, {
       method: "POST",
@@ -1620,8 +1621,11 @@ app.get("/api/send-daily-report", async (req, res) => {
       },
       body: JSON.stringify({ runId, offset: 0, batchSize: 50 }),
     });
+    const workerBody = await workerRes.text();
     if (!workerRes.ok) {
-      console.error(`[daily-report] worker trigger returned HTTP ${workerRes.status} for ${runId}`);
+      console.error(`[daily-report] worker trigger returned HTTP ${workerRes.status} for ${runId}:`, workerBody);
+    } else {
+      console.log(`[daily-report] worker trigger OK for ${runId}:`, workerBody);
     }
   } catch (e) {
     console.error(`[daily-report] worker trigger failed for ${runId}:`, e?.message);
@@ -1650,6 +1654,7 @@ app.post("/api/send-daily-report/worker", async (req, res) => {
 
   const { runId, offset = 0, batchSize = 50 } = req.body;
   if (!runId) return res.status(400).json({ error: "runId required" });
+  console.log(`[daily-report] worker received — runId=${runId} offset=${offset}`);
 
   // ── Load run from DB ───────────────────────────────────────────────────────
   let run;
