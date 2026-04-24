@@ -101,7 +101,7 @@ export async function sendDailyReport(html, { to, cc, subject }) {
     templateData: { HTMLdata: html },
   };
 
-  console.log(`[email:daily] sending to=${toArr.join(",")} cc=${ccArr.join(",")||"—"} subject="${subject}"`);
+  console.log(`[email:daily] sending to=${toArr.join(",")} cc=${ccArr.join(",")||"—"} from=${from||"(not set)"} url=${url} subject="${subject}"`);
 
   const res = await fetch(url, {
     method:  "POST",
