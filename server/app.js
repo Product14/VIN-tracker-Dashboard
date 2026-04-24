@@ -1605,18 +1605,27 @@ app.get("/api/send-daily-report", async (req, res) => {
     return res.status(500).json({ error: "DB error creating run" });
   }
 
-  // ── Fire-and-forget worker (new Vercel invocation, own 300s budget) ────────
+  // ── Trigger worker — awaited so the request leaves before this invocation
+  // is frozen by Vercel. The worker processes batch 0 and chains the rest
+  // asynchronously, so awaiting here only blocks until batch 0 is done. ────────
   const host = process.env.VERCEL_URL
     ? `https://${process.env.VERCEL_URL}`
     : `${req.protocol}://${req.get("host")}`;
-  fetch(`${host}/api/send-daily-report/worker`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": req.headers.authorization ?? `Bearer ${cronSecret}`,
-    },
-    body: JSON.stringify({ runId, offset: 0, batchSize: 50 }),
-  }).catch(e => console.error(`[daily-report] worker trigger failed for ${runId}:`, e?.message));
+  try {
+    const workerRes = await fetch(`${host}/api/send-daily-report/worker`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": req.headers.authorization ?? `Bearer ${cronSecret}`,
+      },
+      body: JSON.stringify({ runId, offset: 0, batchSize: 50 }),
+    });
+    if (!workerRes.ok) {
+      console.error(`[daily-report] worker trigger returned HTTP ${workerRes.status} for ${runId}`);
+    }
+  } catch (e) {
+    console.error(`[daily-report] worker trigger failed for ${runId}:`, e?.message);
+  }
 
   return res.status(202).json({
     ok: true,
@@ -1881,14 +1890,22 @@ app.post("/api/send-daily-report/worker", async (req, res) => {
     const host = process.env.VERCEL_URL
       ? `https://${process.env.VERCEL_URL}`
       : `${req.protocol}://${req.get("host")}`;
-    fetch(`${host}/api/send-daily-report/worker`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": req.headers.authorization ?? `Bearer ${cronSecret}`,
-      },
-      body: JSON.stringify({ runId, offset: offset + batchSize, batchSize }),
-    }).catch(e => console.error(`[daily-report] failed to chain next batch (offset=${offset + batchSize}):`, e?.message));
+    // Await the fetch so the request leaves before this invocation is frozen by Vercel
+    try {
+      const chainRes = await fetch(`${host}/api/send-daily-report/worker`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": req.headers.authorization ?? `Bearer ${cronSecret}`,
+        },
+        body: JSON.stringify({ runId, offset: offset + batchSize, batchSize }),
+      });
+      if (!chainRes.ok) {
+        console.error(`[daily-report] failed to chain next batch (offset=${offset + batchSize}): HTTP ${chainRes.status}`);
+      }
+    } catch (e) {
+      console.error(`[daily-report] failed to chain next batch (offset=${offset + batchSize}):`, e?.message);
+    }
 
     return res.json({ ok: true, runId, offset, processed: batch.length, nextOffset: offset + batchSize });
   }
