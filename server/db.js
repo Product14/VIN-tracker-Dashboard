@@ -131,40 +131,46 @@ export async function initSchema() {
       computed_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
-    -- Audit log for every /api/send-daily-report run — one row per recipient.
-    CREATE TABLE IF NOT EXISTS report_run_logs (
-      id          SERIAL PRIMARY KEY,
-      run_id      TEXT        NOT NULL,
-      run_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      test_mode   BOOLEAN     NOT NULL DEFAULT FALSE,
-      report_type TEXT,
-      entity_id   TEXT,
-      name        TEXT,
-      email       TEXT,
-      status      TEXT        NOT NULL,
-      reason      TEXT
-    );
-    ALTER TABLE report_run_logs ADD COLUMN IF NOT EXISTS to_emails  TEXT[];
-    ALTER TABLE report_run_logs ADD COLUMN IF NOT EXISTS cc_emails  TEXT[];
-    ALTER TABLE report_run_logs ADD COLUMN IF NOT EXISTS bcc_emails TEXT[];
-    CREATE INDEX IF NOT EXISTS idx_report_run_logs_run_id ON report_run_logs(run_id);
-    CREATE INDEX IF NOT EXISTS idx_report_run_logs_run_at ON report_run_logs(run_at DESC);
-
-    -- Job tracking table for async /api/send-daily-report runs.
-    -- Each run is split into self-chaining batches of 50 recipients per Vercel invocation.
+    -- Run header for /api/send-daily-report — one row per trigger.
+    -- Aggregate counts (sent/skipped/errors) are derived on-demand from report_queue.
     CREATE TABLE IF NOT EXISTS daily_report_runs (
       run_id          TEXT        PRIMARY KEY,
       run_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       test_mode       BOOLEAN     NOT NULL DEFAULT FALSE,
-      status          TEXT        NOT NULL DEFAULT 'pending',
+      status          TEXT        NOT NULL DEFAULT 'pending',  -- pending | done
       recipient_count INT,
-      sent            INT,
-      skipped         INT,
-      errors          INT,
       completed_at    TIMESTAMPTZ,
-      params          JSONB
+      test_to         TEXT[],   -- test-mode TO override
+      test_cc         TEXT[]    -- test-mode CC override
     );
+    ALTER TABLE daily_report_runs ADD COLUMN IF NOT EXISTS test_to TEXT[];
+    ALTER TABLE daily_report_runs ADD COLUMN IF NOT EXISTS test_cc TEXT[];
     CREATE INDEX IF NOT EXISTS idx_daily_report_runs_run_at ON daily_report_runs(run_at DESC);
+
+    -- Queue + audit trail for /api/send-daily-report — one row per recipient per run.
+    -- Drives processing (status: pending → processing → sent/skipped/error).
+    -- Replaces report_run_logs.
+    CREATE TABLE IF NOT EXISTS report_queue (
+      id                    SERIAL PRIMARY KEY,
+      run_id                TEXT        NOT NULL,
+      email                 TEXT        NOT NULL,
+      rooftop_id            TEXT,
+      enterprise_id         TEXT,
+      report_type           TEXT        NOT NULL,
+      entity_id             TEXT,
+      entity_name           TEXT,
+      status                TEXT        NOT NULL DEFAULT 'pending',
+      attempt_count         INT         NOT NULL DEFAULT 0,
+      error_reason          TEXT,
+      to_emails             TEXT[],
+      cc_emails             TEXT[],
+      created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      processing_started_at TIMESTAMPTZ,
+      processed_at          TIMESTAMPTZ
+    );
+    CREATE INDEX IF NOT EXISTS idx_report_queue_pending    ON report_queue(status, created_at)           WHERE status = 'pending';
+    CREATE INDEX IF NOT EXISTS idx_report_queue_processing ON report_queue(status, processing_started_at) WHERE status = 'processing';
+    CREATE INDEX IF NOT EXISTS idx_report_queue_run_id     ON report_queue(run_id, status);
   `);
 
   // Materialized views — dropped and recreated on every cold start so schema changes

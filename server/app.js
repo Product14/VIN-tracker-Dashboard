@@ -1541,18 +1541,8 @@ app.post(
 );
 
 // ─── Daily Report Endpoint ────────────────────────────────────────────────────
-// Returns 202 immediately. Stores the job in daily_report_runs, then fires a
-// self-fetch to /api/send-daily-report/worker which runs in its own Vercel
-// invocation (up to 300s) so 500 recipients never hit the caller's timeout.
-//
-// Requires DB migration:
-//   CREATE TABLE daily_report_runs (
-//     run_id TEXT PRIMARY KEY, run_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-//     test_mode BOOLEAN NOT NULL DEFAULT FALSE,
-//     status TEXT NOT NULL DEFAULT 'pending',   -- pending | processing | done | failed
-//     recipient_count INT, sent INT, skipped INT, errors INT,
-//     completed_at TIMESTAMPTZ, params JSONB
-//   );
+// Returns 202 immediately. Enqueues all recipients into report_queue.
+// Processing is handled by POST /api/process-report-queue (cron, every minute).
 
 app.get("/api/send-daily-report", async (req, res) => {
   // ── Auth ───────────────────────────────────────────────────────────────────
@@ -1569,21 +1559,24 @@ app.get("/api/send-daily-report", async (req, res) => {
   const testCc   = req.query.cc ? String(req.query.cc).split(",").map(s => s.trim()).filter(Boolean) : null;
   const testMode = testTo !== null;
 
-  if (testMode && !req.query.rooftopId && !req.query.enterpriseId) {
-    return res.status(400).json({ error: "Test mode requires rooftopId (reportType=Rooftop) or enterpriseId (reportType=Group)" });
-  }
-
   const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const runAt = new Date().toISOString();
-  console.log(`[daily-report] queuing run ${runId}${testMode ? ` (test mode → ${testTo.join(",")})` : ""}`);
+  const testModeLabel = testMode
+    ? (req.query.rooftopId || req.query.enterpriseId ? "single-entity" : "full-run")
+    : "production";
+  console.log(`[daily-report] queuing run ${runId} (${testModeLabel}${testMode ? ` → ${testTo.join(",")}` : ""})`);
 
-  // ── Load recipients (fast DB query, done before 202) ──────────────────────
+  // ── Load recipients ────────────────────────────────────────────────────────
+  // Three modes:
+  //   1. testMode + rooftopId/enterpriseId → single entity test (one recipient)
+  //   2. testMode + no entity ID           → full-run test (all email_recipients, TO overridden, no CC)
+  //   3. production                        → all email_recipients, real TO/CC
   let recipients;
   try {
-    if (testMode) {
+    if (testMode && (req.query.rooftopId || req.query.enterpriseId)) {
       recipients = [];
-      if (req.query.rooftopId)   recipients.push({ email: testTo, rooftop_id: String(req.query.rooftopId), enterprise_id: null, report_type: "Rooftop" });
-      if (req.query.enterpriseId) recipients.push({ email: testTo, rooftop_id: null, enterprise_id: String(req.query.enterpriseId), report_type: "Group" });
+      if (req.query.rooftopId)    recipients.push({ email: testTo.join(","), rooftop_id: String(req.query.rooftopId),    enterprise_id: null,                           report_type: "Rooftop" });
+      if (req.query.enterpriseId) recipients.push({ email: testTo.join(","), rooftop_id: null,                          enterprise_id: String(req.query.enterpriseId), report_type: "Group"   });
     } else {
       const { rows } = await query("SELECT email, rooftop_id, enterprise_id, report_type FROM email_recipients");
       recipients = rows;
@@ -1593,43 +1586,34 @@ app.get("/api/send-daily-report", async (req, res) => {
     return res.status(500).json({ error: "DB error loading recipients" });
   }
 
-  // ── Store run as pending ───────────────────────────────────────────────────
+  // ── Create run record ──────────────────────────────────────────────────────
   try {
     await query(
-      `INSERT INTO daily_report_runs (run_id, run_at, test_mode, status, recipient_count, params)
-       VALUES ($1, $2, $3, 'pending', $4, $5)`,
-      [runId, runAt, testMode, recipients.length, JSON.stringify({ testTo, testCc, recipients })]
+      `INSERT INTO daily_report_runs (run_id, run_at, test_mode, status, recipient_count, test_to, test_cc)
+       VALUES ($1, $2, $3, 'pending', $4, $5, $6)`,
+      [runId, runAt, testMode, recipients.length, testTo, testCc]
     );
   } catch (e) {
     console.error("[daily-report] failed to store run:", e?.message);
     return res.status(500).json({ error: "DB error creating run" });
   }
 
-  // ── Trigger worker — awaited so the request leaves before this invocation
-  // is frozen by Vercel. The worker processes batch 0 and chains the rest
-  // asynchronously, so awaiting here only blocks until batch 0 is done. ────────
-  const host = process.env.VERCEL_URL
-    ? `https://${process.env.VERCEL_URL}`
-    : `${req.protocol}://${req.get("host")}`;
-  console.log(`[daily-report] triggering worker at ${host}/api/send-daily-report/worker for ${runId}`);
-  try {
-    const workerRes = await fetch(`${host}/api/send-daily-report/worker`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": req.headers.authorization ?? `Bearer ${cronSecret}`,
-      },
-      body: JSON.stringify({ runId, offset: 0, batchSize: 50 }),
-    });
-    const workerBody = await workerRes.text();
-    if (!workerRes.ok) {
-      console.error(`[daily-report] worker trigger returned HTTP ${workerRes.status} for ${runId}:`, workerBody);
-    } else {
-      console.log(`[daily-report] worker trigger OK for ${runId}:`, workerBody);
+  // ── Enqueue all recipients into report_queue ───────────────────────────────
+  if (recipients.length > 0) {
+    try {
+      const placeholders = recipients.map((_, i) => `($1, $${i * 4 + 2}, $${i * 4 + 3}, $${i * 4 + 4}, $${i * 4 + 5})`).join(", ");
+      const params = [runId, ...recipients.flatMap(r => [r.email, r.rooftop_id || null, r.enterprise_id || null, r.report_type])];
+      await query(
+        `INSERT INTO report_queue (run_id, email, rooftop_id, enterprise_id, report_type) VALUES ${placeholders}`,
+        params
+      );
+    } catch (e) {
+      console.error("[daily-report] failed to enqueue recipients:", e?.message);
+      return res.status(500).json({ error: "DB error enqueuing recipients" });
     }
-  } catch (e) {
-    console.error(`[daily-report] worker trigger failed for ${runId}:`, e?.message);
   }
+
+  console.log(`[daily-report] run ${runId} queued — ${recipients.length} recipients`);
 
   return res.status(202).json({
     ok: true,
@@ -1640,48 +1624,92 @@ app.get("/api/send-daily-report", async (req, res) => {
   });
 });
 
-// ─── Daily Report Worker (internal, self-chaining batches) ───────────────────
-// Each invocation processes one batch of recipients then fires the next batch
-// as a fire-and-forget, so total recipients is unbounded regardless of the
-// 300s Vercel function limit.
-// Not intended to be called directly by clients.
+// ─── Daily Report Queue Processor ────────────────────────────────────────────
+// POST /api/process-report-queue
+// Called every minute by Vercel cron. Claims up to 50 pending report_queue rows
+// using SELECT FOR UPDATE SKIP LOCKED, processes them, and updates status.
+// Safe to run concurrently — locking prevents duplicate sends.
+// Stuck rows (processing > 10 min) are automatically reset and retried.
 
-app.post("/api/send-daily-report/worker", async (req, res) => {
+app.post("/api/process-report-queue", async (req, res) => {
   const cronSecret = process.env.CRON_SECRET;
   if (cronSecret && req.headers.authorization !== `Bearer ${cronSecret}`) {
     return res.status(401).json({ error: "Unauthorized" });
   }
 
-  const { runId, offset = 0, batchSize = 50 } = req.body;
-  if (!runId) return res.status(400).json({ error: "runId required" });
-  console.log(`[daily-report] worker received — runId=${runId} offset=${offset}`);
-
-  // ── Load run from DB ───────────────────────────────────────────────────────
-  let run;
+  // ── Step 0: Check Metabase sync lock ──────────────────────────────────────
   try {
-    const { rows: [r] } = await query(
-      `SELECT run_id, run_at, test_mode, params FROM daily_report_runs WHERE run_id = $1`,
-      [runId]
-    );
-    run = r;
+    const { rows: [syncState] } = await query("SELECT running FROM sync_state LIMIT 1");
+    if (syncState?.running) {
+      console.log("[process-queue] Metabase sync in progress — skipping tick");
+      return res.json({ ok: true, skipped: true, reason: "sync_in_progress" });
+    }
   } catch (e) {
-    return res.status(500).json({ error: "DB error loading run" });
-  }
-  if (!run) return res.status(404).json({ error: "Run not found" });
-
-  // Mark processing only on the first batch so status doesn't regress
-  if (offset === 0) {
-    await query(`UPDATE daily_report_runs SET status = 'processing' WHERE run_id = $1`, [runId]);
+    console.error("[process-queue] failed to check sync state:", e?.message);
   }
 
-  const { testTo, testCc, recipients } = run.params;
-  const testMode    = run.test_mode;
-  const runAt       = run.run_at;
-  const batch       = recipients.slice(offset, offset + batchSize);
-  const isLastBatch = offset + batchSize >= recipients.length;
-  const results     = { groups: [], rooftops: [], skipped: [], errors: [] };
+  // ── Step 1: Reset stuck rows (processing for > 10 min) ────────────────────
+  try {
+    await query(`
+      UPDATE report_queue
+         SET status        = CASE WHEN attempt_count >= 2 THEN 'error' ELSE 'pending' END,
+             attempt_count = attempt_count + 1,
+             error_reason  = CASE WHEN attempt_count >= 2 THEN 'timed_out' ELSE error_reason END,
+             processing_started_at = NULL
+       WHERE status = 'processing'
+         AND processing_started_at < NOW() - INTERVAL '10 minutes'
+    `);
+  } catch (e) {
+    console.error("[process-queue] failed to reset stuck rows:", e?.message);
+  }
 
-  console.log(`[daily-report] worker batch offset=${offset} size=${batch.length} last=${isLastBatch} run=${runId}`);
+  // ── Step 2: Claim a batch atomically ──────────────────────────────────────
+  let batch = [];
+  const client = await getClient();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query(`
+      SELECT id, run_id, email, rooftop_id, enterprise_id, report_type, attempt_count
+        FROM report_queue
+       WHERE status = 'pending'
+       ORDER BY created_at
+       LIMIT 20
+         FOR UPDATE SKIP LOCKED
+    `);
+    batch = rows;
+    if (batch.length > 0) {
+      await client.query(
+        `UPDATE report_queue SET status = 'processing', processing_started_at = NOW() WHERE id = ANY($1)`,
+        [batch.map(r => r.id)]
+      );
+    }
+    await client.query("COMMIT");
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    client.release();
+    console.error("[process-queue] failed to claim batch:", e?.message);
+    return res.status(500).json({ error: "DB error claiming batch" });
+  }
+  client.release();
+
+  if (batch.length === 0) {
+    return res.json({ ok: true, processed: 0, message: "queue empty" });
+  }
+
+  console.log(`[process-queue] claimed ${batch.length} rows`);
+
+  // ── Load run metadata for all unique run_ids in this batch ────────────────
+  const runIds = [...new Set(batch.map(r => r.run_id))];
+  let runMeta = {};
+  try {
+    const { rows: runRows } = await query(
+      `SELECT run_id, run_at, test_mode, test_to, test_cc FROM daily_report_runs WHERE run_id = ANY($1)`,
+      [runIds]
+    );
+    runMeta = Object.fromEntries(runRows.map(r => [r.run_id, r]));
+  } catch (e) {
+    console.error("[process-queue] failed to load run metadata:", e?.message);
+  }
 
   // ── Gate helpers ───────────────────────────────────────────────────────────
   async function imsOffForRooftop(rooftopId) {
@@ -1694,9 +1722,8 @@ app.post("/api/send-daily-report/worker", async (req, res) => {
 
   async function imsOffForEnterprise(enterpriseId) {
     const { rows: [r] } = await query(
-      `SELECT COUNT(*) AS not_integrated
-       FROM rooftop_details
-       WHERE enterprise_id = $1 AND ims_integration_status != 'true'`,
+      `SELECT COUNT(*) AS not_integrated FROM rooftop_details
+        WHERE enterprise_id = $1 AND ims_integration_status != 'true'`,
       [enterpriseId]
     );
     return Number(r.not_integrated) > 0;
@@ -1704,12 +1731,11 @@ app.post("/api/send-daily-report/worker", async (req, res) => {
 
   async function hasStalePendingVins(field, id, tz, yesterdayStr) {
     const { rows: [r] } = await query(
-      `SELECT COUNT(*) AS pending_count
-       FROM vins
-       WHERE ${field} = $1
-         AND COALESCE(has_photos, 0) = 1
-         AND DATE(received_at::timestamptz AT TIME ZONE $2) <= $3::date
-         AND status != 'Delivered'`,
+      `SELECT COUNT(*) AS pending_count FROM vins
+        WHERE ${field} = $1
+          AND COALESCE(has_photos, 0) = 1
+          AND DATE(received_at::timestamptz AT TIME ZONE $2) <= $3::date
+          AND status != 'Delivered'`,
       [id, tz, yesterdayStr]
     );
     return Number(r.pending_count) > 1;
@@ -1717,16 +1743,13 @@ app.post("/api/send-daily-report/worker", async (req, res) => {
 
   async function hasNegativeTat(field, id, tz, yesterdayStr) {
     const { rows: [r] } = await query(
-      `SELECT COUNT(*) AS negative_count
-       FROM (
-         SELECT processed_at, received_at
-         FROM vins
-         WHERE ${field} = $1
-           AND status = 'Delivered'
-           AND COALESCE(has_photos, 0) = 1
-           AND DATE(received_at::timestamptz AT TIME ZONE $2) = $3::date
-         ORDER BY received_at DESC
-         LIMIT 5
+      `SELECT COUNT(*) AS negative_count FROM (
+         SELECT processed_at, received_at FROM vins
+          WHERE ${field} = $1
+            AND status = 'Delivered'
+            AND COALESCE(has_photos, 0) = 1
+            AND DATE(received_at::timestamptz AT TIME ZONE $2) = $3::date
+          ORDER BY received_at DESC LIMIT 5
        ) sub
        WHERE processed_at IS NOT NULL
          AND received_at IS NOT NULL
@@ -1738,12 +1761,11 @@ app.post("/api/send-daily-report/worker", async (req, res) => {
 
   async function hasLowPhotoCoverage(field, id, tz, yesterdayStr) {
     const { rows: [r] } = await query(
-      `SELECT
-         COUNT(*) AS total_active,
-         COUNT(*) FILTER (WHERE COALESCE(has_photos, 0) = 1) AS with_photos
-       FROM vins
-       WHERE ${field} = $1
-         AND (received_at IS NULL OR DATE(received_at::timestamptz AT TIME ZONE $2) <= $3::date)`,
+      `SELECT COUNT(*) AS total_active,
+              COUNT(*) FILTER (WHERE COALESCE(has_photos, 0) = 1) AS with_photos
+         FROM vins
+        WHERE ${field} = $1
+          AND (received_at IS NULL OR DATE(received_at::timestamptz AT TIME ZONE $2) <= $3::date)`,
       [id, tz, yesterdayStr]
     );
     const total = Number(r.total_active) || 0;
@@ -1751,9 +1773,15 @@ app.post("/api/send-daily-report/worker", async (req, res) => {
     return Number(r.with_photos) / total * 100 < 75;
   }
 
-  // ── Process this batch ────────────────────────────────────────────────────
-  for (const recipient of batch) {
-    const { email, rooftop_id, enterprise_id, report_type } = recipient;
+  // ── Step 3: Process each row ───────────────────────────────────────────────
+  let sentCount = 0, skippedCount = 0, errorCount = 0;
+
+  for (const row of batch) {
+    const { id, run_id, email, rooftop_id, enterprise_id, report_type, attempt_count } = row;
+    const run      = runMeta[run_id] || {};
+    const testMode = run.test_mode || false;
+    const testTo   = run.test_to   || null;
+    const testCc   = run.test_cc   || null;
 
     try {
       if (report_type === "Rooftop") {
@@ -1761,173 +1789,150 @@ app.post("/api/send-daily-report/worker", async (req, res) => {
           `SELECT rd.team_id, rd.team_name, rd.enterprise_id,
                   COALESCE(ed.timezone, 'America/New_York') AS timezone,
                   ed.poc_email
-           FROM rooftop_details rd
-           LEFT JOIN enterprise_details ed ON rd.enterprise_id = ed.enterprise_id
-           WHERE rd.team_id = $1`,
+             FROM rooftop_details rd
+             LEFT JOIN enterprise_details ed ON rd.enterprise_id = ed.enterprise_id
+            WHERE rd.team_id = $1`,
           [rooftop_id]
         );
-        if (!rt) { results.errors.push({ type: "rooftop", id: rooftop_id, error: "Rooftop not found" }); continue; }
+        if (!rt) {
+          await query(`UPDATE report_queue SET status='error', error_reason=$2, processed_at=NOW() WHERE id=$1`, [id, "Rooftop not found"]);
+          errorCount++; continue;
+        }
 
         const tz = rt.timezone || "America/New_York";
         const { yesterdayStr, dateLabel } = yesterdayFor(tz);
 
         if (await imsOffForRooftop(rooftop_id)) {
-          results.skipped.push({ type: "rooftop", id: rooftop_id, name: rt.team_name, reason: "ims_off" });
-          console.log(`[daily-report] rooftop ${rooftop_id} skipped — IMS not active`);
-          continue;
+          await query(`UPDATE report_queue SET status='skipped', entity_id=$2, entity_name=$3, error_reason='ims_off', processed_at=NOW() WHERE id=$1`, [id, rooftop_id, rt.team_name]);
+          console.log(`[process-queue] rooftop ${rooftop_id} skipped — IMS not active`);
+          skippedCount++; continue;
         }
         if (await hasStalePendingVins("rooftop_id", rooftop_id, tz, yesterdayStr)) {
-          results.skipped.push({ type: "rooftop", id: rooftop_id, name: rt.team_name, reason: "pending_vins" });
-          console.log(`[daily-report] rooftop ${rooftop_id} skipped — pending VINs > 1`);
-          continue;
+          await query(`UPDATE report_queue SET status='skipped', entity_id=$2, entity_name=$3, error_reason='pending_vins', processed_at=NOW() WHERE id=$1`, [id, rooftop_id, rt.team_name]);
+          console.log(`[process-queue] rooftop ${rooftop_id} skipped — pending VINs > 1`);
+          skippedCount++; continue;
         }
         if (await hasNegativeTat("rooftop_id", rooftop_id, tz, yesterdayStr)) {
-          results.skipped.push({ type: "rooftop", id: rooftop_id, name: rt.team_name, reason: "negative_tat" });
-          console.log(`[daily-report] rooftop ${rooftop_id} skipped — negative TAT detected`);
-          continue;
+          await query(`UPDATE report_queue SET status='skipped', entity_id=$2, entity_name=$3, error_reason='negative_tat', processed_at=NOW() WHERE id=$1`, [id, rooftop_id, rt.team_name]);
+          console.log(`[process-queue] rooftop ${rooftop_id} skipped — negative TAT detected`);
+          skippedCount++; continue;
         }
         if (await hasLowPhotoCoverage("rooftop_id", rooftop_id, tz, yesterdayStr)) {
-          results.skipped.push({ type: "rooftop", id: rooftop_id, name: rt.team_name, reason: "low_photo_coverage" });
-          console.log(`[daily-report] rooftop ${rooftop_id} skipped — photo coverage < 75%`);
-          continue;
+          await query(`UPDATE report_queue SET status='skipped', entity_id=$2, entity_name=$3, error_reason='low_photo_coverage', processed_at=NOW() WHERE id=$1`, [id, rooftop_id, rt.team_name]);
+          console.log(`[process-queue] rooftop ${rooftop_id} skipped — photo coverage < 75%`);
+          skippedCount++; continue;
         }
 
-        const data = await computeRooftopDailyReport(rooftop_id, yesterdayStr, tz);
-        const html = buildRooftopReportHtml(data, dateLabel, tz);
-        const to   = testMode ? testTo : email;
-        const cc   = testMode ? testCc  : (rt.poc_email || undefined);
+        const data    = await computeRooftopDailyReport(rooftop_id, yesterdayStr, tz);
+        const html    = buildRooftopReportHtml(data, dateLabel, tz);
+        const to      = testMode ? testTo : email.split(",").map(s => s.trim()).filter(Boolean);
+        const cc      = testMode ? testCc : (rt.poc_email || undefined);
         const subject = `${testMode ? "[TEST] " : ""}Studio AI Daily Report — ${rt.team_name || rooftop_id} — ${dateLabel}`;
         await sendDailyReport(html, { to, ...(cc && { cc }), subject });
-        results.rooftops.push({ rooftopId: rooftop_id, name: rt.team_name, status: "sent", to: Array.isArray(to) ? to : [to], ...(cc && { cc: Array.isArray(cc) ? cc : [cc] }) });
-        console.log(`[daily-report] rooftop report sent → ${to} (${rt.team_name})`);
+
+        const toArr = Array.isArray(to) ? to : [to];
+        const ccArr = cc ? (Array.isArray(cc) ? cc : [cc]) : null;
+        await query(
+          `UPDATE report_queue SET status='sent', entity_id=$2, entity_name=$3, to_emails=$4, cc_emails=$5, processed_at=NOW() WHERE id=$1`,
+          [id, rooftop_id, rt.team_name, toArr, ccArr]
+        );
+        console.log(`[process-queue] rooftop report sent → ${toArr.join(",")} (${rt.team_name})`);
+        sentCount++;
 
       } else if (report_type === "Group") {
         const { rows: [ent] } = await query(
-          `SELECT enterprise_id, name,
-                  COALESCE(timezone, 'America/New_York') AS timezone,
-                  poc_email
-           FROM enterprise_details WHERE enterprise_id = $1`,
+          `SELECT enterprise_id, name, COALESCE(timezone, 'America/New_York') AS timezone, poc_email
+             FROM enterprise_details WHERE enterprise_id = $1`,
           [enterprise_id]
         );
-        if (!ent) { results.errors.push({ type: "group", id: enterprise_id, error: "Enterprise not found" }); continue; }
+        if (!ent) {
+          await query(`UPDATE report_queue SET status='error', error_reason=$2, processed_at=NOW() WHERE id=$1`, [id, "Enterprise not found"]);
+          errorCount++; continue;
+        }
 
         const tz = ent.timezone || "America/New_York";
         const { yesterdayStr, dateLabel } = yesterdayFor(tz);
 
         if (await imsOffForEnterprise(enterprise_id)) {
-          results.skipped.push({ type: "group", id: enterprise_id, name: ent.name, reason: "ims_off" });
-          console.log(`[daily-report] enterprise ${enterprise_id} skipped — one or more rooftops have IMS off`);
-          continue;
+          await query(`UPDATE report_queue SET status='skipped', entity_id=$2, entity_name=$3, error_reason='ims_off', processed_at=NOW() WHERE id=$1`, [id, enterprise_id, ent.name]);
+          console.log(`[process-queue] enterprise ${enterprise_id} skipped — one or more rooftops have IMS off`);
+          skippedCount++; continue;
         }
         if (await hasStalePendingVins("enterprise_id", enterprise_id, tz, yesterdayStr)) {
-          results.skipped.push({ type: "group", id: enterprise_id, name: ent.name, reason: "pending_vins" });
-          console.log(`[daily-report] enterprise ${enterprise_id} skipped — pending VINs > 1`);
-          continue;
+          await query(`UPDATE report_queue SET status='skipped', entity_id=$2, entity_name=$3, error_reason='pending_vins', processed_at=NOW() WHERE id=$1`, [id, enterprise_id, ent.name]);
+          console.log(`[process-queue] enterprise ${enterprise_id} skipped — pending VINs > 1`);
+          skippedCount++; continue;
         }
         if (await hasNegativeTat("enterprise_id", enterprise_id, tz, yesterdayStr)) {
-          results.skipped.push({ type: "group", id: enterprise_id, name: ent.name, reason: "negative_tat" });
-          console.log(`[daily-report] enterprise ${enterprise_id} skipped — negative TAT detected`);
-          continue;
+          await query(`UPDATE report_queue SET status='skipped', entity_id=$2, entity_name=$3, error_reason='negative_tat', processed_at=NOW() WHERE id=$1`, [id, enterprise_id, ent.name]);
+          console.log(`[process-queue] enterprise ${enterprise_id} skipped — negative TAT detected`);
+          skippedCount++; continue;
         }
         if (await hasLowPhotoCoverage("enterprise_id", enterprise_id, tz, yesterdayStr)) {
-          results.skipped.push({ type: "group", id: enterprise_id, name: ent.name, reason: "low_photo_coverage" });
-          console.log(`[daily-report] enterprise ${enterprise_id} skipped — photo coverage < 75%`);
-          continue;
+          await query(`UPDATE report_queue SET status='skipped', entity_id=$2, entity_name=$3, error_reason='low_photo_coverage', processed_at=NOW() WHERE id=$1`, [id, enterprise_id, ent.name]);
+          console.log(`[process-queue] enterprise ${enterprise_id} skipped — photo coverage < 75%`);
+          skippedCount++; continue;
         }
 
-        const data = await computeGroupDailyReport(enterprise_id, yesterdayStr, tz);
-        const html = buildGroupReportHtml(data, dateLabel);
-        const to   = testMode ? testTo : email;
-        const cc   = testMode ? testCc  : (ent.poc_email || undefined);
+        const data    = await computeGroupDailyReport(enterprise_id, yesterdayStr, tz);
+        const html    = buildGroupReportHtml(data, dateLabel);
+        const to      = testMode ? testTo : email.split(",").map(s => s.trim()).filter(Boolean);
+        const cc      = testMode ? testCc : (ent.poc_email || undefined);
         const subject = `${testMode ? "[TEST] " : ""}Studio AI Group Report — ${ent.name || enterprise_id} — ${dateLabel}`;
         await sendDailyReport(html, { to, ...(cc && { cc }), subject });
-        results.groups.push({ enterpriseId: enterprise_id, name: ent.name, status: "sent", to: Array.isArray(to) ? to : [to], ...(cc && { cc: Array.isArray(cc) ? cc : [cc] }) });
-        console.log(`[daily-report] group report sent → ${to} (${ent.name})`);
+
+        const toArr = Array.isArray(to) ? to : [to];
+        const ccArr = cc ? (Array.isArray(cc) ? cc : [cc]) : null;
+        await query(
+          `UPDATE report_queue SET status='sent', entity_id=$2, entity_name=$3, to_emails=$4, cc_emails=$5, processed_at=NOW() WHERE id=$1`,
+          [id, enterprise_id, ent.name, toArr, ccArr]
+        );
+        console.log(`[process-queue] group report sent → ${toArr.join(",")} (${ent.name})`);
+        sentCount++;
 
       } else {
-        results.errors.push({ type: "unknown", id: rooftop_id || enterprise_id, error: `Unknown report_type: ${report_type}` });
+        await query(`UPDATE report_queue SET status='error', error_reason=$2, processed_at=NOW() WHERE id=$1`, [id, `Unknown report_type: ${report_type}`]);
+        errorCount++;
       }
+
     } catch (e) {
-      const id = rooftop_id || enterprise_id;
-      results.errors.push({ type: report_type?.toLowerCase() || "unknown", id, error: e?.message });
-      console.error(`[daily-report] ERROR — type=${report_type} id=${id} email=${email} run_id=${runId}:`, e?.message);
-      console.error(e);
-    }
-  }
-
-  const sentCount    = results.rooftops.length + results.groups.length;
-  const skippedCount = results.skipped.length;
-  const errorCount   = results.errors.length;
-  console.log(`[daily-report] batch offset=${offset} — sent=${sentCount} skipped=${skippedCount} errors=${errorCount}`);
-
-  // ── Write audit log for this batch ────────────────────────────────────────
-  // Migration: ALTER TABLE report_run_logs ADD COLUMN to_emails TEXT[], ADD COLUMN cc_emails TEXT[], ADD COLUMN bcc_emails TEXT[];
-  const logRows = [
-    ...results.rooftops.map(r => ({ type: "Rooftop", id: r.rooftopId,    name: r.name, email: batch.find(rec => rec.rooftop_id   === r.rooftopId)?.email,    status: "sent",    reason: null,     to: r.to ?? null, cc: r.cc ?? null, bcc: r.bcc ?? null })),
-    ...results.groups  .map(r => ({ type: "Group",   id: r.enterpriseId, name: r.name, email: batch.find(rec => rec.enterprise_id === r.enterpriseId)?.email, status: "sent",    reason: null,     to: r.to ?? null, cc: r.cc ?? null, bcc: r.bcc ?? null })),
-    ...results.skipped .map(r => ({ type: r.type,    id: r.id,           name: r.name, email: batch.find(rec => (rec.rooftop_id || rec.enterprise_id) === r.id)?.email, status: "skipped", reason: r.reason, to: null,         cc: null,         bcc: null })),
-    ...results.errors  .map(r => ({ type: r.type,    id: r.id,           name: null,   email: batch.find(rec => (rec.rooftop_id || rec.enterprise_id) === r.id)?.email, status: "error",   reason: r.error,  to: null,         cc: null,         bcc: null })),
-  ];
-  try {
-    for (const row of logRows) {
+      const newAttemptCount = (attempt_count || 0) + 1;
+      const newStatus = newAttemptCount >= 3 ? "error" : "pending";
+      console.error(`[process-queue] ERROR — type=${report_type} id=${rooftop_id || enterprise_id} run=${run_id}:`, e?.message, e);
       await query(
-        `INSERT INTO report_run_logs (run_id, run_at, test_mode, report_type, entity_id, name, email, status, reason, to_emails, cc_emails, bcc_emails)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-        [runId, runAt, testMode, row.type, row.id, row.name, row.email, row.status, row.reason, row.to, row.cc, row.bcc]
-      );
+        `UPDATE report_queue
+            SET status = $2, attempt_count = $3, error_reason = $4, processing_started_at = NULL
+          WHERE id = $1`,
+        [id, newStatus, newAttemptCount, e?.message]
+      ).catch(dbErr => console.error("[process-queue] failed to update error status:", dbErr?.message));
+      errorCount++;
     }
-  } catch (e) {
-    console.error(`[daily-report] failed to write audit log for batch offset=${offset}:`, e?.message);
   }
 
-  // ── Incrementally update aggregate counts in daily_report_runs ────────────
-  await query(
-    `UPDATE daily_report_runs
-        SET sent    = COALESCE(sent,    0) + $2,
-            skipped = COALESCE(skipped, 0) + $3,
-            errors  = COALESCE(errors,  0) + $4
-      WHERE run_id = $1`,
-    [runId, sentCount, skippedCount, errorCount]
-  ).catch(e => console.error("[daily-report] failed to update counts:", e?.message));
+  console.log(`[process-queue] batch complete — sent=${sentCount} skipped=${skippedCount} errors=${errorCount}`);
 
-  // ── Chain next batch or mark complete ─────────────────────────────────────
-  if (!isLastBatch) {
-    const host = process.env.VERCEL_URL
-      ? `https://${process.env.VERCEL_URL}`
-      : `${req.protocol}://${req.get("host")}`;
-    // Await the fetch so the request leaves before this invocation is frozen by Vercel
+  // ── Step 4: Check run completion ───────────────────────────────────────────
+  for (const runId of runIds) {
     try {
-      const chainRes = await fetch(`${host}/api/send-daily-report/worker`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": req.headers.authorization ?? `Bearer ${cronSecret}`,
-        },
-        body: JSON.stringify({ runId, offset: offset + batchSize, batchSize }),
-      });
-      if (!chainRes.ok) {
-        console.error(`[daily-report] failed to chain next batch (offset=${offset + batchSize}): HTTP ${chainRes.status}`);
+      const { rows: [{ count }] } = await query(
+        `SELECT COUNT(*)::int AS count FROM report_queue WHERE run_id = $1 AND status IN ('pending', 'processing')`,
+        [runId]
+      );
+      if (count === 0) {
+        await query(`UPDATE daily_report_runs SET status = 'done', completed_at = NOW() WHERE run_id = $1`, [runId]);
+        console.log(`[process-queue] run ${runId} complete`);
       }
     } catch (e) {
-      console.error(`[daily-report] failed to chain next batch (offset=${offset + batchSize}):`, e?.message);
+      console.error(`[process-queue] failed to check run completion for ${runId}:`, e?.message);
     }
-
-    return res.json({ ok: true, runId, offset, processed: batch.length, nextOffset: offset + batchSize });
   }
 
-  // Last batch — stamp final status
-  await query(
-    `UPDATE daily_report_runs SET status = 'done', completed_at = NOW() WHERE run_id = $1`,
-    [runId]
-  ).catch(e => console.error("[daily-report] failed to mark run done:", e?.message));
-
-  console.log(`[daily-report] run ${runId} complete`);
-  return res.json({ ok: true, runId, offset, processed: batch.length, status: "done" });
+  return res.json({ ok: true, processed: batch.length, sent: sentCount, skipped: skippedCount, errors: errorCount });
 });
 
 // ─── Daily Report Status ──────────────────────────────────────────────────────
 // GET /api/send-daily-report/status?runId=xxx
-// Poll this after the 202 to check if the worker has finished.
+// Poll this after the 202 to check progress. Counts are derived from report_queue.
 
 app.get("/api/send-daily-report/status", async (req, res) => {
   const cronSecret = process.env.CRON_SECRET;
@@ -1939,61 +1944,26 @@ app.get("/api/send-daily-report/status", async (req, res) => {
   if (!runId) return res.status(400).json({ error: "runId required" });
 
   const { rows: [run] } = await query(
-    `SELECT run_id, run_at, test_mode, status, recipient_count, sent, skipped, errors, completed_at
+    `SELECT run_id, run_at, test_mode, status, recipient_count, completed_at
        FROM daily_report_runs WHERE run_id = $1`,
     [runId]
   );
   if (!run) return res.status(404).json({ error: "Run not found" });
 
-  return res.json(run);
-});
+  const { rows: counts } = await query(
+    `SELECT status, COUNT(*)::int AS count FROM report_queue WHERE run_id = $1 GROUP BY status`,
+    [runId]
+  );
+  const countMap = Object.fromEntries(counts.map(r => [r.status, r.count]));
 
-// ─── Daily Report Audit Log Download ─────────────────────────────────────────
-// GET /api/send-daily-report/logs.csv
-// Optional query params:
-//   ?runId=<id>   — filter to a single run
-//   ?limit=<n>    — max rows to return (default 1000)
-
-app.get("/api/send-daily-report/logs.csv", async (req, res) => {
-  const cronSecret = process.env.CRON_SECRET;
-  if (cronSecret && req.headers.authorization !== `Bearer ${cronSecret}`) {
-    return res.status(401).json({ error: "Unauthorized" });
-  }
-
-  const limit  = Math.min(Number(req.query.limit) || 1000, 10000);
-  const runId  = req.query.runId ? String(req.query.runId) : null;
-
-  let rows;
-  try {
-    const { rows: r } = await query(
-      `SELECT run_id, run_at, test_mode, report_type, entity_id, name, email, status, reason
-       FROM report_run_logs
-       ${runId ? "WHERE run_id = $1" : ""}
-       ORDER BY run_at DESC, id ASC
-       LIMIT ${runId ? "$2" : "$1"}`,
-      runId ? [runId, limit] : [limit]
-    );
-    rows = r;
-  } catch (e) {
-    return res.status(500).json({ error: "DB error fetching logs" });
-  }
-
-  const escape = (v) => {
-    if (v == null) return "";
-    const s = String(v);
-    return s.includes(",") || s.includes('"') || s.includes("\n") ? `"${s.replace(/"/g, '""')}"` : s;
-  };
-
-  const headers = ["run_id", "run_at", "test_mode", "report_type", "entity_id", "name", "email", "status", "reason"];
-  const csv = [
-    headers.join(","),
-    ...rows.map(r => headers.map(h => escape(r[h])).join(",")),
-  ].join("\n");
-
-  const filename = runId ? `report-log-${runId}.csv` : `report-logs.csv`;
-  res.setHeader("Content-Type", "text/csv");
-  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
-  return res.send(csv);
+  return res.json({
+    ...run,
+    sent:       countMap.sent       || 0,
+    skipped:    countMap.skipped    || 0,
+    errors:     countMap.error      || 0,
+    pending:    countMap.pending    || 0,
+    processing: countMap.processing || 0,
+  });
 });
 
 // ─── Email Preview (browser, real DB data, no emails sent) ───────────────────
