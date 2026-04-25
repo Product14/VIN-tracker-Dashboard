@@ -1492,7 +1492,159 @@ const EMPTY_SUMMARY = {
   byBucket: [],
 };
 
+// ─── Admin View ───────────────────────────────────────────────────────────────
+
+function AdminView({ syncing }: { syncing: boolean }) {
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [result, setResult] = useState<
+    | { ok: true; inserted: number }
+    | { ok: false; errors: Array<{ row: number; data: string; reason: string }> }
+    | null
+  >(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  function handleDownload() {
+    const a = document.createElement("a");
+    a.href = "/api/email-recipients";
+    a.download = "email-recipients.csv";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }
+
+  async function handleUpload() {
+    if (!selectedFile || uploading || syncing) return;
+    const text = await selectedFile.text();
+    setUploading(true);
+    setResult(null);
+    try {
+      const res = await fetch("/api/email-recipients/upload", {
+        method: "POST",
+        headers: { "Content-Type": "text/csv" },
+        body: text,
+      });
+      const json = await res.json();
+      if (res.status === 409) {
+        setResult({ ok: false, errors: [{ row: 0, data: "", reason: "A data sync is in progress. Try again after it completes." }] });
+      } else {
+        setResult(json);
+      }
+    } catch {
+      setResult({ ok: false, errors: [{ row: 0, data: "", reason: "Network error — could not reach the server." }] });
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  const btnBase: React.CSSProperties = {
+    padding: "7px 16px", borderRadius: 8, border: "1px solid #d1d5db",
+    background: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer",
+    color: "#374151", transition: "all 0.15s",
+  };
+
+  return (
+    <div style={{ padding: "8px 0" }}>
+
+      {/* Info notice */}
+      <div style={{ background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 8, padding: "10px 16px", fontSize: 13, color: "#1d4ed8", marginBottom: 28 }}>
+        Download the existing list before uploading an updated version — the upload will replace the entire recipient list.
+      </div>
+
+      {/* Step 1 — Download */}
+      <div style={{ marginBottom: 28 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "#374151", marginBottom: 10 }}>Step 1 — Download current list</div>
+        <button onClick={handleDownload} style={btnBase}>
+          ↓ Download Recipient List
+        </button>
+      </div>
+
+      {/* Step 2 — Upload */}
+      <div style={{ marginBottom: 24 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "#374151", marginBottom: 10 }}>Step 2 — Upload updated list</div>
+
+        {syncing && (
+          <div style={{ background: "#fef9c3", border: "1px solid #fde047", borderRadius: 8, padding: "10px 16px", fontSize: 13, color: "#a16207", marginBottom: 12 }}>
+            Data refresh is in progress — uploads are not allowed until it completes.
+          </div>
+        )}
+
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".csv"
+          style={{ display: "none" }}
+          onChange={(e) => { setSelectedFile(e.target.files?.[0] ?? null); setResult(null); }}
+        />
+
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <button onClick={() => fileInputRef.current?.click()} style={btnBase}>
+            Choose CSV file
+          </button>
+          {selectedFile && (
+            <span style={{ fontSize: 13, color: "#6b7280" }}>{selectedFile.name}</span>
+          )}
+          <button
+            onClick={handleUpload}
+            disabled={!selectedFile || uploading || syncing}
+            style={{
+              ...btnBase,
+              border: "none",
+              background: (!selectedFile || uploading || syncing) ? "#e5e7eb" : "#4f46e5",
+              color: (!selectedFile || uploading || syncing) ? "#9ca3af" : "#fff",
+              cursor: (!selectedFile || uploading || syncing) ? "not-allowed" : "pointer",
+            }}
+          >
+            {uploading ? "Uploading…" : "Upload"}
+          </button>
+        </div>
+      </div>
+
+      {/* Result — success */}
+      {result?.ok === true && (
+        <div style={{ background: "#f0fdf4", border: "1px solid #86efac", borderRadius: 8, padding: "12px 16px", fontSize: 13, color: "#15803d" }}>
+          {result.inserted} recipient{result.inserted !== 1 ? "s" : ""} uploaded successfully.
+        </div>
+      )}
+
+      {/* Result — errors */}
+      {result?.ok === false && (
+        <div style={{ background: "#fef2f2", border: "1px solid #fca5a5", borderRadius: 8, padding: "12px 16px" }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#dc2626", marginBottom: 10 }}>
+            Upload failed — {result.errors.length} error{result.errors.length !== 1 ? "s" : ""}
+          </div>
+          <div style={{ maxHeight: 320, overflowY: "auto", overflowX: "auto" }}>
+            <table style={{ width: "100%", minWidth: 640, borderCollapse: "collapse", fontSize: 12 }}>
+              <thead>
+                <tr>
+                  {["Row", "Data", "Reason"].map((h) => (
+                    <th key={h} style={{ textAlign: "left", padding: "4px 10px", color: "#6b7280", borderBottom: "1px solid #fecaca", fontWeight: 600 }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {result.errors.map((e, i) => (
+                  <tr key={i} style={{ borderBottom: "1px solid #fef2f2" }}>
+                    <td style={{ padding: "5px 10px", color: "#dc2626", fontWeight: 700, whiteSpace: "nowrap" }}>
+                      {e.row > 0 ? `Row ${e.row}` : "—"}
+                    </td>
+                    <td style={{ padding: "5px 10px", color: "#374151", fontFamily: "monospace", whiteSpace: "nowrap" }} title={e.data}>
+                      {e.data || "—"}
+                    </td>
+                    <td style={{ padding: "5px 10px", color: "#374151" }}>{e.reason}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Dashboard() {
+  const [page, setPage] = useState<"dashboard" | "admin">("dashboard");
   const [tab, setTab] = useState("Overview");
   const [dateFilter, setDateFilter] = useState<"post" | "pre" | "all">(() => {
     const saved = typeof window !== "undefined" ? localStorage.getItem("vin_dateFilter") : null;
@@ -1843,81 +1995,93 @@ export default function Dashboard() {
             onMouseLeave={e => { e.currentTarget.style.borderColor = "#d1d5db"; }}>
             ↻ Refresh
           </button>
+          <div style={{ width: 1, height: 20, background: "#e5e7eb", margin: "0 2px" }} />
+          <button
+            onClick={() => setPage((p) => p === "admin" ? "dashboard" : "admin")}
+            style={{ padding: "6px 12px", borderRadius: 8, border: "1px solid #d1d5db", fontSize: 12, fontWeight: 600, cursor: "pointer", transition: "all 0.15s", background: page === "admin" ? "#4f46e5" : "#fff", color: page === "admin" ? "#fff" : "#374151", borderColor: page === "admin" ? "#4f46e5" : "#d1d5db" }}>
+            {page === "admin" ? "← Dashboard" : "Admin"}
+          </button>
         </div>
       </div>
 
-      <div style={{ display: "flex", gap: 4, marginBottom: 24, background: "#f3f4f6", borderRadius: 10, padding: 4, width: "fit-content" }}>
-        {tabs.map(t => (
-          <button key={t} onClick={() => { setTab(t); }} style={{
-            padding: "8px 20px", borderRadius: 8, border: "none", cursor: "pointer", fontSize: 14, fontWeight: 600,
-            background: tab === t ? "#fff" : "transparent", color: tab === t ? "#111827" : "#6b7280",
-            boxShadow: tab === t ? "0 1px 3px rgba(0,0,0,0.1)" : "none", transition: "all 0.15s"
-          }}>
-            {t}
-          </button>
-        ))}
-      </div>
+      {page === "admin" ? (
+        <AdminView syncing={syncing} />
+      ) : (
+        <>
+          <div style={{ display: "flex", gap: 4, marginBottom: 24, background: "#f3f4f6", borderRadius: 10, padding: 4, width: "fit-content" }}>
+            {tabs.map(t => (
+              <button key={t} onClick={() => { setTab(t); }} style={{
+                padding: "8px 20px", borderRadius: 8, border: "none", cursor: "pointer", fontSize: 14, fontWeight: 600,
+                background: tab === t ? "#fff" : "transparent", color: tab === t ? "#111827" : "#6b7280",
+                boxShadow: tab === t ? "0 1px 3px rgba(0,0,0,0.1)" : "none", transition: "all 0.15s"
+              }}>
+                {t}
+              </button>
+            ))}
+          </div>
 
-      {tab === "Overview" && <OverviewTab totals={s.totals} byType={s.byType} byCSM={s.byCSM} byBucket={s.byBucket ?? []} onDrillDown={handleDrillDown} onRooftopDrillDown={handleRooftopDrillDown} loading={summaryLoading} />}
-      {tab === "Rooftop View" && (
-        <RooftopTab
-          typeOptions={fo.rooftopTypes ?? []}
-          csmOptions={fo.rooftopCSMs ?? []}
-          enterpriseOptions={(fo.enterprises ?? []).map((e: any) => e.name)}
-          bucketFlags={fo.bucketFlags ?? {}}
-          rows={rooftopRows}
-          total={rooftopTotal}
-          page={rooftopPage}
-          pageCount={rooftopPageCount}
-          loading={rooftopLoading}
-          onPageChange={(p) => loadRooftopPage(Math.max(1, Math.min(p, rooftopPageCount)), rooftopFilters, rooftopSortCol, rooftopSortDir, dateFilter)}
-          onDrillDown={handleDrillDown}
-          filters={rooftopFilters}
-          setFilters={(f) => { setRooftopFilters(f); }}
-          sortCol={rooftopSortCol}
-          sortDir={rooftopSortDir}
-          onSortChange={handleRooftopSort}
-        />
-      )}
-      {tab === "Enterprise View" && (
-        <EnterpriseTab
-          csmOptions={fo.enterpriseCSMs ?? []}
-          typeOptions={fo.enterpriseTypes ?? []}
-          hasNotIntegrated={fo.hasNotIntegrated ?? false}
-          hasPublishingDisabled={fo.hasPublishingDisabled ?? false}
-          bucketFlags={fo.bucketFlags ?? {}}
-          rows={enterpriseRows}
-          total={enterpriseTotal}
-          page={enterprisePage}
-          pageCount={enterprisePageCount}
-          loading={enterpriseLoading}
-          onPageChange={(p) => loadEnterprisePage(Math.max(1, Math.min(p, enterprisePageCount)), enterpriseFilters, enterpriseSortCol, enterpriseSortDir, dateFilter)}
-          onDrillDown={handleDrillDown}
-          filters={enterpriseFilters}
-          setFilters={(f) => { setEnterpriseFilters(f); }}
-          sortCol={enterpriseSortCol}
-          sortDir={enterpriseSortDir}
-          onSortChange={handleEnterpriseSort}
-        />
-      )}
-      {tab === "VIN Data" && (
-        <RawTab
-          data={rawData}
-          loading={rawLoading}
-          filters={rawFilters}
-          setFilters={(f) => { setRawFilters(f); setRawPage(1); }}
-          total={rawTotal}
-          page={rawPage}
-          pageCount={rawPageCount}
-          onPageChange={(p) => setRawPage(Math.max(1, Math.min(p, rawPageCount)))}
-          rooftopOptions={rooftopOptions}
-          typeOptions={typeOptions}
-          csmOptions={csmOptions}
-          enterpriseObjects={enterpriseObjects}
-          sortCol={rawSortCol}
-          sortDir={rawSortDir}
-          onSortChange={handleRawSort}
-        />
+          {tab === "Overview" && <OverviewTab totals={s.totals} byType={s.byType} byCSM={s.byCSM} byBucket={s.byBucket ?? []} onDrillDown={handleDrillDown} onRooftopDrillDown={handleRooftopDrillDown} loading={summaryLoading} />}
+          {tab === "Rooftop View" && (
+            <RooftopTab
+              typeOptions={fo.rooftopTypes ?? []}
+              csmOptions={fo.rooftopCSMs ?? []}
+              enterpriseOptions={(fo.enterprises ?? []).map((e: any) => e.name)}
+              bucketFlags={fo.bucketFlags ?? {}}
+              rows={rooftopRows}
+              total={rooftopTotal}
+              page={rooftopPage}
+              pageCount={rooftopPageCount}
+              loading={rooftopLoading}
+              onPageChange={(p) => loadRooftopPage(Math.max(1, Math.min(p, rooftopPageCount)), rooftopFilters, rooftopSortCol, rooftopSortDir, dateFilter)}
+              onDrillDown={handleDrillDown}
+              filters={rooftopFilters}
+              setFilters={(f) => { setRooftopFilters(f); }}
+              sortCol={rooftopSortCol}
+              sortDir={rooftopSortDir}
+              onSortChange={handleRooftopSort}
+            />
+          )}
+          {tab === "Enterprise View" && (
+            <EnterpriseTab
+              csmOptions={fo.enterpriseCSMs ?? []}
+              typeOptions={fo.enterpriseTypes ?? []}
+              hasNotIntegrated={fo.hasNotIntegrated ?? false}
+              hasPublishingDisabled={fo.hasPublishingDisabled ?? false}
+              bucketFlags={fo.bucketFlags ?? {}}
+              rows={enterpriseRows}
+              total={enterpriseTotal}
+              page={enterprisePage}
+              pageCount={enterprisePageCount}
+              loading={enterpriseLoading}
+              onPageChange={(p) => loadEnterprisePage(Math.max(1, Math.min(p, enterprisePageCount)), enterpriseFilters, enterpriseSortCol, enterpriseSortDir, dateFilter)}
+              onDrillDown={handleDrillDown}
+              filters={enterpriseFilters}
+              setFilters={(f) => { setEnterpriseFilters(f); }}
+              sortCol={enterpriseSortCol}
+              sortDir={enterpriseSortDir}
+              onSortChange={handleEnterpriseSort}
+            />
+          )}
+          {tab === "VIN Data" && (
+            <RawTab
+              data={rawData}
+              loading={rawLoading}
+              filters={rawFilters}
+              setFilters={(f) => { setRawFilters(f); setRawPage(1); }}
+              total={rawTotal}
+              page={rawPage}
+              pageCount={rawPageCount}
+              onPageChange={(p) => setRawPage(Math.max(1, Math.min(p, rawPageCount)))}
+              rooftopOptions={rooftopOptions}
+              typeOptions={typeOptions}
+              csmOptions={csmOptions}
+              enterpriseObjects={enterpriseObjects}
+              sortCol={rawSortCol}
+              sortDir={rawSortDir}
+              onSortChange={handleRawSort}
+            />
+          )}
+        </>
       )}
       </div>
     </div>

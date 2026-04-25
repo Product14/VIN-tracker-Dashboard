@@ -1462,7 +1462,31 @@ function yesterdayFor(tz = "America/New_York") {
   return { yesterdayStr, dateLabel };
 }
 
-// ─── Email Recipients Upload ──────────────────────────────────────────────────
+// ─── Email Recipients ─────────────────────────────────────────────────────────
+
+// GET /api/email-recipients
+// Returns the current recipient list as a downloadable CSV file.
+app.get("/api/email-recipients", async (_req, res) => {
+  try {
+    const { rows } = await query(
+      "SELECT email, rooftop_id, enterprise_id, report_type FROM email_recipients ORDER BY id"
+    );
+    const escape = (v) => (v == null ? "" : `"${String(v).replace(/"/g, '""')}"`);
+    const csv = [
+      "email,rooftop_id,enterprise_id,report_type",
+      ...rows.map((r) =>
+        [r.email, r.rooftop_id, r.enterprise_id, r.report_type].map(escape).join(",")
+      ),
+    ].join("\r\n");
+    res.setHeader("Content-Type", "text/csv");
+    res.setHeader("Content-Disposition", 'attachment; filename="email-recipients.csv"');
+    res.send(csv);
+  } catch (e) {
+    console.error("[email-recipients] DB error on GET:", e?.message);
+    res.status(500).json({ error: "DB error fetching recipients" });
+  }
+});
+
 // POST /api/email-recipients/upload
 // Body: text/csv with header row: email,rooftop_id,enterprise_id,report_type
 // Replaces all rows in email_recipients with the uploaded CSV content.
@@ -1471,72 +1495,147 @@ app.post(
   "/api/email-recipients/upload",
   express.text({ type: "text/csv" }),
   async (req, res) => {
-    const cronSecret = process.env.CRON_SECRET;
-    if (cronSecret && req.headers.authorization !== `Bearer ${cronSecret}`) {
-      return res.status(401).json({ error: "Unauthorized" });
-    }
-
+    // ── 1. Basic body validation ───────────────────────────────────────────────
     const body = req.body;
     if (!body || typeof body !== "string") {
       return res.status(400).json({ error: "Expected text/csv body" });
     }
 
-    const lines = body.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    const lines = body.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
     if (lines.length < 2) {
       return res.status(400).json({ error: "CSV must have a header row and at least one data row" });
     }
 
-    // Parse header to find column indices (case-insensitive)
-    const headers = lines[0].split(",").map(h => h.trim().toLowerCase());
+    // Parse header (case-insensitive)
+    const headers = lines[0].split(",").map((h) => h.trim().toLowerCase());
     const col = (name) => headers.indexOf(name);
-    const iEmail = col("email");
-    const iRooftopId = col("rooftop_id");
+    const iEmail        = col("email");
+    const iRooftopId    = col("rooftop_id");
     const iEnterpriseId = col("enterprise_id");
-    const iReportType = col("report_type");
+    const iReportType   = col("report_type");
 
-    if ([iEmail, iReportType].some(i => i === -1)) {
+    if (iEmail === -1 || iReportType === -1) {
       return res.status(400).json({ error: "CSV must have columns: email, report_type (and rooftop_id / enterprise_id)" });
     }
 
-    const valid = [];
-    const invalid = [];
+    // ── 2. Sync-in-progress gate ───────────────────────────────────────────────
+    const { rows: [syncState] } = await query("SELECT running FROM sync_state WHERE id = 'global'");
+    if (syncState?.running) {
+      return res.status(409).json({ ok: false, error: "sync_in_progress" });
+    }
+
+    // ── 3. Parse all rows — collect ALL format errors before touching the DB ───
+    const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    const errors = [];
+    const valid  = [];
 
     for (let i = 1; i < lines.length; i++) {
-      const cells = lines[i].split(",").map(c => c.trim());
-      const email       = iEmail       >= 0 ? (cells[iEmail]       ?? "") : "";
-      const rooftopId   = iRooftopId   >= 0 ? (cells[iRooftopId]   ?? "") : "";
+      const cells       = lines[i].split(",").map((c) => c.trim());
+      const email        = iEmail        >= 0 ? (cells[iEmail]        ?? "") : "";
+      const rooftopId    = iRooftopId    >= 0 ? (cells[iRooftopId]    ?? "") : "";
       const enterpriseId = iEnterpriseId >= 0 ? (cells[iEnterpriseId] ?? "") : "";
-      const reportType  = iReportType  >= 0 ? (cells[iReportType]  ?? "") : "";
+      const reportType   = iReportType   >= 0 ? (cells[iReportType]   ?? "") : "";
+      const rowNum       = i + 1; // 1-based, header = row 1
 
-      const reason =
-        !email                                         ? "missing email" :
-        (reportType !== "Rooftop" && reportType !== "Group") ? "report_type must be Rooftop or Group" :
-        (reportType === "Rooftop" && !rooftopId)       ? "Rooftop report requires rooftop_id" :
-        (reportType === "Group"   && !enterpriseId)    ? "Group report requires enterprise_id" :
-        null;
+      let reason = null;
+      if (!email || !EMAIL_RE.test(email)) {
+        reason = "invalid email format";
+      } else if (reportType !== "Rooftop" && reportType !== "Group") {
+        reason = "report_type must be Rooftop or Group";
+      } else if (reportType === "Rooftop" && !enterpriseId) {
+        reason = "Rooftop report requires enterprise_id";
+      } else if (reportType === "Rooftop" && !rooftopId) {
+        reason = "Rooftop report requires rooftop_id";
+      } else if (reportType === "Group" && rooftopId) {
+        reason = "Group report must not have rooftop_id";
+      } else if (reportType === "Group" && !enterpriseId) {
+        reason = "Group report requires enterprise_id";
+      }
 
       if (reason) {
-        invalid.push({ row: i + 1, data: lines[i], reason });
+        errors.push({ row: rowNum, data: lines[i], reason });
       } else {
-        valid.push({ email, rooftop_id: rooftopId || null, enterprise_id: enterpriseId || null, report_type: reportType });
+        valid.push({
+          _row:          rowNum,
+          email,
+          rooftop_id:    rooftopId    || null,
+          enterprise_id: enterpriseId || null,
+          report_type:   reportType,
+        });
       }
     }
 
-    try {
-      await query("DELETE FROM email_recipients");
+    // ── 4. Batch DB existence checks (runs for all format-valid rows, regardless
+    //       of whether other rows had format errors — so all errors are surfaced
+    //       in one response rather than requiring multiple upload attempts) ──────
+    if (valid.length > 0) {
+      const uniqueRooftopIds    = [...new Set(valid.filter((r) => r.report_type === "Rooftop").map((r) => r.rooftop_id))];
+      const uniqueEnterpriseIds = [...new Set(valid.map((r) => r.enterprise_id).filter(Boolean))];
+
+      const [rooftopRes, enterpriseRes] = await Promise.all([
+        uniqueRooftopIds.length > 0
+          ? query("SELECT team_id, enterprise_id FROM rooftop_details WHERE team_id = ANY($1::text[])", [uniqueRooftopIds])
+          : { rows: [] },
+        uniqueEnterpriseIds.length > 0
+          ? query("SELECT enterprise_id FROM enterprise_details WHERE enterprise_id = ANY($1::text[])", [uniqueEnterpriseIds])
+          : { rows: [] },
+      ]);
+
+      const validRooftopSet    = new Set(rooftopRes.rows.map((r) => r.team_id));
+      const rooftopEntMap      = new Map(rooftopRes.rows.map((r) => [r.team_id, r.enterprise_id]));
+      const validEnterpriseSet = new Set(enterpriseRes.rows.map((r) => r.enterprise_id));
+
       for (const r of valid) {
-        await query(
-          "INSERT INTO email_recipients (email, rooftop_id, enterprise_id, report_type) VALUES ($1, $2, $3, $4)",
-          [r.email, r.rooftop_id, r.enterprise_id, r.report_type]
+        let reason = null;
+        if (r.report_type === "Rooftop") {
+          if (!validRooftopSet.has(r.rooftop_id)) {
+            reason = "rooftop_id not found in database";
+          } else if (!validEnterpriseSet.has(r.enterprise_id)) {
+            reason = "enterprise_id not found in database";
+          } else if (rooftopEntMap.get(r.rooftop_id) !== r.enterprise_id) {
+            reason = "rooftop does not belong to this enterprise";
+          }
+        } else if (r.report_type === "Group") {
+          if (!validEnterpriseSet.has(r.enterprise_id)) {
+            reason = "enterprise_id not found in database";
+          }
+        }
+        if (reason) errors.push({ row: r._row, data: lines[r._row - 1], reason });
+      }
+    }
+
+    // ── 5. Fail-all-or-nothing ────────────────────────────────────────────────
+    if (errors.length > 0) {
+      return res.status(422).json({ ok: false, errors });
+    }
+
+    // ── 6. Transactional DELETE + bulk INSERT ─────────────────────────────────
+    const client = await getClient();
+    try {
+      await client.query("BEGIN");
+      await client.query("DELETE FROM email_recipients");
+      if (valid.length > 0) {
+        const emails        = valid.map((r) => r.email);
+        const rooftopIds    = valid.map((r) => r.rooftop_id);
+        const enterpriseIds = valid.map((r) => r.enterprise_id);
+        const reportTypes   = valid.map((r) => r.report_type);
+        await client.query(
+          `INSERT INTO email_recipients (email, rooftop_id, enterprise_id, report_type)
+           SELECT UNNEST($1::text[]), UNNEST($2::text[]), UNNEST($3::text[]), UNNEST($4::text[])`,
+          [emails, rooftopIds, enterpriseIds, reportTypes]
         );
       }
+      await client.query("COMMIT");
     } catch (e) {
-      console.error("[email-recipients] DB error:", e?.message);
+      await client.query("ROLLBACK").catch(() => {});
+      client.release();
+      console.error("[email-recipients] DB error on upload:", e?.message);
       return res.status(500).json({ error: "DB error saving recipients" });
     }
+    client.release();
 
-    console.log(`[email-recipients] uploaded ${valid.length} recipients, ${invalid.length} invalid rows`);
-    return res.json({ ok: true, inserted: valid.length, invalid });
+    console.log(`[email-recipients] uploaded ${valid.length} recipients`);
+    return res.json({ ok: true, inserted: valid.length });
   }
 );
 
