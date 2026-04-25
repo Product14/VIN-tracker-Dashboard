@@ -1498,8 +1498,8 @@ function AdminView({ syncing }: { syncing: boolean }) {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
   const [result, setResult] = useState<
-    | { ok: true; inserted: number }
-    | { ok: false; errors: Array<{ row: number; data: string; reason: string }> }
+    | { ok: true; inserted: number; skipped: number }
+    | { ok: false; errors: Array<{ row: number; data: string; reason: string }>; validCount: number }
     | null
   >(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1513,25 +1513,28 @@ function AdminView({ syncing }: { syncing: boolean }) {
     document.body.removeChild(a);
   }
 
-  async function handleUpload() {
+  async function handleUpload(skipInvalid = false) {
     if (!selectedFile || uploading || syncing) return;
     const text = await selectedFile.text();
     setUploading(true);
-    setResult(null);
+    if (!skipInvalid) setResult(null);
     try {
-      const res = await fetch("/api/email-recipients/upload", {
+      const url = skipInvalid
+        ? "/api/email-recipients/upload?skipInvalid=true"
+        : "/api/email-recipients/upload";
+      const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "text/csv" },
         body: text,
       });
       const json = await res.json();
       if (res.status === 409) {
-        setResult({ ok: false, errors: [{ row: 0, data: "", reason: "A data sync is in progress. Try again after it completes." }] });
+        setResult({ ok: false, errors: [{ row: 0, data: "", reason: "A data sync is in progress. Try again after it completes." }], validCount: 0 });
       } else {
         setResult(json);
       }
     } catch {
-      setResult({ ok: false, errors: [{ row: 0, data: "", reason: "Network error — could not reach the server." }] });
+      setResult({ ok: false, errors: [{ row: 0, data: "", reason: "Network error — could not reach the server." }], validCount: 0 });
     } finally {
       setUploading(false);
     }
@@ -1604,6 +1607,9 @@ function AdminView({ syncing }: { syncing: boolean }) {
       {result?.ok === true && (
         <div style={{ background: "#f0fdf4", border: "1px solid #86efac", borderRadius: 8, padding: "12px 16px", fontSize: 13, color: "#15803d" }}>
           {result.inserted} recipient{result.inserted !== 1 ? "s" : ""} uploaded successfully.
+          {result.skipped > 0 && (
+            <span style={{ color: "#b45309" }}> {result.skipped} row{result.skipped !== 1 ? "s" : ""} with errors were skipped.</span>
+          )}
         </div>
       )}
 
@@ -1611,7 +1617,7 @@ function AdminView({ syncing }: { syncing: boolean }) {
       {result?.ok === false && (
         <div style={{ background: "#fef2f2", border: "1px solid #fca5a5", borderRadius: 8, padding: "12px 16px" }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: "#dc2626", marginBottom: 10 }}>
-            Upload failed — {result.errors.length} error{result.errors.length !== 1 ? "s" : ""}
+            Upload failed — {result.errors.length} row{result.errors.length !== 1 ? "s" : ""} with errors
           </div>
           <div style={{ maxHeight: 320, overflowY: "auto", overflowX: "auto" }}>
             <table style={{ width: "100%", minWidth: 640, borderCollapse: "collapse", fontSize: 12 }}>
@@ -1637,6 +1643,17 @@ function AdminView({ syncing }: { syncing: boolean }) {
               </tbody>
             </table>
           </div>
+          {result.validCount > 0 && (
+            <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid #fecaca" }}>
+              <button
+                onClick={() => handleUpload(true)}
+                disabled={uploading}
+                style={{ padding: "7px 16px", borderRadius: 8, border: "1px solid #d97706", background: "#fffbeb", fontSize: 13, fontWeight: 600, cursor: uploading ? "not-allowed" : "pointer", color: "#b45309", transition: "all 0.15s" }}
+              >
+                {uploading ? "Uploading…" : `Ignore ${result.errors.length} row${result.errors.length !== 1 ? "s" : ""} and update ${result.validCount} row${result.validCount !== 1 ? "s" : ""}`}
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>
