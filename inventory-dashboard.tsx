@@ -1588,7 +1588,7 @@ function AdminView({ syncing }: { syncing: boolean }) {
             <span style={{ fontSize: 13, color: "#6b7280" }}>{selectedFile.name}</span>
           )}
           <button
-            onClick={handleUpload}
+            onClick={() => handleUpload()}
             disabled={!selectedFile || uploading || syncing}
             style={{
               ...btnBase,

@@ -1530,7 +1530,13 @@ app.post(
     const valid  = [];
 
     for (let i = 1; i < lines.length; i++) {
-      const cells       = lines[i].split(",").map((c) => c.trim());
+      const cells       = lines[i].split(",").map((c) => {
+        c = c.trim();
+        // Strip surrounding double-quotes produced by the CSV download endpoint,
+        // and unescape any doubled internal quotes ("" → ")
+        if (c.startsWith('"') && c.endsWith('"')) c = c.slice(1, -1).replace(/""/g, '"');
+        return c;
+      });
       const email        = iEmail        >= 0 ? (cells[iEmail]        ?? "") : "";
       const rooftopId    = iRooftopId    >= 0 ? (cells[iRooftopId]    ?? "") : "";
       const enterpriseId = iEnterpriseId >= 0 ? (cells[iEnterpriseId] ?? "") : "";
@@ -1568,6 +1574,7 @@ app.post(
     // ── 4. Batch DB existence checks (runs for all format-valid rows, regardless
     //       of whether other rows had format errors — so all errors are surfaced
     //       in one response rather than requiring multiple upload attempts) ──────
+    let trueValidCount = valid.length; // will be decremented for each DB-check failure
     if (valid.length > 0) {
       const uniqueRooftopIds    = [...new Set(valid.filter((r) => r.report_type === "Rooftop").map((r) => r.rooftop_id))];
       const uniqueEnterpriseIds = [...new Set(valid.map((r) => r.enterprise_id).filter(Boolean))];
@@ -1600,29 +1607,34 @@ app.post(
             reason = "enterprise_id not found in database";
           }
         }
-        if (reason) errors.push({ row: r._row, data: lines[r._row - 1], reason });
+        if (reason) { errors.push({ row: r._row, data: lines[r._row - 1], reason }); trueValidCount--; r._dbFailed = true; }
       }
     }
+
+    // Sort all errors by row number so the list matches the original CSV order
+    errors.sort((a, b) => a.row - b.row);
 
     // ── 5. Fail-all-or-nothing (unless caller confirms skipping invalid rows) ───
     if (errors.length > 0) {
       const skipInvalid = req.query.skipInvalid === "true";
-      if (!skipInvalid || valid.length === 0) {
-        return res.status(422).json({ ok: false, errors, validCount: valid.length });
+      if (!skipInvalid || trueValidCount === 0) {
+        return res.status(422).json({ ok: false, errors, validCount: trueValidCount });
       }
       // skipInvalid=true and there are valid rows — fall through and insert valid only
     }
 
     // ── 6. Transactional DELETE + bulk INSERT ─────────────────────────────────
+    // Only insert rows that passed both format and DB validation
+    const rowsToInsert = valid.filter((r) => !r._dbFailed);
     const client = await getClient();
     try {
       await client.query("BEGIN");
       await client.query("DELETE FROM email_recipients");
-      if (valid.length > 0) {
-        const emails        = valid.map((r) => r.email);
-        const rooftopIds    = valid.map((r) => r.rooftop_id);
-        const enterpriseIds = valid.map((r) => r.enterprise_id);
-        const reportTypes   = valid.map((r) => r.report_type);
+      if (rowsToInsert.length > 0) {
+        const emails        = rowsToInsert.map((r) => r.email);
+        const rooftopIds    = rowsToInsert.map((r) => r.rooftop_id);
+        const enterpriseIds = rowsToInsert.map((r) => r.enterprise_id);
+        const reportTypes   = rowsToInsert.map((r) => r.report_type);
         await client.query(
           `INSERT INTO email_recipients (email, rooftop_id, enterprise_id, report_type)
            SELECT UNNEST($1::text[]), UNNEST($2::text[]), UNNEST($3::text[]), UNNEST($4::text[])`,
@@ -1638,8 +1650,8 @@ app.post(
     }
     client.release();
 
-    console.log(`[email-recipients] uploaded ${valid.length} recipients, skipped ${errors.length} invalid rows`);
-    return res.json({ ok: true, inserted: valid.length, skipped: errors.length });
+    console.log(`[email-recipients] uploaded ${rowsToInsert.length} recipients, skipped ${errors.length} invalid rows`);
+    return res.json({ ok: true, inserted: rowsToInsert.length, skipped: errors.length });
   }
 );
 
