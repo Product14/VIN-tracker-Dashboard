@@ -1498,8 +1498,8 @@ function AdminView({ syncing }: { syncing: boolean }) {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
   const [result, setResult] = useState<
-    | { ok: true; inserted: number; skipped: number }
-    | { ok: false; errors: Array<{ row: number; data: string; reason: string }>; validCount: number }
+    | { ok: true; inserted: number }
+    | { ok: false; errors: Array<{ row: number; data: string; reason: string }> }
     | null
   >(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1513,28 +1513,25 @@ function AdminView({ syncing }: { syncing: boolean }) {
     document.body.removeChild(a);
   }
 
-  async function handleUpload(skipInvalid = false) {
+  async function handleUpload() {
     if (!selectedFile || uploading || syncing) return;
     const text = await selectedFile.text();
     setUploading(true);
-    if (!skipInvalid) setResult(null);
+    setResult(null);
     try {
-      const url = skipInvalid
-        ? "/api/email-recipients/upload?skipInvalid=true"
-        : "/api/email-recipients/upload";
-      const res = await fetch(url, {
+      const res = await fetch("/api/email-recipients/upload", {
         method: "POST",
         headers: { "Content-Type": "text/csv" },
         body: text,
       });
       const json = await res.json();
       if (res.status === 409) {
-        setResult({ ok: false, errors: [{ row: 0, data: "", reason: "A data sync is in progress. Try again after it completes." }], validCount: 0 });
+        setResult({ ok: false, errors: [{ row: 0, data: "", reason: "A data sync is in progress. Try again after it completes." }] });
       } else {
         setResult(json);
       }
     } catch {
-      setResult({ ok: false, errors: [{ row: 0, data: "", reason: "Network error — could not reach the server." }], validCount: 0 });
+      setResult({ ok: false, errors: [{ row: 0, data: "", reason: "Network error — could not reach the server." }] });
     } finally {
       setUploading(false);
     }
@@ -1607,28 +1604,14 @@ function AdminView({ syncing }: { syncing: boolean }) {
       {result?.ok === true && (
         <div style={{ background: "#f0fdf4", border: "1px solid #86efac", borderRadius: 8, padding: "12px 16px", fontSize: 13, color: "#15803d" }}>
           {result.inserted} recipient{result.inserted !== 1 ? "s" : ""} uploaded successfully.
-          {result.skipped > 0 && (
-            <span style={{ color: "#b45309" }}> {result.skipped} row{result.skipped !== 1 ? "s" : ""} with errors were skipped.</span>
-          )}
         </div>
       )}
 
       {/* Result — errors */}
       {result?.ok === false && (
         <div style={{ background: "#fef2f2", border: "1px solid #fca5a5", borderRadius: 8, padding: "12px 16px" }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 10 }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: "#dc2626" }}>
-              Upload failed — {result.errors.length} error{result.errors.length !== 1 ? "s" : ""}
-            </div>
-            {result.validCount > 0 && (
-              <button
-                onClick={() => handleUpload(true)}
-                disabled={uploading}
-                style={{ padding: "5px 14px", borderRadius: 7, border: "1px solid #d97706", background: "#fffbeb", fontSize: 12, fontWeight: 600, cursor: uploading ? "not-allowed" : "pointer", color: "#b45309", transition: "all 0.15s" }}
-              >
-                {uploading ? "Uploading…" : `Upload ${result.validCount} valid row${result.validCount !== 1 ? "s" : ""} anyway`}
-              </button>
-            )}
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#dc2626", marginBottom: 10 }}>
+            Upload failed — {result.errors.length} error{result.errors.length !== 1 ? "s" : ""}
           </div>
           <div style={{ maxHeight: 320, overflowY: "auto", overflowX: "auto" }}>
             <table style={{ width: "100%", minWidth: 640, borderCollapse: "collapse", fontSize: 12 }}>

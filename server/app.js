@@ -1604,13 +1604,9 @@ app.post(
       }
     }
 
-    // ── 5. Fail-all-or-nothing (unless caller opts in to skip invalid rows) ──────
+    // ── 5. Fail-all-or-nothing ────────────────────────────────────────────────
     if (errors.length > 0) {
-      const skipInvalid = req.query.skipInvalid === "true";
-      if (!skipInvalid || valid.length === 0) {
-        return res.status(422).json({ ok: false, errors, validCount: valid.length });
-      }
-      // skipInvalid=true and there are valid rows — fall through and insert valid only
+      return res.status(422).json({ ok: false, errors });
     }
 
     // ── 6. Transactional DELETE + bulk INSERT ─────────────────────────────────
@@ -1638,8 +1634,8 @@ app.post(
     }
     client.release();
 
-    console.log(`[email-recipients] uploaded ${valid.length} recipients, skipped ${errors.length} invalid rows`);
-    return res.json({ ok: true, inserted: valid.length, skipped: errors.length });
+    console.log(`[email-recipients] uploaded ${valid.length} recipients`);
+    return res.json({ ok: true, inserted: valid.length });
   }
 );
 
