@@ -2047,13 +2047,13 @@ app.get("/api/send-daily-report", async (req, res) => {
 });
 
 // ─── Daily Report Queue Processor ────────────────────────────────────────────
-// POST /api/process-report-queue
+// POST /api/process-report-queue  (also accepts GET — Vercel crons fire GET requests)
 // Called every minute by Vercel cron. Claims up to 50 pending report_queue rows
 // using SELECT FOR UPDATE SKIP LOCKED, processes them, and updates status.
 // Safe to run concurrently — locking prevents duplicate sends.
 // Stuck rows (processing > 10 min) are automatically reset and retried.
 
-app.post("/api/process-report-queue", async (req, res) => {
+async function handleProcessReportQueue(req, res) {
   const cronSecret = process.env.CRON_SECRET;
   if (cronSecret && req.headers.authorization !== `Bearer ${cronSecret}`) {
     return res.status(401).json({ error: "Unauthorized" });
@@ -2391,7 +2391,11 @@ app.post("/api/process-report-queue", async (req, res) => {
   }
 
   return res.json({ ok: true, processed: batch.length, sent: sentCount, skipped: skippedCount, errors: errorCount });
-});
+}
+
+// Vercel crons fire GET; manual/API triggers use POST — support both.
+app.get("/api/process-report-queue",  handleProcessReportQueue);
+app.post("/api/process-report-queue", handleProcessReportQueue);
 
 // ─── Daily Report Status ──────────────────────────────────────────────────────
 // GET /api/send-daily-report/status?runId=xxx
