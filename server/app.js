@@ -1571,6 +1571,7 @@ async function computeGroupDailyReport(enterpriseId, yesterday, timezone = "Amer
       ) FILTER (WHERE status = 'Delivered' AND processed_at IS NOT NULL)::numeric, 1)   AS avg_ttd_hrs
     FROM vins
     WHERE enterprise_id = $1
+      AND COALESCE(has_photos, 0) = 1
       AND DATE(received_at::timestamptz AT TIME ZONE $3) = $2::date
   `, [enterpriseId, yesterday, timezone]);
 
@@ -1598,14 +1599,17 @@ async function computeGroupDailyReport(enterpriseId, yesterday, timezone = "Amer
       COUNT(*) FILTER (WHERE v.status != 'Delivered')                                           AS vins_pending,
       ROUND(AVG(
         EXTRACT(EPOCH FROM (v.processed_at::timestamptz - v.received_at::timestamptz)) / 3600.0
-      ) FILTER (WHERE v.status = 'Delivered' AND v.processed_at IS NOT NULL)::numeric, 1)      AS avg_ttd_hrs
+      ) FILTER (WHERE v.status = 'Delivered'
+                  AND v.processed_at IS NOT NULL
+                  AND v.processed_at::timestamptz >= v.received_at::timestamptz
+                  AND DATE(v.processed_at::timestamptz AT TIME ZONE $3) = $2::date)::numeric, 1) AS avg_ttd_hrs
     FROM vins v
     LEFT JOIN rooftop_details rd ON v.rooftop_id = rd.team_id
     WHERE v.enterprise_id = $1
+      AND COALESCE(v.has_photos, 0) = 1
       AND DATE(v.received_at::timestamptz AT TIME ZONE $3) = $2::date
     GROUP BY v.rooftop_id
     ORDER BY new_vins DESC
-    LIMIT 5
   `, [enterpriseId, yesterday, timezone]);
 
   // Top 5 rooftops by VINs without images
@@ -1633,6 +1637,150 @@ async function computeGroupDailyReport(enterpriseId, yesterday, timezone = "Amer
   const deliveryPct    = totalActive > 0 ? Math.round(totalDelivered / totalActive * 1000) / 10 : 0;
   const pendingPct     = totalActive > 0 ? Math.round(totalPending   / totalActive * 1000) / 10 : 0;
 
+  // ── Delivered VINs yesterday — for per-VIN table (sorted TAT asc) ───────
+  // Fetch all (no LIMIT) so we can check for negative TAT before deciding to show.
+  const { rows: deliveredVinsRaw } = await query(`
+    SELECT
+      v.vin,
+      v.dealer_vin_id,
+      v.stock_number,
+      v.thumbnail_url,
+      v.make,
+      v.model,
+      v.year,
+      v.trim,
+      v.received_at,
+      v.processed_at,
+      v.rooftop_id,
+      COALESCE(rd.team_name, v.rooftop_id)                                       AS rooftop_name,
+      ROUND(
+        EXTRACT(EPOCH FROM (v.processed_at::timestamptz - v.received_at::timestamptz)) / 3600.0
+        ::numeric, 2
+      )                                                                           AS ttd_hrs
+    FROM vins v
+    LEFT JOIN rooftop_details rd ON v.rooftop_id = rd.team_id
+    WHERE v.enterprise_id = $1
+      AND v.status = 'Delivered'
+      AND COALESCE(v.has_photos, 0) = 1
+      AND v.processed_at IS NOT NULL
+      AND DATE(v.received_at::timestamptz AT TIME ZONE $3) = $2::date
+    ORDER BY ttd_hrs ASC
+  `, [enterpriseId, yesterday, timezone]);
+
+  const hasNegativeTatInVins = deliveredVinsRaw.some(r => Number(r.ttd_hrs) < 0);
+  const processedVins      = hasNegativeTatInVins ? null : deliveredVinsRaw.slice(0, 5);
+  const processedVinsTotal = hasNegativeTatInVins ? 0    : deliveredVinsRaw.length;
+
+  // ── IMS integration check ─────────────────────────────────────────────────
+  const { rows: [imsCheck] } = await query(`
+    SELECT COUNT(*) AS not_integrated
+    FROM rooftop_details
+    WHERE enterprise_id = $1 AND ims_integration_status != 'true'
+  `, [enterpriseId]);
+  const allImsIntegrated = Number(imsCheck.not_integrated) === 0;
+
+  // ── Inventory snapshot ────────────────────────────────────────────────────
+  // Mode A (all IMS): full inventory up to end of yesterday.
+  // Mode B (partial/no IMS): rolling last 90 days up to end of yesterday.
+  let invKpis, inventoryByRooftop;
+
+  if (allImsIntegrated) {
+    const { rows: [inv] } = await query(`
+      SELECT
+        COUNT(*)                                                                          AS total_active,
+        COUNT(*) FILTER (WHERE COALESCE(has_photos, 0) = 1)                             AS with_photos,
+        COUNT(*) FILTER (WHERE status = 'Delivered' AND COALESCE(has_photos, 0) = 1)    AS inv_delivered,
+        COUNT(*) FILTER (WHERE status != 'Delivered' AND COALESCE(has_photos, 0) = 1)   AS inv_pending
+      FROM vins
+      WHERE enterprise_id = $1
+        AND (received_at IS NULL OR DATE(received_at::timestamptz AT TIME ZONE $3) <= $2::date)
+    `, [enterpriseId, yesterday, timezone]);
+
+    const invTotal     = Number(inv.total_active) || 0;
+    const invWithPhotos = Number(inv.with_photos)  || 0;
+    invKpis = {
+      totalActive:    invTotal,
+      withPhotos:     invWithPhotos,
+      withPhotosPct:  invTotal > 0 ? Math.round(invWithPhotos / invTotal * 1000) / 10 : 0,
+      invDelivered:   Number(inv.inv_delivered) || 0,
+      invPending:     Number(inv.inv_pending)   || 0,
+    };
+
+    const { rows: invRows } = await query(`
+      SELECT
+        v.rooftop_id,
+        MAX(rd.team_name)                                                                   AS rooftop_name,
+        COUNT(*)                                                                            AS total_active,
+        COUNT(*) FILTER (WHERE COALESCE(v.has_photos, 0) = 1)                             AS with_photos,
+        COUNT(*) FILTER (WHERE v.status = 'Delivered' AND COALESCE(v.has_photos, 0) = 1)  AS inv_delivered,
+        COUNT(*) FILTER (WHERE v.status != 'Delivered' AND COALESCE(v.has_photos, 0) = 1) AS inv_pending
+      FROM vins v
+      LEFT JOIN rooftop_details rd ON v.rooftop_id = rd.team_id
+      WHERE v.enterprise_id = $1
+        AND (v.received_at IS NULL OR DATE(v.received_at::timestamptz AT TIME ZONE $3) <= $2::date)
+      GROUP BY v.rooftop_id
+      ORDER BY total_active DESC
+    `, [enterpriseId, yesterday, timezone]);
+
+    inventoryByRooftop = invRows.map(r => {
+      const tot = Number(r.total_active) || 0;
+      const wp  = Number(r.with_photos)  || 0;
+      return {
+        rooftop_id:    r.rooftop_id,
+        rooftop_name:  r.rooftop_name,
+        total_active:  tot,
+        with_photos:   wp,
+        with_photos_pct: tot > 0 ? Math.round(wp / tot * 1000) / 10 : 0,
+        inv_delivered: Number(r.inv_delivered) || 0,
+        inv_pending:   Number(r.inv_pending)   || 0,
+      };
+    });
+
+  } else {
+    const { rows: [inv] } = await query(`
+      SELECT
+        COUNT(*)                                              AS received,
+        COUNT(*) FILTER (WHERE status = 'Delivered')         AS inv_delivered,
+        COUNT(*) FILTER (WHERE status != 'Delivered')        AS inv_pending
+      FROM vins
+      WHERE enterprise_id = $1
+        AND COALESCE(has_photos, 0) = 1
+        AND DATE(received_at::timestamptz AT TIME ZONE $3) <= $2::date
+        AND DATE(received_at::timestamptz AT TIME ZONE $3) >= ($2::date - INTERVAL '90 days')
+    `, [enterpriseId, yesterday, timezone]);
+
+    invKpis = {
+      received:     Number(inv.received)      || 0,
+      invDelivered: Number(inv.inv_delivered) || 0,
+      invPending:   Number(inv.inv_pending)   || 0,
+    };
+
+    const { rows: invRows } = await query(`
+      SELECT
+        v.rooftop_id,
+        MAX(rd.team_name)                                     AS rooftop_name,
+        COUNT(*)                                              AS received,
+        COUNT(*) FILTER (WHERE v.status = 'Delivered')       AS inv_delivered,
+        COUNT(*) FILTER (WHERE v.status != 'Delivered')      AS inv_pending
+      FROM vins v
+      LEFT JOIN rooftop_details rd ON v.rooftop_id = rd.team_id
+      WHERE v.enterprise_id = $1
+        AND COALESCE(v.has_photos, 0) = 1
+        AND DATE(v.received_at::timestamptz AT TIME ZONE $3) <= $2::date
+        AND DATE(v.received_at::timestamptz AT TIME ZONE $3) >= ($2::date - INTERVAL '90 days')
+      GROUP BY v.rooftop_id
+      ORDER BY received DESC
+    `, [enterpriseId, yesterday, timezone]);
+
+    inventoryByRooftop = invRows.map(r => ({
+      rooftop_id:    r.rooftop_id,
+      rooftop_name:  r.rooftop_name,
+      received:      Number(r.received)      || 0,
+      inv_delivered: Number(r.inv_delivered) || 0,
+      inv_pending:   Number(r.inv_pending)   || 0,
+    }));
+  }
+
   return {
     enterpriseId,
     enterpriseName:  enterprise?.name ?? enterpriseId,
@@ -1645,15 +1793,22 @@ async function computeGroupDailyReport(enterpriseId, yesterday, timezone = "Amer
     imagesProcessed: Number(kpi.images_processed)|| 0,
     imagesPending:   Number(kpi.images_pending)  || 0,
     avgTtdHrs:       kpi.avg_ttd_hrs != null ? Number(kpi.avg_ttd_hrs) : null,
-    // Total inventory KPIs
+    // Total inventory KPIs (legacy — not rendered in group email)
     totalActive,
     totalDelivered,
     totalPending,
     deliveryPct,
     pendingPct,
-    // Per-rooftop tables
+    // Inventory snapshot
+    allImsIntegrated,
+    invKpis,
+    inventoryByRooftop,
+    // Per-rooftop yesterday tables
     topProcessed,
     topNoImages,
+    // Recent delivered VINs yesterday (TAT asc, max 5; null = negative TAT detected)
+    processedVins,
+    processedVinsTotal,
   };
 }
 
@@ -2126,15 +2281,6 @@ async function handleProcessReportQueue(req, res) {
     return !rt || rt.ims_integration_status !== "true";
   }
 
-  async function imsOffForEnterprise(enterpriseId) {
-    const { rows: [r] } = await query(
-      `SELECT COUNT(*) AS not_integrated FROM rooftop_details
-        WHERE enterprise_id = $1 AND ims_integration_status != 'true'`,
-      [enterpriseId]
-    );
-    return Number(r.not_integrated) > 0;
-  }
-
   async function hasStalePendingVins(field, id, tz, yesterdayStr) {
     const { rows: [r] } = await query(
       `SELECT COUNT(*) AS pending_count FROM vins
@@ -2299,28 +2445,17 @@ async function handleProcessReportQueue(req, res) {
           ({ yesterdayStr, dateLabel } = yesterdayFor(tz));
         }
 
-        if (await imsOffForEnterprise(enterprise_id)) {
-          await query(`UPDATE report_queue SET status='skipped', entity_id=$2, entity_name=$3, error_reason='ims_off', processed_at=NOW() WHERE id=$1`, [id, enterprise_id, ent.name]);
-          console.log(`[process-queue] enterprise ${enterprise_id} skipped — one or more rooftops have IMS off`);
-          skippedCount++; continue;
-        }
-        if (await hasStalePendingVins("enterprise_id", enterprise_id, tz, yesterdayStr)) {
-          await query(`UPDATE report_queue SET status='skipped', entity_id=$2, entity_name=$3, error_reason='pending_vins', processed_at=NOW() WHERE id=$1`, [id, enterprise_id, ent.name]);
-          console.log(`[process-queue] enterprise ${enterprise_id} skipped — pending VINs > 1`);
-          skippedCount++; continue;
-        }
-        if (await hasNegativeTat("enterprise_id", enterprise_id, tz, yesterdayStr)) {
-          await query(`UPDATE report_queue SET status='skipped', entity_id=$2, entity_name=$3, error_reason='negative_tat', processed_at=NOW() WHERE id=$1`, [id, enterprise_id, ent.name]);
-          console.log(`[process-queue] enterprise ${enterprise_id} skipped — negative TAT detected`);
-          skippedCount++; continue;
-        }
-        if (await hasLowPhotoCoverage("enterprise_id", enterprise_id, tz, yesterdayStr)) {
-          await query(`UPDATE report_queue SET status='skipped', entity_id=$2, entity_name=$3, error_reason='low_photo_coverage', processed_at=NOW() WHERE id=$1`, [id, enterprise_id, ent.name]);
-          console.log(`[process-queue] enterprise ${enterprise_id} skipped — photo coverage < 75%`);
-          skippedCount++; continue;
-        }
-
         const data    = await computeGroupDailyReport(enterprise_id, yesterdayStr, tz);
+        if (!data.newVins || data.newVins === 0) {
+          await query(`UPDATE report_queue SET status='skipped', entity_id=$2, entity_name=$3, error_reason='no_vehicles_yesterday', processed_at=NOW() WHERE id=$1`, [id, enterprise_id, ent.name]);
+          console.log(`[process-queue] enterprise ${enterprise_id} skipped — no vehicles received yesterday`);
+          skippedCount++; continue;
+        }
+        if (data.invKpis.invPending > 1) {
+          await query(`UPDATE report_queue SET status='skipped', entity_id=$2, entity_name=$3, error_reason='pending_vins', processed_at=NOW() WHERE id=$1`, [id, enterprise_id, ent.name]);
+          console.log(`[process-queue] enterprise ${enterprise_id} skipped — inventory pending VINs > 1`);
+          skippedCount++; continue;
+        }
         const html    = buildGroupReportHtml(data, dateLabel);
         const to      = testMode ? testTo : (Array.isArray(row.to_emails) && row.to_emails.length > 0 ? row.to_emails : email.split(",").map(s => s.trim()).filter(Boolean));
         const cc      = testMode ? testCc : (ent.poc_email || undefined);
