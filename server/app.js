@@ -385,6 +385,158 @@ function toTotals(r) {
   };
 }
 
+// ─── Report status queries ────────────────────────────────────────────────────
+// Run in parallel alongside the main rooftop/enterprise queries.
+// Anchors to ALL run_ids on the most recent reporting date (handles retry runs).
+// Status precedence across runs: sent > skipped > error.
+
+const ROOFTOP_REPORT_STATUS_SQL = `
+  WITH
+  group_sent_latest AS (
+    SELECT DISTINCT ON (rq.enterprise_id)
+      rq.enterprise_id,
+      rq.processed_at AS last_sent_at,
+      rq.report_date
+    FROM report_queue rq
+    JOIN daily_report_runs dr ON dr.run_id = rq.run_id
+    WHERE dr.test_mode = false
+      AND rq.report_type = 'Group'
+      AND rq.status = 'sent'
+    ORDER BY rq.enterprise_id, rq.processed_at DESC NULLS LAST
+  ),
+  rooftop_sent_latest AS (
+    SELECT DISTINCT ON (rq.rooftop_id)
+      rq.rooftop_id,
+      rq.processed_at AS last_sent_at,
+      rq.report_date
+    FROM report_queue rq
+    JOIN daily_report_runs dr ON dr.run_id = rq.run_id
+    WHERE dr.test_mode = false
+      AND rq.report_type = 'Rooftop'
+      AND rq.status = 'sent'
+    ORDER BY rq.rooftop_id, rq.processed_at DESC NULLS LAST
+  ),
+  rooftop_error_latest AS (
+    SELECT DISTINCT ON (rq.rooftop_id)
+      rq.rooftop_id,
+      rq.error_reason
+    FROM report_queue rq
+    JOIN daily_report_runs dr ON dr.run_id = rq.run_id
+    WHERE dr.test_mode = false
+      AND rq.report_type = 'Rooftop'
+      AND rq.status IN ('skipped', 'error')
+    ORDER BY rq.rooftop_id, rq.created_at DESC NULLS LAST
+  ),
+  recipients_rooftop AS (
+    SELECT DISTINCT rooftop_id FROM email_recipients WHERE rooftop_id IS NOT NULL
+  ),
+  recipients_group AS (
+    SELECT DISTINCT enterprise_id FROM email_recipients WHERE report_type = 'Group'
+  )
+  SELECT
+    rd.team_id AS rooftop_id,
+    GREATEST(gsl.last_sent_at, rsl.last_sent_at) AS last_sent_at,
+    CASE
+      WHEN gsl.last_sent_at IS NOT NULL AND (rsl.last_sent_at IS NULL OR gsl.last_sent_at >= rsl.last_sent_at)
+        THEN gsl.report_date
+      WHEN rsl.last_sent_at IS NOT NULL
+        THEN rsl.report_date
+      ELSE NULL
+    END AS last_report_date,
+    COALESCE(ed.timezone, 'America/New_York') AS timezone,
+    CASE
+      WHEN GREATEST(gsl.last_sent_at, rsl.last_sent_at) > NOW() - INTERVAL '48 hours' THEN 'healthy'
+      WHEN GREATEST(gsl.last_sent_at, rsl.last_sent_at) IS NOT NULL                   THEN 'stale'
+      WHEN rr.rooftop_id IS NULL AND rg.enterprise_id IS NULL                          THEN 'not_configured'
+      ELSE 'never_sent'
+    END AS report_status,
+    CASE
+      WHEN GREATEST(gsl.last_sent_at, rsl.last_sent_at) > NOW() - INTERVAL '48 hours' THEN NULL
+      ELSE rel.error_reason
+    END AS report_reason
+  FROM rooftop_details rd
+  LEFT JOIN enterprise_details ed    ON ed.enterprise_id = rd.enterprise_id
+  LEFT JOIN group_sent_latest gsl    ON gsl.enterprise_id = rd.enterprise_id
+  LEFT JOIN rooftop_sent_latest rsl  ON rsl.rooftop_id = rd.team_id
+  LEFT JOIN rooftop_error_latest rel ON rel.rooftop_id = rd.team_id
+  LEFT JOIN recipients_rooftop rr    ON rr.rooftop_id = rd.team_id
+  LEFT JOIN recipients_group rg      ON rg.enterprise_id = rd.enterprise_id
+`;
+
+const ENTERPRISE_REPORT_STATUS_SQL = `
+  WITH
+  group_sent_latest AS (
+    SELECT DISTINCT ON (rq.enterprise_id)
+      rq.enterprise_id,
+      rq.processed_at AS last_sent_at,
+      rq.report_date
+    FROM report_queue rq
+    JOIN daily_report_runs dr ON dr.run_id = rq.run_id
+    WHERE dr.test_mode = false
+      AND rq.report_type = 'Group'
+      AND rq.status = 'sent'
+    ORDER BY rq.enterprise_id, rq.processed_at DESC NULLS LAST
+  ),
+  group_error_latest AS (
+    SELECT DISTINCT ON (rq.enterprise_id)
+      rq.enterprise_id,
+      rq.error_reason
+    FROM report_queue rq
+    JOIN daily_report_runs dr ON dr.run_id = rq.run_id
+    WHERE dr.test_mode = false
+      AND rq.report_type = 'Group'
+      AND rq.status IN ('skipped', 'error')
+    ORDER BY rq.enterprise_id, rq.created_at DESC NULLS LAST
+  ),
+  recipients_group AS (
+    SELECT DISTINCT enterprise_id FROM email_recipients WHERE report_type = 'Group'
+  )
+  SELECT
+    ed.enterprise_id,
+    gsl.last_sent_at,
+    gsl.report_date AS last_report_date,
+    COALESCE(ed.timezone, 'America/New_York') AS timezone,
+    CASE
+      WHEN gsl.last_sent_at > NOW() - INTERVAL '48 hours' THEN 'healthy'
+      WHEN gsl.last_sent_at IS NOT NULL                   THEN 'stale'
+      WHEN rg.enterprise_id IS NULL                       THEN 'not_configured'
+      ELSE 'never_sent'
+    END AS report_status,
+    CASE
+      WHEN gsl.last_sent_at > NOW() - INTERVAL '48 hours' THEN NULL
+      ELSE gel.error_reason
+    END AS report_reason
+  FROM enterprise_details ed
+  LEFT JOIN group_sent_latest gsl   ON gsl.enterprise_id = ed.enterprise_id
+  LEFT JOIN group_error_latest gel  ON gel.enterprise_id = ed.enterprise_id
+  LEFT JOIN recipients_group rg     ON rg.enterprise_id = ed.enterprise_id
+`;
+
+// Builds a lookup map { [id]: { reportStatus, reportReason, ... } } from a report status query result.
+function buildRooftopReportMap(rows) {
+  const map = {};
+  for (const r of rows) map[r.rooftop_id] = {
+    reportStatus:   r.report_status   ?? null,
+    reportReason:   r.report_reason   ?? null,
+    lastSentAt:     r.last_sent_at    ?? null,
+    lastReportDate: r.last_report_date ?? null,
+    timezone:       r.timezone        ?? null,
+  };
+  return map;
+}
+
+function buildEnterpriseReportMap(rows) {
+  const map = {};
+  for (const r of rows) map[r.enterprise_id] = {
+    reportStatus:   r.report_status    ?? null,
+    reportReason:   r.report_reason    ?? null,
+    lastSentAt:     r.last_sent_at     ?? null,
+    lastReportDate: r.last_report_date ?? null,
+    timezone:       r.timezone         ?? null,
+  };
+  return map;
+}
+
 function toRooftopRow(r) {
   return {
     rooftopId:                r.rooftop_id,
@@ -411,6 +563,9 @@ function toRooftopRow(r) {
     bucketQcHold:             r.bucket_qc_hold,
     bucketSold:               r.bucket_sold,
     bucketOthers:             r.bucket_others,
+    reportStatus:             r.report_status  ?? null,
+    reportReason:             r.report_reason  ?? null,
+    lastSentAt:               r.last_sent_at   ?? null,
   };
 }
 
@@ -439,6 +594,9 @@ function toEnterpriseRow(r) {
     bucketQcHold:             r.bucket_qc_hold,
     bucketSold:               r.bucket_sold,
     bucketOthers:             r.bucket_others,
+    reportStatus:             r.report_status ?? null,
+    reportReason:             r.report_reason ?? null,
+    lastSentAt:               r.last_sent_at  ?? null,
   };
 }
 
@@ -524,10 +682,13 @@ function buildRooftopSource(dateFilter) {
         MAX(ed.poc_email)                   AS csm,
         MAX(ed.name)                        AS enterprise,
         COUNT(*)::int                       AS total,
+        SUM(CASE WHEN COALESCE(v.has_photos,0)=1 THEN 1 ELSE 0 END)::int                                   AS with_photos,
+        SUM(CASE WHEN v.status = 'Delivered' AND COALESCE(v.has_photos,0)=1 THEN 1 ELSE 0 END)::int        AS delivered_with_photos,
+        SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 THEN 1 ELSE 0 END)::int       AS pending_with_photos,
         SUM(CASE WHEN v.status = 'Delivered' THEN 1 ELSE 0 END)::int                                       AS processed,
         SUM(CASE WHEN v.status = 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int        AS processed_after_24h,
         SUM(CASE WHEN v.status != 'Delivered' THEN 1 ELSE 0 END)::int                                      AS not_processed,
-        SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int       AS not_processed_after_24h,
+        SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS not_processed_after_24h,
         MAX(rd.website_score)               AS website_score,
         MAX(rd.website_listing_url)         AS website_listing_url,
         MAX(rd.ims_integration_status)      AS ims_integration_status,
@@ -558,10 +719,13 @@ function buildEnterpriseSource(dateFilter) {
         MAX(ed.name)                          AS name,
         MAX(ed.poc_email)                     AS csm,
         COUNT(*)::int                         AS total,
+        SUM(CASE WHEN COALESCE(v.has_photos,0)=1 THEN 1 ELSE 0 END)::int                                   AS with_photos,
+        SUM(CASE WHEN v.status = 'Delivered' AND COALESCE(v.has_photos,0)=1 THEN 1 ELSE 0 END)::int        AS delivered_with_photos,
+        SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 THEN 1 ELSE 0 END)::int       AS pending_with_photos,
         SUM(CASE WHEN v.status = 'Delivered' THEN 1 ELSE 0 END)::int                                       AS processed,
         SUM(CASE WHEN v.status = 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int        AS processed_after_24h,
         SUM(CASE WHEN v.status != 'Delivered' THEN 1 ELSE 0 END)::int                                      AS not_processed,
-        SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int       AS not_processed_after_24h,
+        SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS not_processed_after_24h,
         COUNT(DISTINCT v.rooftop_id)::int     AS rooftop_count,
         COUNT(DISTINCT CASE WHEN rd.ims_integration_status = 'false' THEN v.rooftop_id END)::int AS not_integrated_count,
         COUNT(DISTINCT CASE WHEN rd.publishing_status = 'false' THEN v.rooftop_id END)::int      AS publishing_disabled_count,
@@ -1043,14 +1207,22 @@ app.get("/api/rooftops", async (req, res) => {
   const sortDir = req.query.sortDir === "asc" ? "ASC" : "DESC";
   const orderBy = `ORDER BY ${sortCol} ${sortDir} NULLS LAST`;
 
-  const [countRes, rowsRes] = await Promise.all([
+  const [countRes, rowsRes, reportRes] = await Promise.all([
     query(`${prefix} SELECT COUNT(*)::int AS n FROM ${from} ${where}`, params),
     query(`${prefix} SELECT * FROM ${from} ${where} ${orderBy} LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
       [...params, pageSize, offset]),
+    query(ROOFTOP_REPORT_STATUS_SQL),
   ]);
 
-  const total = countRes.rows[0].n;
-  res.json({ data: rowsRes.rows.map(toRooftopRow), total, page, pageSize, pageCount: Math.ceil(total / pageSize) });
+  const reportMap = buildRooftopReportMap(reportRes.rows);
+  const total     = countRes.rows[0].n;
+
+  const data = rowsRes.rows.map(r => ({
+    ...toRooftopRow(r),
+    ...(reportMap[r.rooftop_id] ?? { reportStatus: null, reportReason: null, lastSentAt: null, lastReportDate: null, timezone: null }),
+  }));
+
+  res.json({ data, total, page, pageSize, pageCount: Math.ceil(total / pageSize) });
 });
 
 app.get("/api/rooftops/export", async (req, res) => {
@@ -1058,8 +1230,47 @@ app.get("/api/rooftops/export", async (req, res) => {
   const { where, params } = buildRooftopFilters(req.query);
   const sortCol = ROOFTOP_SORT_MAP[req.query.sortBy] ?? "not_processed_after_24h";
   const sortDir = req.query.sortDir === "asc" ? "ASC" : "DESC";
-  const { rows } = await query(`${prefix} SELECT * FROM ${from} ${where} ORDER BY ${sortCol} ${sortDir} NULLS LAST`, params);
-  res.json({ data: rows.map(toRooftopRow) });
+
+  const [rowsRes, reportRes] = await Promise.all([
+    query(`${prefix} SELECT * FROM ${from} ${where} ORDER BY ${sortCol} ${sortDir} NULLS LAST`, params),
+    query(ROOFTOP_REPORT_STATUS_SQL),
+  ]);
+
+  const reportMap = buildRooftopReportMap(reportRes.rows);
+  const data = rowsRes.rows.map(r => ({
+    ...toRooftopRow(r),
+    ...(reportMap[r.rooftop_id] ?? { reportStatus: null, reportReason: null }),
+  }));
+  res.json({ data });
+});
+
+// ─── GET /api/rooftops/:rooftopId/report-history ─────────────────────────────
+
+app.get("/api/rooftops/:rooftopId/report-history", async (req, res) => {
+  const { rooftopId } = req.params;
+  const { enterpriseId } = req.query;
+  try {
+    const { rows } = await query(
+      `SELECT rq.report_type, rq.processed_at, rq.report_date, rq.to_emails, rq.cc_emails,
+              COALESCE(ed.timezone, 'America/New_York') AS timezone
+         FROM report_queue rq
+         JOIN daily_report_runs dr ON dr.run_id = rq.run_id
+         LEFT JOIN enterprise_details ed ON ed.enterprise_id = rq.enterprise_id
+        WHERE dr.test_mode = false
+          AND rq.status = 'sent'
+          AND (
+            rq.rooftop_id = $1
+            OR (rq.enterprise_id = $2 AND rq.report_type = 'Group')
+          )
+        ORDER BY rq.processed_at DESC
+        LIMIT 10`,
+      [rooftopId, enterpriseId || null]
+    );
+    res.json({ history: rows });
+  } catch (e) {
+    console.error("[report-history] DB error:", e?.message);
+    res.status(500).json({ error: "DB error" });
+  }
 });
 
 // ─── GET /api/enterprises ─────────────────────────────────────────────────────
@@ -1108,14 +1319,22 @@ app.get("/api/enterprises", async (req, res) => {
   const sortDir = req.query.sortDir === "asc" ? "ASC" : "DESC";
   const orderBy = `ORDER BY ${sortCol} ${sortDir} NULLS LAST`;
 
-  const [countRes, rowsRes] = await Promise.all([
+  const [countRes, rowsRes, reportRes] = await Promise.all([
     query(`${prefix} SELECT COUNT(*)::int AS n FROM ${from} ${where}`, params),
     query(`${prefix} SELECT * FROM ${from} ${where} ${orderBy} LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
       [...params, pageSize, offset]),
+    query(ENTERPRISE_REPORT_STATUS_SQL),
   ]);
 
-  const total = countRes.rows[0].n;
-  res.json({ data: rowsRes.rows.map(toEnterpriseRow), total, page, pageSize, pageCount: Math.ceil(total / pageSize) });
+  const reportMap = buildEnterpriseReportMap(reportRes.rows);
+  const total     = countRes.rows[0].n;
+
+  const data = rowsRes.rows.map(r => ({
+    ...toEnterpriseRow(r),
+    ...(reportMap[r.id] ?? { reportStatus: null, reportReason: null, lastSentAt: null, lastReportDate: null, timezone: null }),
+  }));
+
+  res.json({ data, total, page, pageSize, pageCount: Math.ceil(total / pageSize) });
 });
 
 app.get("/api/enterprises/export", async (req, res) => {
@@ -1123,8 +1342,18 @@ app.get("/api/enterprises/export", async (req, res) => {
   const { where, params } = buildEnterpriseFilters(req.query);
   const sortCol = ENTERPRISE_SORT_MAP[req.query.sortBy] ?? "not_processed_after_24h";
   const sortDir = req.query.sortDir === "asc" ? "ASC" : "DESC";
-  const { rows } = await query(`${prefix} SELECT * FROM ${from} ${where} ORDER BY ${sortCol} ${sortDir} NULLS LAST`, params);
-  res.json({ data: rows.map(toEnterpriseRow) });
+
+  const [rowsRes, reportRes] = await Promise.all([
+    query(`${prefix} SELECT * FROM ${from} ${where} ORDER BY ${sortCol} ${sortDir} NULLS LAST`, params),
+    query(ENTERPRISE_REPORT_STATUS_SQL),
+  ]);
+
+  const reportMap = buildEnterpriseReportMap(reportRes.rows);
+  const data = rowsRes.rows.map(r => ({
+    ...toEnterpriseRow(r),
+    ...(reportMap[r.id] ?? { reportStatus: null, reportReason: null, lastSentAt: null, lastReportDate: null, timezone: null }),
+  }));
+  res.json({ data });
 });
 
 // ─── GET /api/vins/export ─────────────────────────────────────────────────────
@@ -1681,24 +1910,72 @@ app.get("/api/send-daily-report", async (req, res) => {
     : "production";
   console.log(`[daily-report] queuing run ${runId} (${testModeLabel}${testMode ? ` → ${testTo.join(",")}` : ""})`);
 
-  // ── Load recipients ────────────────────────────────────────────────────────
+  // ── Load recipients with timezone resolved via JOIN ───────────────────────
   // Three modes:
-  //   1. testMode + rooftopId/enterpriseId → single entity test (one recipient)
-  //   2. testMode + no entity ID           → full-run test (all email_recipients, TO overridden, no CC)
+  //   1. testMode + rooftopId/enterpriseId → single entity test
+  //   2. testMode + no entity ID           → full-run test (all email_recipients, TO overridden)
   //   3. production                        → all email_recipients, real TO/CC
-  let recipients;
+  let recipientRows;
   try {
     if (testMode && (req.query.rooftopId || req.query.enterpriseId)) {
-      recipients = [];
-      if (req.query.rooftopId)    recipients.push({ email: testTo.join(","), rooftop_id: String(req.query.rooftopId),    enterprise_id: null,                           report_type: "Rooftop" });
-      if (req.query.enterpriseId) recipients.push({ email: testTo.join(","), rooftop_id: null,                          enterprise_id: String(req.query.enterpriseId), report_type: "Group"   });
+      // Single-entity test: look up entity timezone, build synthetic row(s)
+      recipientRows = [];
+      if (req.query.rooftopId) {
+        const { rows: [rt] } = await query(
+          `SELECT rd.team_id AS rooftop_id, COALESCE(rd.enterprise_id, '') AS enterprise_id,
+                  COALESCE(ed.timezone, 'America/New_York') AS timezone
+             FROM rooftop_details rd
+             LEFT JOIN enterprise_details ed ON ed.enterprise_id = rd.enterprise_id
+            WHERE rd.team_id = $1`,
+          [String(req.query.rooftopId)]
+        );
+        recipientRows.push({ email: testTo[0], rooftop_id: String(req.query.rooftopId), enterprise_id: rt?.enterprise_id || null, report_type: "Rooftop", timezone: rt?.timezone || "America/New_York" });
+      }
+      if (req.query.enterpriseId) {
+        const { rows: [ent] } = await query(
+          `SELECT enterprise_id, COALESCE(timezone, 'America/New_York') AS timezone FROM enterprise_details WHERE enterprise_id = $1`,
+          [String(req.query.enterpriseId)]
+        );
+        recipientRows.push({ email: testTo[0], rooftop_id: null, enterprise_id: String(req.query.enterpriseId), report_type: "Group", timezone: ent?.timezone || "America/New_York" });
+      }
     } else {
-      const { rows } = await query("SELECT email, rooftop_id, enterprise_id, report_type FROM email_recipients");
-      recipients = rows;
+      // Full-run: load all recipients with timezone resolved via JOIN
+      const { rows } = await query(`
+        SELECT
+          er.email,
+          er.rooftop_id,
+          COALESCE(er.enterprise_id, rd.enterprise_id) AS enterprise_id,
+          er.report_type,
+          COALESCE(ed.timezone, 'America/New_York') AS timezone
+        FROM email_recipients er
+        LEFT JOIN rooftop_details rd  ON er.rooftop_id = rd.team_id
+        LEFT JOIN enterprise_details ed
+          ON ed.enterprise_id = COALESCE(er.enterprise_id, rd.enterprise_id)
+      `);
+      recipientRows = rows;
     }
   } catch (e) {
     console.error("[daily-report] failed to load recipients:", e?.message);
     return res.status(500).json({ error: "DB error loading recipients" });
+  }
+
+  // ── Group by (entityId, reportType) — recipient clubbing ──────────────────
+  const groups = new Map(); // key: `${entityId}::${reportType}`
+  for (const row of recipientRows) {
+    const entityId = row.report_type === "Rooftop" ? row.rooftop_id : row.enterprise_id;
+    if (!entityId) continue;
+    const key = `${entityId}::${row.report_type}`;
+    if (!groups.has(key)) {
+      groups.set(key, {
+        entityId,
+        rooftopId:    row.report_type === "Rooftop" ? row.rooftop_id : null,
+        enterpriseId: row.enterprise_id || null,
+        reportType:   row.report_type,
+        timezone:     row.timezone || "America/New_York",
+        emails:       new Set(),
+      });
+    }
+    if (row.email) groups.get(key).emails.add(row.email.trim().toLowerCase());
   }
 
   // ── Create run record ──────────────────────────────────────────────────────
@@ -1706,35 +1983,65 @@ app.get("/api/send-daily-report", async (req, res) => {
     await query(
       `INSERT INTO daily_report_runs (run_id, run_at, test_mode, status, recipient_count, test_to, test_cc)
        VALUES ($1, $2, $3, 'pending', $4, $5, $6)`,
-      [runId, runAt, testMode, recipients.length, testTo, testCc]
+      [runId, runAt, testMode, groups.size, testTo, testCc]
     );
   } catch (e) {
     console.error("[daily-report] failed to store run:", e?.message);
     return res.status(500).json({ error: "DB error creating run" });
   }
 
-  // ── Enqueue all recipients into report_queue ───────────────────────────────
-  if (recipients.length > 0) {
+  // ── Enqueue one row per entity group ──────────────────────────────────────
+  let enqueued = 0, dedupSkipped = 0;
+  for (const group of groups.values()) {
+    const toEmails = [...group.emails];
+    if (toEmails.length === 0) continue;
+
+    const { yesterdayStr } = yesterdayFor(group.timezone);
+
+    // Per-day dedup check (skip in test mode — tests must always fire)
+    if (!testMode) {
+      try {
+        const { rows: existing } = await query(
+          `SELECT 1 FROM report_queue
+            WHERE entity_id   = $1
+              AND report_type = $2
+              AND report_date = ($3::date + INTERVAL '1 day') AT TIME ZONE $4 - INTERVAL '1 millisecond'
+              AND status = 'sent'
+            LIMIT 1`,
+          [group.entityId, group.reportType, yesterdayStr, group.timezone]
+        );
+        if (existing.length > 0) {
+          console.log(`[daily-report] ${group.reportType} ${group.entityId} already sent for ${yesterdayStr} (${group.timezone}) — skipping`);
+          dedupSkipped++;
+          continue;
+        }
+      } catch (e) {
+        console.error("[daily-report] dedup check failed for", group.entityId, e?.message);
+      }
+    }
+
     try {
-      const placeholders = recipients.map((_, i) => `($1, $${i * 4 + 2}, $${i * 4 + 3}, $${i * 4 + 4}, $${i * 4 + 5})`).join(", ");
-      const params = [runId, ...recipients.flatMap(r => [r.email, r.rooftop_id || null, r.enterprise_id || null, r.report_type])];
       await query(
-        `INSERT INTO report_queue (run_id, email, rooftop_id, enterprise_id, report_type) VALUES ${placeholders}`,
-        params
+        `INSERT INTO report_queue
+           (run_id, email, rooftop_id, enterprise_id, report_type, entity_id, to_emails, report_date)
+         VALUES ($1, $2, $3, $4, $5, $6, $7,
+           ($8::date + INTERVAL '1 day') AT TIME ZONE $9 - INTERVAL '1 millisecond')`,
+        [runId, toEmails[0], group.rooftopId, group.enterpriseId,
+         group.reportType, group.entityId, toEmails, yesterdayStr, group.timezone]
       );
+      enqueued++;
     } catch (e) {
-      console.error("[daily-report] failed to enqueue recipients:", e?.message);
-      return res.status(500).json({ error: "DB error enqueuing recipients" });
+      console.error("[daily-report] failed to enqueue", group.entityId, e?.message);
     }
   }
 
-  console.log(`[daily-report] run ${runId} queued — ${recipients.length} recipients`);
+  console.log(`[daily-report] run ${runId} queued — ${enqueued} enqueued, ${dedupSkipped} dedup-skipped`);
 
   return res.status(202).json({
     ok: true,
     runId,
     status: "pending",
-    recipientCount: recipients.length,
+    recipientCount: enqueued,
     statusUrl: `/api/send-daily-report/status?runId=${runId}`,
   });
 });
@@ -1784,7 +2091,8 @@ app.post("/api/process-report-queue", async (req, res) => {
   try {
     await client.query("BEGIN");
     const { rows } = await client.query(`
-      SELECT id, run_id, email, rooftop_id, enterprise_id, report_type, attempt_count
+      SELECT id, run_id, email, rooftop_id, enterprise_id, report_type,
+             attempt_count, entity_id, report_date, to_emails
         FROM report_queue
        WHERE status = 'pending'
        ORDER BY created_at
@@ -1898,6 +2206,28 @@ app.post("/api/process-report-queue", async (req, res) => {
     const testTo   = run.test_to   || null;
     const testCc   = run.test_cc   || null;
 
+    // ── Safety-net dedup (post-migration rows only) ────────────────────────
+    if (!testMode && row.entity_id && row.report_date) {
+      try {
+        const { rows: alreadySent } = await query(
+          `SELECT 1 FROM report_queue
+            WHERE entity_id   = $1
+              AND report_type = $2
+              AND report_date = $3
+              AND status = 'sent'
+              AND id != $4
+            LIMIT 1`,
+          [row.entity_id, row.report_type, row.report_date, id]
+        );
+        if (alreadySent.length > 0) {
+          await query(`UPDATE report_queue SET status='skipped', error_reason='already_sent', processed_at=NOW() WHERE id=$1`, [id]);
+          skippedCount++; continue;
+        }
+      } catch (e) {
+        console.error("[process-queue] safety-net dedup check failed:", e?.message);
+      }
+    }
+
     try {
       if (report_type === "Rooftop") {
         const { rows: [rt] } = await query(
@@ -1915,7 +2245,16 @@ app.post("/api/process-report-queue", async (req, res) => {
         }
 
         const tz = rt.timezone || "America/New_York";
-        const { yesterdayStr, dateLabel } = yesterdayFor(tz);
+        // Use stored report_date if available (post-migration rows); fall back to computing now
+        let yesterdayStr, dateLabel;
+        if (row.report_date) {
+          const d = new Date(row.report_date);
+          yesterdayStr = d.toLocaleDateString("en-CA", { timeZone: tz });
+          const tzAbbr = d.toLocaleString("en-US", { timeZone: tz, timeZoneName: "short" }).split(" ").pop();
+          dateLabel = d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: tz }) + ` (${tzAbbr})`;
+        } else {
+          ({ yesterdayStr, dateLabel } = yesterdayFor(tz));
+        }
 
         if (await imsOffForRooftop(rooftop_id)) {
           await query(`UPDATE report_queue SET status='skipped', entity_id=$2, entity_name=$3, error_reason='ims_off', processed_at=NOW() WHERE id=$1`, [id, rooftop_id, rt.team_name]);
@@ -1940,7 +2279,7 @@ app.post("/api/process-report-queue", async (req, res) => {
 
         const data    = await computeRooftopDailyReport(rooftop_id, yesterdayStr, tz);
         const html    = buildRooftopReportHtml(data, dateLabel, tz);
-        const to      = testMode ? testTo : email.split(",").map(s => s.trim()).filter(Boolean);
+        const to      = testMode ? testTo : (Array.isArray(row.to_emails) && row.to_emails.length > 0 ? row.to_emails : email.split(",").map(s => s.trim()).filter(Boolean));
         const cc      = testMode ? testCc : (rt.poc_email || undefined);
         const subject = `${testMode ? "[TEST] " : ""}Studio AI Daily Report — ${rt.team_name || rooftop_id} — ${dateLabel}`;
         await sendDailyReport(html, { to, ...(cc && { cc }), subject });
@@ -1966,7 +2305,16 @@ app.post("/api/process-report-queue", async (req, res) => {
         }
 
         const tz = ent.timezone || "America/New_York";
-        const { yesterdayStr, dateLabel } = yesterdayFor(tz);
+        // Use stored report_date if available (post-migration rows); fall back to computing now
+        let yesterdayStr, dateLabel;
+        if (row.report_date) {
+          const d = new Date(row.report_date);
+          yesterdayStr = d.toLocaleDateString("en-CA", { timeZone: tz });
+          const tzAbbr = d.toLocaleString("en-US", { timeZone: tz, timeZoneName: "short" }).split(" ").pop();
+          dateLabel = d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: tz }) + ` (${tzAbbr})`;
+        } else {
+          ({ yesterdayStr, dateLabel } = yesterdayFor(tz));
+        }
 
         if (await imsOffForEnterprise(enterprise_id)) {
           await query(`UPDATE report_queue SET status='skipped', entity_id=$2, entity_name=$3, error_reason='ims_off', processed_at=NOW() WHERE id=$1`, [id, enterprise_id, ent.name]);
@@ -1991,7 +2339,7 @@ app.post("/api/process-report-queue", async (req, res) => {
 
         const data    = await computeGroupDailyReport(enterprise_id, yesterdayStr, tz);
         const html    = buildGroupReportHtml(data, dateLabel);
-        const to      = testMode ? testTo : email.split(",").map(s => s.trim()).filter(Boolean);
+        const to      = testMode ? testTo : (Array.isArray(row.to_emails) && row.to_emails.length > 0 ? row.to_emails : email.split(",").map(s => s.trim()).filter(Boolean));
         const cc      = testMode ? testCc : (ent.poc_email || undefined);
         const subject = `${testMode ? "[TEST] " : ""}Studio AI Group Report — ${ent.name || enterprise_id} — ${dateLabel}`;
         await sendDailyReport(html, { to, ...(cc && { cc }), subject });

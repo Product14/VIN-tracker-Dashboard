@@ -171,6 +171,28 @@ export async function initSchema() {
     CREATE INDEX IF NOT EXISTS idx_report_queue_pending    ON report_queue(status, created_at)           WHERE status = 'pending';
     CREATE INDEX IF NOT EXISTS idx_report_queue_processing ON report_queue(status, processing_started_at) WHERE status = 'processing';
     CREATE INDEX IF NOT EXISTS idx_report_queue_run_id     ON report_queue(run_id, status);
+
+    -- Recipient clubbing: email is now optional (to_emails holds the full list).
+    ALTER TABLE report_queue ALTER COLUMN email DROP NOT NULL;
+
+    -- report_date: end-of-yesterday in entity's local timezone, stored as UTC TIMESTAMPTZ.
+    -- e.g. EDT entity → "2026-04-25 23:59:59.999 EDT" stored as "2026-04-26 03:59:59.999 UTC".
+    -- Encodes both the reporting date and the entity's timezone offset in one value.
+    -- Used for: per-day dedup (exact match) and email processing (format back in entity's tz).
+    ALTER TABLE report_queue ADD COLUMN IF NOT EXISTS report_date TIMESTAMPTZ;
+
+    -- Partial index for fast per-day dedup lookups at enqueue time.
+    CREATE INDEX IF NOT EXISTS idx_report_queue_sent_dedup
+      ON report_queue(entity_id, report_type, report_date)
+      WHERE status = 'sent';
+
+    -- Backfill existing rows: approximate using UTC midnight - 1ms (entity tz unavailable for old rows).
+    UPDATE report_queue rq
+    SET report_date = date_trunc('day', dr.run_at AT TIME ZONE 'UTC') - INTERVAL '1 millisecond'
+    FROM daily_report_runs dr
+    WHERE rq.run_id = dr.run_id
+      AND rq.report_date IS NULL
+      AND dr.test_mode = false;
   `);
 
   // Materialized views — dropped and recreated on every cold start so schema changes

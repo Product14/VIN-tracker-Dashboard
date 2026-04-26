@@ -100,6 +100,147 @@ function fmtCsm(email: string | null | undefined): string {
   return email.replace(/@spyne\.ai$/i, "");
 }
 
+const SKIP_REASON_LABELS: Record<string, string> = {
+  ims_off:            "IMS disabled",
+  pending_vins:       "Pending VINs",
+  negative_tat:       "Negative TAT",
+  low_photo_coverage: "Low photo coverage",
+};
+function fmtSkipReason(r: string | null | undefined): string | null {
+  if (!r) return null;
+  return SKIP_REASON_LABELS[r] ?? r;
+}
+function fmtSentDate(isoTs: string | null | undefined): string | null {
+  if (!isoTs) return null;
+  return new Date(isoTs).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+}
+function fmtReportDate(isoTs: string | null | undefined, tz: string | null | undefined): string | null {
+  if (!isoTs) return null;
+  const d = new Date(isoTs);
+  const zone = tz || "UTC";
+  const date = d.toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: zone });
+  const tzAbbr = d.toLocaleString("en-US", { timeZone: zone, timeZoneName: "short" }).split(" ").pop();
+  return `${date} ${tzAbbr}`;
+}
+
+function ReportStatusCell({ status, reason, lastSentAt, dateLabel: dateLabelProp }: { status: string | null, reason: string | null, lastSentAt: string | null, dateLabel?: string | null }) {
+  const sentDate = dateLabelProp ?? fmtSentDate(lastSentAt);
+  const reasonLabel = fmtSkipReason(reason);
+  if (status === "healthy")        return <span style={{ color: "#166534", fontWeight: 600, fontSize: 12 }}>{sentDate}</span>;
+  if (status === "stale")          return <span style={{ color: "#92400e", fontSize: 12 }}>{sentDate}{reasonLabel ? ` · ${reasonLabel}` : ""}</span>;
+  if (status === "never_sent")     return <span style={{ color: "#991b1b", fontSize: 12 }}>{reasonLabel ?? "Report Not Triggered"}</span>;
+  if (status === "not_configured") return <span style={{ color: "#9ca3af", fontSize: 12 }}>No Recipient</span>;
+  return <span style={{ color: "#9ca3af", fontSize: 12 }}>No Recipient</span>;
+}
+
+function RooftopReportHoverCell({ status, reason, lastSentAt, lastReportDate, timezone, rooftopId, enterpriseId }: {
+  status: string | null, reason: string | null, lastSentAt: string | null,
+  lastReportDate: string | null, timezone: string | null,
+  rooftopId: string, enterpriseId: string | null,
+}) {
+  const [hovered, setHovered] = useState(false);
+  const [pos, setPos]         = useState<{ top: number; left: number } | null>(null);
+  const [history, setHistory] = useState<any[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const cellRef    = useRef<HTMLDivElement>(null);
+  const fetchedRef = useRef(false);
+
+  const handleMouseEnter = () => {
+    const r = cellRef.current?.getBoundingClientRect();
+    if (r) setPos({ top: r.top, left: r.left + r.width / 2 });
+    setHovered(true);
+    if (!fetchedRef.current) {
+      fetchedRef.current = true;
+      setLoading(true);
+      fetch(`${API_BASE}/api/rooftops/${encodeURIComponent(rooftopId)}/report-history?enterpriseId=${encodeURIComponent(enterpriseId ?? "")}`)
+        .then(r => r.ok ? r.json() : Promise.reject())
+        .then(({ history: h }) => { setHistory(h); setLoading(false); })
+        .catch(() => { setHistory([]); setLoading(false); });
+    }
+  };
+
+  return (
+    <div ref={cellRef} style={{ display: "inline-block", cursor: "default" }}
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={() => setHovered(false)}>
+      <ReportStatusCell status={status} reason={reason} lastSentAt={lastSentAt} dateLabel={fmtReportDate(lastReportDate, timezone)} />
+      {hovered && pos && ReactDOM.createPortal(
+        <div style={{
+          position: "fixed",
+          top: pos.top - 10,
+          left: pos.left,
+          transform: "translateX(-50%) translateY(-100%)",
+          background: "#fff",
+          border: "1px solid #e5e7eb",
+          borderRadius: 10,
+          boxShadow: "0 4px 20px rgba(0,0,0,0.12)",
+          padding: "12px 16px",
+          minWidth: 240,
+          maxWidth: 320,
+          zIndex: 99999,
+          pointerEvents: "none",
+        }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: "#6b7280", letterSpacing: "0.05em", textTransform: "uppercase", marginBottom: 10 }}>
+            Sent History
+          </div>
+          {loading ? (
+            <div style={{ fontSize: 12, color: "#9ca3af", textAlign: "center", padding: "4px 0" }}>Loading…</div>
+          ) : !history || history.length === 0 ? (
+            <div style={{ fontSize: 12, color: "#9ca3af", textAlign: "center", padding: "4px 0" }}>No sends yet</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+              {history.map((h, i) => {
+                const label = fmtReportDate(h.report_date, h.timezone) ?? fmtSentDate(h.processed_at) ?? "—";
+                const isGroup = h.report_type === "Group";
+                const toList: string[] = Array.isArray(h.to_emails) ? h.to_emails : [];
+                const ccList: string[] = Array.isArray(h.cc_emails) ? h.cc_emails : [];
+                return (
+                  <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+                    {/* Stem + dot */}
+                    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", width: 12, flexShrink: 0 }}>
+                      {i > 0 && <div style={{ width: 2, height: 8, background: "#d1d5db" }} />}
+                      <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#16a34a", flexShrink: 0, marginTop: i === 0 ? 2 : 0 }} />
+                      {i < history.length - 1 && <div style={{ width: 2, flex: 1, minHeight: 8, background: "#d1d5db" }} />}
+                    </div>
+                    {/* Content */}
+                    <div style={{ display: "flex", flexDirection: "column", gap: 4, paddingBottom: 10, flex: 1, minWidth: 0 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <span style={{ fontSize: 12, color: "#111827", fontWeight: 500 }}>{label}</span>
+                        <span style={{
+                          fontSize: 10, fontWeight: 600, padding: "1px 6px", borderRadius: 4, flexShrink: 0,
+                          background: isGroup ? "#ede9fe" : "#e0f2fe",
+                          color: isGroup ? "#6d28d9" : "#0369a1",
+                        }}>{isGroup ? "Group" : "Rooftop"}</span>
+                      </div>
+                      {toList.length > 0 && (
+                        <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+                          <span style={{ fontSize: 10, color: "#9ca3af", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em" }}>To</span>
+                          {toList.map((e, j) => (
+                            <span key={j} style={{ fontSize: 11, color: "#374151", wordBreak: "break-all" }}>{e}</span>
+                          ))}
+                        </div>
+                      )}
+                      {ccList.length > 0 && (
+                        <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+                          <span style={{ fontSize: 10, color: "#9ca3af", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em" }}>CC</span>
+                          {ccList.map((e, j) => (
+                            <span key={j} style={{ fontSize: 11, color: "#374151", wordBreak: "break-all" }}>{e}</span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>,
+        document.body
+      )}
+    </div>
+  );
+}
+
 // Inline truncation span — shows ellipsis when content overflows, full value on hover
 function Truncated({ value, maxWidth }: { value: string | null | undefined, maxWidth: number }) {
   const text = value ?? "—";
@@ -224,10 +365,11 @@ function SearchableSelect({ value, onChange, options, placeholder = "All" }) {
   }, [open]);
 
   const filtered = useMemo(() => {
-    if (!query) return options;
+    const unique = [...new Set(options)];
+    if (!query) return unique;
     const q = query.toLowerCase();
     const tokens = q.split(/\s+/).filter(Boolean);
-    return options
+    return unique
       .filter(o => {
         const ol = o.toLowerCase();
         return tokens.every(t => ol.includes(t));
@@ -610,10 +752,11 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
       const res = await fetch(`${API_BASE}/api/rooftops/export?${params}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const { data } = await res.json();
-      const headers = ["Enterprise ID", "Enterprise Name", "Team ID", "Rooftop Name", "Type", "CSM", "IMS Integration", "Publishing", "Total Inventory", "With Photos", "Delivered", "Pending", "Pending VINs >24h", "Pending VINs >24h %", "Website Score", ...activeBuckets.map(b => b.label)];
+      const headers = ["Enterprise ID", "Enterprise Name", "Team ID", "Rooftop Name", "Type", "CSM", "IMS Integration", "Publishing", "Total Inventory", "With Photos", "Delivered", "Pending", "Pending VINs >24h", "Pending VINs >24h %", "Website Score", ...activeBuckets.map(b => b.label), "Report Status", "Last Sent"];
       const csvRows = data.map(r => {
         const rate = r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0);
-        return [r.enterpriseId, r.enterprise, r.rooftopId, r.name, r.type, r.csm, r.imsIntegrationStatus ?? "", r.publishingStatus ?? "", r.total, r.withPhotos ?? 0, r.deliveredWithPhotos ?? 0, r.pendingWithPhotos ?? 0, r.notProcessedAfter24, rate, r.websiteScore !== null && r.websiteScore !== undefined ? Number(r.websiteScore).toFixed(1) : "", ...activeBuckets.map(b => r[b.key] ?? 0)];
+        const reportLabel = r.reportStatus === "healthy" ? "Healthy" : r.reportStatus === "stale" ? `Stale · ${fmtSkipReason(r.reportReason) ?? ""}` : r.reportStatus === "never_sent" ? (fmtSkipReason(r.reportReason) ?? "Report Not Triggered") : r.reportStatus === "not_configured" ? "No Recipient" : "No Recipient";
+        return [r.enterpriseId, r.enterprise, r.rooftopId, r.name, r.type, r.csm, r.imsIntegrationStatus ?? "", r.publishingStatus ?? "", r.total, r.withPhotos ?? 0, r.deliveredWithPhotos ?? 0, r.pendingWithPhotos ?? 0, r.notProcessedAfter24, rate, r.websiteScore !== null && r.websiteScore !== undefined ? Number(r.websiteScore).toFixed(1) : "", ...activeBuckets.map(b => r[b.key] ?? 0), reportLabel, fmtReportDate(r.lastReportDate, r.timezone) ?? ""];
       });
       downloadCSV("rooftop-view.csv", headers, csvRows);
     } catch (err) {
@@ -732,6 +875,9 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
               <th rowSpan={2} onClick={() => handleSort("websiteScore")} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "pointer", userSelect: "none", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
                 Website Score {sortCol === "websiteScore" ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
               </th>
+              <th rowSpan={2} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "nowrap", cursor: "default", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
+                Report Status
+              </th>
               <th rowSpan={2} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "default", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
                 Links
               </th>
@@ -789,6 +935,9 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
                           {Number(r.websiteScore).toFixed(1)}
                         </span>
                       : <span style={{ color: "#9ca3af" }}>—</span>}
+                  </td>
+                  <td style={{ ...tdStyle, textAlign: "center" }}>
+                    <RooftopReportHoverCell status={r.reportStatus} reason={r.reportReason} lastSentAt={r.lastSentAt} lastReportDate={r.lastReportDate} timezone={r.timezone} rooftopId={r.rooftopId} enterpriseId={r.enterpriseId} />
                   </td>
                   <td style={{ ...tdStyle, textAlign: "center" }}>
                     <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
@@ -887,8 +1036,11 @@ function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = f
       const res = await fetch(`${API_BASE}/api/enterprises/export?${params}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const { data } = await res.json();
-      const headers = ["Enterprise ID", "Enterprise Name", "Account Type", "CSM", "Rooftops", ...(showNotIntegrated ? ["Not Integrated"] : []), ...(showPublishingDisabled ? ["Publishing Disabled"] : []), "Total Inventory", "With Photos", "Delivered", "Pending", "Pending VINs >24h", "Pending VINs >24h %", "Avg Website Score", ...activeBuckets.map(b => b.label)];
-      const csvRows = data.map((r: any) => [r.id, r.name, r.accountType ?? "", r.csm ?? "", r.rooftopCount ?? 0, ...(showNotIntegrated ? [r.notIntegratedCount ?? 0] : []), ...(showPublishingDisabled ? [r.publishingDisabledCount ?? 0] : []), r.total, r.withPhotos ?? 0, r.deliveredWithPhotos ?? 0, r.pendingWithPhotos ?? 0, r.notProcessedAfter24, r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0), r.avgWebsiteScore !== null && r.avgWebsiteScore !== undefined ? Number(r.avgWebsiteScore).toFixed(1) : "", ...activeBuckets.map(b => r[b.key] ?? 0)]);
+      const headers = ["Enterprise ID", "Enterprise Name", "Account Type", "CSM", "Rooftops", ...(showNotIntegrated ? ["Not Integrated"] : []), ...(showPublishingDisabled ? ["Publishing Disabled"] : []), "Total Inventory", "With Photos", "Delivered", "Pending", "Pending VINs >24h", "Pending VINs >24h %", "Avg Website Score", ...activeBuckets.map(b => b.label), "Report Status", "Last Sent"];
+      const csvRows = data.map((r: any) => {
+        const reportLabel = r.reportStatus === "healthy" ? "Healthy" : r.reportStatus === "stale" ? `Stale · ${fmtSkipReason(r.reportReason) ?? ""}` : r.reportStatus === "never_sent" ? (fmtSkipReason(r.reportReason) ?? "Report Not Triggered") : r.reportStatus === "not_configured" ? "No Recipient" : "No Recipient";
+        return [r.id, r.name, r.accountType ?? "", r.csm ?? "", r.rooftopCount ?? 0, ...(showNotIntegrated ? [r.notIntegratedCount ?? 0] : []), ...(showPublishingDisabled ? [r.publishingDisabledCount ?? 0] : []), r.total, r.withPhotos ?? 0, r.deliveredWithPhotos ?? 0, r.pendingWithPhotos ?? 0, r.notProcessedAfter24, r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0), r.avgWebsiteScore !== null && r.avgWebsiteScore !== undefined ? Number(r.avgWebsiteScore).toFixed(1) : "", ...activeBuckets.map(b => r[b.key] ?? 0), reportLabel, fmtReportDate(r.lastReportDate, r.timezone) ?? ""];
+      });
       downloadCSV("enterprise-view.csv", headers, csvRows);
     } catch (err) {
       console.error("Export failed:", err);
@@ -982,6 +1134,9 @@ function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = f
               <th rowSpan={2} onClick={() => handleSort("avgWebsiteScore")} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "pointer", userSelect: "none", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
                 Avg Website Score {sortCol === "avgWebsiteScore" ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
               </th>
+              <th rowSpan={2} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "nowrap", cursor: "default", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
+                Report Status
+              </th>
               <th rowSpan={2} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "default", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
                 Links
               </th>
@@ -1052,6 +1207,9 @@ function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = f
                           {Number(r.avgWebsiteScore).toFixed(1)}
                         </span>
                       : <span style={{ color: "#9ca3af" }}>—</span>}
+                  </td>
+                  <td style={{ ...tdStyle, textAlign: "center" }}>
+                    <ReportStatusCell status={r.reportStatus} reason={r.reportReason} lastSentAt={r.lastSentAt} dateLabel={fmtReportDate(r.lastReportDate, r.timezone)} />
                   </td>
                   <td style={{ ...tdStyle, textAlign: "center" }}>
                     <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
