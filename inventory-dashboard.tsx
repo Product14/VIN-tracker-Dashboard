@@ -717,7 +717,7 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
 
   const activeBuckets = BUCKETS.filter(b => bucketFlags[b.key]);
   const pendencyColSpan = 1 + activeBuckets.length;
-  const activeCount = [filters.rooftopType, filters.csm, filters.enterprise, filters.websiteScore, filters.imsIntegration, filters.publishingStatus].filter(Boolean).length;
+  const activeCount = [filters.rooftopType, filters.csm, filters.enterprise, filters.websiteScore, filters.imsIntegration, filters.publishingStatus, filters.reportStatus].filter(Boolean).length;
   const cols = [
     { key: "enterprise",             label: "Enterprise Name" },
     { key: "name",                   label: "Rooftop Name" },
@@ -747,6 +747,7 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
     if (filters.imsIntegration)   params.set("imsIntegration",  filters.imsIntegration);
     if (filters.publishingStatus) params.set("publishingStatus", filters.publishingStatus);
     if (filters.websiteScore)     params.set("websiteScore",    filters.websiteScore);
+    if (filters.reportStatus)     params.set("reportStatus",    filters.reportStatus);
     if (sortCol) { params.set("sortBy", sortCol); params.set("sortDir", sortDir); }
     try {
       const res = await fetch(`${API_BASE}/api/rooftops/export?${params}`);
@@ -816,6 +817,12 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
             options={["Yes", "No"]}
             placeholder="Publishing"
           />
+          <SearchableSelect
+            value={filters.reportStatus ? REPORT_STATUS_LABELS[filters.reportStatus] : null}
+            onChange={v => setFilters(f => ({ ...f, reportStatus: v ? REPORT_STATUS_VALUES[v] : null }))}
+            options={REPORT_STATUS_OPTIONS}
+            placeholder="Report Status"
+          />
           {activeCount > 0 && (
             <button onClick={() => setFilters(DEFAULT_ROOFTOP_FILTERS)}
               style={{ padding: "7px 14px", borderRadius: 8, border: "1px solid #fca5a5", background: "#fef2f2", color: "#dc2626", fontSize: 13, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>
@@ -875,8 +882,8 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
               <th rowSpan={2} onClick={() => handleSort("websiteScore")} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "pointer", userSelect: "none", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
                 Website Score {sortCol === "websiteScore" ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
               </th>
-              <th rowSpan={2} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "nowrap", cursor: "default", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
-                Report Status
+              <th rowSpan={2} onClick={() => handleSort("reportStatus")} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "nowrap", cursor: "pointer", userSelect: "none", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
+                Report Status {sortCol === "reportStatus" ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
               </th>
               <th rowSpan={2} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "default", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
                 Links
@@ -1022,15 +1029,16 @@ function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = f
     else { onSortChange(null, "asc"); }
   };
 
-  const activeCount = [filters.csm, filters.accountType, filters.websiteScore].filter(Boolean).length;
+  const activeCount = [filters.csm, filters.accountType, filters.websiteScore, filters.reportStatus].filter(Boolean).length;
 
   const handleDownload = async () => {
     setDownloading(true);
     const params = new URLSearchParams();
-    if (filters.search)       params.set("search",      filters.search);
-    if (filters.csm)          params.set("csm",         filters.csm);
-    if (filters.accountType)  params.set("accountType", filters.accountType);
-    if (filters.websiteScore) params.set("websiteScore", filters.websiteScore);
+    if (filters.search)       params.set("search",        filters.search);
+    if (filters.csm)          params.set("csm",           filters.csm);
+    if (filters.accountType)  params.set("accountType",   filters.accountType);
+    if (filters.websiteScore) params.set("websiteScore",  filters.websiteScore);
+    if (filters.reportStatus) params.set("reportStatus",  filters.reportStatus);
     if (sortCol) { params.set("sortBy", sortCol); params.set("sortDir", sortDir); }
     try {
       const res = await fetch(`${API_BASE}/api/enterprises/export?${params}`);
@@ -1076,6 +1084,12 @@ function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = f
             onChange={v => setFilters(f => ({ ...f, websiteScore: v }))}
             options={SCORE_OPTIONS}
             placeholder="All Scores"
+          />
+          <SearchableSelect
+            value={filters.reportStatus ? REPORT_STATUS_LABELS[filters.reportStatus] : null}
+            onChange={v => setFilters(f => ({ ...f, reportStatus: v ? REPORT_STATUS_VALUES[v] : null }))}
+            options={REPORT_STATUS_OPTIONS}
+            placeholder="Report Status"
           />
           {(filters.search || activeCount > 0) && (
             <button onClick={() => setFilters(DEFAULT_ENTERPRISE_FILTERS)}
@@ -1134,8 +1148,8 @@ function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = f
               <th rowSpan={2} onClick={() => handleSort("avgWebsiteScore")} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "pointer", userSelect: "none", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
                 Avg Website Score {sortCol === "avgWebsiteScore" ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
               </th>
-              <th rowSpan={2} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "nowrap", cursor: "default", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
-                Report Status
+              <th rowSpan={2} onClick={() => handleSort("reportStatus")} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "nowrap", cursor: "pointer", userSelect: "none", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
+                Report Status {sortCol === "reportStatus" ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
               </th>
               <th rowSpan={2} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "default", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
                 Links
@@ -1640,8 +1654,29 @@ function timeAgo(isoString: string): string {
 }
 
 const DEFAULT_FILTERS = { search: "", enterpriseId: null, rooftopId: null, rooftopType: null, csm: null, status: null, after24h: null, hasPhotos: null, hasVin: null, reasonBucket: null };
-const DEFAULT_ROOFTOP_FILTERS = { search: "", rooftopType: null, csm: null, enterprise: null, websiteScore: null, imsIntegration: null, publishingStatus: null };
-const DEFAULT_ENTERPRISE_FILTERS = { search: "", csm: null, accountType: null, websiteScore: null };
+const DEFAULT_ROOFTOP_FILTERS = { search: "", rooftopType: null, csm: null, enterprise: null, websiteScore: null, imsIntegration: null, publishingStatus: null, reportStatus: null };
+const DEFAULT_ENTERPRISE_FILTERS = { search: "", csm: null, accountType: null, websiteScore: null, reportStatus: null };
+
+const REPORT_STATUS_LABELS: Record<string, string> = {
+  healthy:                      "Healthy",
+  stale:                        "Stale",
+  never_sent:                   "Never Sent",
+  not_configured:               "No Recipient",
+  "reason:ims_off":             "IMS Disabled",
+  "reason:pending_vins":        "Pending VINs",
+  "reason:negative_tat":        "Negative TAT",
+  "reason:low_photo_coverage":  "Low Photo Coverage",
+  "reason:already_sent":        "Already Sent",
+  "reason:timed_out":           "Timed Out",
+};
+const REPORT_STATUS_VALUES: Record<string, string> = Object.fromEntries(
+  Object.entries(REPORT_STATUS_LABELS).map(([k, v]) => [v, k])
+);
+const REPORT_STATUS_OPTIONS = [
+  "Healthy", "Stale", "Never Sent", "No Recipient",
+  "IMS Disabled", "Pending VINs", "Negative TAT", "Low Photo Coverage",
+  "Already Sent", "Timed Out",
+];
 
 const EMPTY_SUMMARY = {
   totals:   { total: 0, enterpriseCount: 0, withPhotos: 0, deliveredWithPhotos: 0, pendingWithPhotos: 0, processed: 0, notProcessed: 0, processedAfter24: 0, notProcessedAfter24: 0, bucketProcessingPending: 0, bucketPublishingPending: 0, bucketQcPending: 0, bucketSold: 0, bucketOthers: 0 },
@@ -1909,6 +1944,7 @@ export default function Dashboard() {
     if (filters.imsIntegration)   params.set("imsIntegration",  filters.imsIntegration);
     if (filters.publishingStatus) params.set("publishingStatus", filters.publishingStatus);
     if (filters.websiteScore)     params.set("websiteScore",    filters.websiteScore);
+    if (filters.reportStatus)     params.set("reportStatus",    filters.reportStatus);
     if (sortCol) { params.set("sortBy", sortCol); params.set("sortDir", sortDir); }
     params.set("dateFilter", df);
     fetch(`${API_BASE}/api/rooftops?${params}`)
@@ -1924,10 +1960,11 @@ export default function Dashboard() {
   const loadEnterprisePage = useCallback((page: number, filters: any, sortCol: string | null, sortDir: string, df: string = "post") => {
     setEnterpriseLoading(true);
     const params = new URLSearchParams({ page: String(page), pageSize: "50" });
-    if (filters.search)       params.set("search",      filters.search);
-    if (filters.csm)          params.set("csm",         filters.csm);
-    if (filters.accountType)  params.set("accountType", filters.accountType);
-    if (filters.websiteScore) params.set("websiteScore", filters.websiteScore);
+    if (filters.search)       params.set("search",        filters.search);
+    if (filters.csm)          params.set("csm",           filters.csm);
+    if (filters.accountType)  params.set("accountType",   filters.accountType);
+    if (filters.websiteScore) params.set("websiteScore",  filters.websiteScore);
+    if (filters.reportStatus) params.set("reportStatus",  filters.reportStatus);
     if (sortCol) { params.set("sortBy", sortCol); params.set("sortDir", sortDir); }
     params.set("dateFilter", df);
     fetch(`${API_BASE}/api/enterprises?${params}`)

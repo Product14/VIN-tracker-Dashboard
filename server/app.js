@@ -385,157 +385,111 @@ function toTotals(r) {
   };
 }
 
-// ─── Report status queries ────────────────────────────────────────────────────
-// Run in parallel alongside the main rooftop/enterprise queries.
-// Anchors to ALL run_ids on the most recent reporting date (handles retry runs).
-// Status precedence across runs: sent > skipped > error.
+// ─── Report status CTE fragments ─────────────────────────────────────────────
+// Embedded directly into buildRooftopSource / buildEnterpriseSource so that
+// report_status becomes a real column in the main query (enables server-side
+// filtering and sorting by report status).
 
-const ROOFTOP_REPORT_STATUS_SQL = `
-  WITH
+// CTE fragment embedded into buildRooftopSource — produces `rs` with report status per rooftop_id.
+const ROOFTOP_STATUS_CTES = `
   group_sent_latest AS (
     SELECT DISTINCT ON (rq.enterprise_id)
-      rq.enterprise_id,
-      rq.processed_at AS last_sent_at,
-      rq.report_date
+      rq.enterprise_id, rq.processed_at AS last_sent_at, rq.report_date
     FROM report_queue rq
     JOIN daily_report_runs dr ON dr.run_id = rq.run_id
-    WHERE dr.test_mode = false
-      AND rq.report_type = 'Group'
-      AND rq.status = 'sent'
+    WHERE dr.test_mode = false AND rq.report_type = 'Group' AND rq.status = 'sent'
     ORDER BY rq.enterprise_id, rq.processed_at DESC NULLS LAST
   ),
   rooftop_sent_latest AS (
     SELECT DISTINCT ON (rq.rooftop_id)
-      rq.rooftop_id,
-      rq.processed_at AS last_sent_at,
-      rq.report_date
+      rq.rooftop_id, rq.processed_at AS last_sent_at, rq.report_date
     FROM report_queue rq
     JOIN daily_report_runs dr ON dr.run_id = rq.run_id
-    WHERE dr.test_mode = false
-      AND rq.report_type = 'Rooftop'
-      AND rq.status = 'sent'
+    WHERE dr.test_mode = false AND rq.report_type = 'Rooftop' AND rq.status = 'sent'
     ORDER BY rq.rooftop_id, rq.processed_at DESC NULLS LAST
   ),
   rooftop_error_latest AS (
     SELECT DISTINCT ON (rq.rooftop_id)
-      rq.rooftop_id,
-      rq.error_reason
+      rq.rooftop_id, rq.error_reason
     FROM report_queue rq
     JOIN daily_report_runs dr ON dr.run_id = rq.run_id
-    WHERE dr.test_mode = false
-      AND rq.report_type = 'Rooftop'
-      AND rq.status IN ('skipped', 'error')
+    WHERE dr.test_mode = false AND rq.report_type = 'Rooftop' AND rq.status IN ('skipped', 'error')
     ORDER BY rq.rooftop_id, rq.created_at DESC NULLS LAST
   ),
-  recipients_rooftop AS (
-    SELECT DISTINCT rooftop_id FROM email_recipients WHERE rooftop_id IS NOT NULL
-  ),
-  recipients_group AS (
-    SELECT DISTINCT enterprise_id FROM email_recipients WHERE report_type = 'Group'
+  recipients_rooftop AS (SELECT DISTINCT rooftop_id FROM email_recipients WHERE rooftop_id IS NOT NULL),
+  recipients_group   AS (SELECT DISTINCT enterprise_id FROM email_recipients WHERE report_type = 'Group'),
+  rs AS (
+    SELECT
+      rd.team_id AS rooftop_id,
+      GREATEST(gsl.last_sent_at, rsl.last_sent_at) AS last_sent_at,
+      CASE
+        WHEN gsl.last_sent_at IS NOT NULL AND (rsl.last_sent_at IS NULL OR gsl.last_sent_at >= rsl.last_sent_at)
+          THEN gsl.report_date
+        WHEN rsl.last_sent_at IS NOT NULL THEN rsl.report_date
+        ELSE NULL
+      END AS last_report_date,
+      COALESCE(ed.timezone, 'America/New_York') AS timezone,
+      CASE
+        WHEN GREATEST(gsl.last_sent_at, rsl.last_sent_at) > NOW() - INTERVAL '48 hours' THEN 'healthy'
+        WHEN GREATEST(gsl.last_sent_at, rsl.last_sent_at) IS NOT NULL                   THEN 'stale'
+        WHEN rr.rooftop_id IS NULL AND rg.enterprise_id IS NULL                          THEN 'not_configured'
+        ELSE 'never_sent'
+      END AS report_status,
+      CASE
+        WHEN GREATEST(gsl.last_sent_at, rsl.last_sent_at) > NOW() - INTERVAL '48 hours' THEN NULL
+        ELSE rel.error_reason
+      END AS report_reason
+    FROM rooftop_details rd
+    LEFT JOIN enterprise_details ed    ON ed.enterprise_id = rd.enterprise_id
+    LEFT JOIN group_sent_latest gsl    ON gsl.enterprise_id = rd.enterprise_id
+    LEFT JOIN rooftop_sent_latest rsl  ON rsl.rooftop_id = rd.team_id
+    LEFT JOIN rooftop_error_latest rel ON rel.rooftop_id = rd.team_id
+    LEFT JOIN recipients_rooftop rr    ON rr.rooftop_id = rd.team_id
+    LEFT JOIN recipients_group rg      ON rg.enterprise_id = rd.enterprise_id
   )
-  SELECT
-    rd.team_id AS rooftop_id,
-    GREATEST(gsl.last_sent_at, rsl.last_sent_at) AS last_sent_at,
-    CASE
-      WHEN gsl.last_sent_at IS NOT NULL AND (rsl.last_sent_at IS NULL OR gsl.last_sent_at >= rsl.last_sent_at)
-        THEN gsl.report_date
-      WHEN rsl.last_sent_at IS NOT NULL
-        THEN rsl.report_date
-      ELSE NULL
-    END AS last_report_date,
-    COALESCE(ed.timezone, 'America/New_York') AS timezone,
-    CASE
-      WHEN GREATEST(gsl.last_sent_at, rsl.last_sent_at) > NOW() - INTERVAL '48 hours' THEN 'healthy'
-      WHEN GREATEST(gsl.last_sent_at, rsl.last_sent_at) IS NOT NULL                   THEN 'stale'
-      WHEN rr.rooftop_id IS NULL AND rg.enterprise_id IS NULL                          THEN 'not_configured'
-      ELSE 'never_sent'
-    END AS report_status,
-    CASE
-      WHEN GREATEST(gsl.last_sent_at, rsl.last_sent_at) > NOW() - INTERVAL '48 hours' THEN NULL
-      ELSE rel.error_reason
-    END AS report_reason
-  FROM rooftop_details rd
-  LEFT JOIN enterprise_details ed    ON ed.enterprise_id = rd.enterprise_id
-  LEFT JOIN group_sent_latest gsl    ON gsl.enterprise_id = rd.enterprise_id
-  LEFT JOIN rooftop_sent_latest rsl  ON rsl.rooftop_id = rd.team_id
-  LEFT JOIN rooftop_error_latest rel ON rel.rooftop_id = rd.team_id
-  LEFT JOIN recipients_rooftop rr    ON rr.rooftop_id = rd.team_id
-  LEFT JOIN recipients_group rg      ON rg.enterprise_id = rd.enterprise_id
 `;
 
-const ENTERPRISE_REPORT_STATUS_SQL = `
-  WITH
-  group_sent_latest AS (
+// CTE fragment embedded into buildEnterpriseSource — produces `es` with report status per enterprise_id.
+const ENTERPRISE_STATUS_CTES = `
+  group_sent_ent AS (
     SELECT DISTINCT ON (rq.enterprise_id)
-      rq.enterprise_id,
-      rq.processed_at AS last_sent_at,
-      rq.report_date
+      rq.enterprise_id, rq.processed_at AS last_sent_at, rq.report_date
     FROM report_queue rq
     JOIN daily_report_runs dr ON dr.run_id = rq.run_id
-    WHERE dr.test_mode = false
-      AND rq.report_type = 'Group'
-      AND rq.status = 'sent'
+    WHERE dr.test_mode = false AND rq.report_type = 'Group' AND rq.status = 'sent'
     ORDER BY rq.enterprise_id, rq.processed_at DESC NULLS LAST
   ),
-  group_error_latest AS (
+  group_error_ent AS (
     SELECT DISTINCT ON (rq.enterprise_id)
-      rq.enterprise_id,
-      rq.error_reason
+      rq.enterprise_id, rq.error_reason
     FROM report_queue rq
     JOIN daily_report_runs dr ON dr.run_id = rq.run_id
-    WHERE dr.test_mode = false
-      AND rq.report_type = 'Group'
-      AND rq.status IN ('skipped', 'error')
+    WHERE dr.test_mode = false AND rq.report_type = 'Group' AND rq.status IN ('skipped', 'error')
     ORDER BY rq.enterprise_id, rq.created_at DESC NULLS LAST
   ),
-  recipients_group AS (
-    SELECT DISTINCT enterprise_id FROM email_recipients WHERE report_type = 'Group'
+  recipients_ent AS (SELECT DISTINCT enterprise_id FROM email_recipients WHERE report_type = 'Group'),
+  es AS (
+    SELECT
+      ed.enterprise_id,
+      gsl.last_sent_at,
+      gsl.report_date AS last_report_date,
+      COALESCE(ed.timezone, 'America/New_York') AS timezone,
+      CASE
+        WHEN gsl.last_sent_at > NOW() - INTERVAL '48 hours' THEN 'healthy'
+        WHEN gsl.last_sent_at IS NOT NULL                   THEN 'stale'
+        WHEN rg.enterprise_id IS NULL                       THEN 'not_configured'
+        ELSE 'never_sent'
+      END AS report_status,
+      CASE
+        WHEN gsl.last_sent_at > NOW() - INTERVAL '48 hours' THEN NULL
+        ELSE gel.error_reason
+      END AS report_reason
+    FROM enterprise_details ed
+    LEFT JOIN group_sent_ent gsl ON gsl.enterprise_id = ed.enterprise_id
+    LEFT JOIN group_error_ent gel ON gel.enterprise_id = ed.enterprise_id
+    LEFT JOIN recipients_ent rg  ON rg.enterprise_id = ed.enterprise_id
   )
-  SELECT
-    ed.enterprise_id,
-    gsl.last_sent_at,
-    gsl.report_date AS last_report_date,
-    COALESCE(ed.timezone, 'America/New_York') AS timezone,
-    CASE
-      WHEN gsl.last_sent_at > NOW() - INTERVAL '48 hours' THEN 'healthy'
-      WHEN gsl.last_sent_at IS NOT NULL                   THEN 'stale'
-      WHEN rg.enterprise_id IS NULL                       THEN 'not_configured'
-      ELSE 'never_sent'
-    END AS report_status,
-    CASE
-      WHEN gsl.last_sent_at > NOW() - INTERVAL '48 hours' THEN NULL
-      ELSE gel.error_reason
-    END AS report_reason
-  FROM enterprise_details ed
-  LEFT JOIN group_sent_latest gsl   ON gsl.enterprise_id = ed.enterprise_id
-  LEFT JOIN group_error_latest gel  ON gel.enterprise_id = ed.enterprise_id
-  LEFT JOIN recipients_group rg     ON rg.enterprise_id = ed.enterprise_id
 `;
-
-// Builds a lookup map { [id]: { reportStatus, reportReason, ... } } from a report status query result.
-function buildRooftopReportMap(rows) {
-  const map = {};
-  for (const r of rows) map[r.rooftop_id] = {
-    reportStatus:   r.report_status   ?? null,
-    reportReason:   r.report_reason   ?? null,
-    lastSentAt:     r.last_sent_at    ?? null,
-    lastReportDate: r.last_report_date ?? null,
-    timezone:       r.timezone        ?? null,
-  };
-  return map;
-}
-
-function buildEnterpriseReportMap(rows) {
-  const map = {};
-  for (const r of rows) map[r.enterprise_id] = {
-    reportStatus:   r.report_status    ?? null,
-    reportReason:   r.report_reason    ?? null,
-    lastSentAt:     r.last_sent_at     ?? null,
-    lastReportDate: r.last_report_date ?? null,
-    timezone:       r.timezone         ?? null,
-  };
-  return map;
-}
 
 function toRooftopRow(r) {
   return {
@@ -563,9 +517,11 @@ function toRooftopRow(r) {
     bucketQcHold:             r.bucket_qc_hold,
     bucketSold:               r.bucket_sold,
     bucketOthers:             r.bucket_others,
-    reportStatus:             r.report_status  ?? null,
-    reportReason:             r.report_reason  ?? null,
-    lastSentAt:               r.last_sent_at   ?? null,
+    reportStatus:             r.report_status    ?? null,
+    reportReason:             r.report_reason    ?? null,
+    lastSentAt:               r.last_sent_at     ?? null,
+    lastReportDate:           r.last_report_date ?? null,
+    timezone:                 r.timezone         ?? null,
   };
 }
 
@@ -594,9 +550,11 @@ function toEnterpriseRow(r) {
     bucketQcHold:             r.bucket_qc_hold,
     bucketSold:               r.bucket_sold,
     bucketOthers:             r.bucket_others,
-    reportStatus:             r.report_status ?? null,
-    reportReason:             r.report_reason ?? null,
-    lastSentAt:               r.last_sent_at  ?? null,
+    reportStatus:             r.report_status    ?? null,
+    reportReason:             r.report_reason    ?? null,
+    lastSentAt:               r.last_sent_at     ?? null,
+    lastReportDate:           r.last_report_date ?? null,
+    timezone:                 r.timezone         ?? null,
   };
 }
 
@@ -667,13 +625,13 @@ function getDateCondition(dateFilter, alias = '') {
 }
 
 // Returns { prefix, from } for the rooftop aggregation source.
-// When dateFilter is active, inlines the view SQL as a CTE so the date
-// condition can be applied before aggregation.
+// Always embeds ROOFTOP_STATUS_CTES so report_status is a real column
+// available for SQL-level filtering and sorting.
 function buildRooftopSource(dateFilter) {
   const dc = getDateCondition(dateFilter, 'v');
-  if (!dc) return { prefix: '', from: 'v_by_rooftop' };
-  const prefix = `
-    WITH rt AS (
+  let invCte = '', invSource;
+  if (dc) {
+    invCte = `rt AS (
       SELECT
         v.rooftop_id,
         v.enterprise_id,
@@ -703,17 +661,26 @@ function buildRooftopSource(dateFilter) {
       LEFT JOIN enterprise_details ed ON v.enterprise_id = ed.enterprise_id
       WHERE ${dc}
       GROUP BY v.rooftop_id, v.enterprise_id
-    )
-  `;
-  return { prefix, from: 'rt' };
+    ),
+    `;
+    invSource = 'rt';
+  } else {
+    invSource = 'v_by_rooftop';
+  }
+  const prefix = `WITH ${invCte}${ROOFTOP_STATUS_CTES}`;
+  const from = `(SELECT inv.*, rs.last_sent_at, rs.last_report_date, rs.timezone, rs.report_status, rs.report_reason
+                 FROM ${invSource} inv LEFT JOIN rs ON rs.rooftop_id = inv.rooftop_id) combined`;
+  return { prefix, from };
 }
 
 // Returns { prefix, from } for the enterprise aggregation source.
+// Always embeds ENTERPRISE_STATUS_CTES so report_status is a real column
+// available for SQL-level filtering and sorting.
 function buildEnterpriseSource(dateFilter) {
   const dc = getDateCondition(dateFilter, 'v');
-  if (!dc) return { prefix: '', from: 'v_by_enterprise' };
-  const prefix = `
-    WITH et AS (
+  let invCte = '', invSource;
+  if (dc) {
+    invCte = `et AS (
       SELECT
         v.enterprise_id                       AS id,
         MAX(ed.name)                          AS name,
@@ -742,9 +709,16 @@ function buildEnterpriseSource(dateFilter) {
       LEFT JOIN rooftop_details rd    ON v.rooftop_id = rd.team_id
       WHERE ${dc}
       GROUP BY v.enterprise_id
-    )
-  `;
-  return { prefix, from: 'et' };
+    ),
+    `;
+    invSource = 'et';
+  } else {
+    invSource = 'v_by_enterprise';
+  }
+  const prefix = `WITH ${invCte}${ENTERPRISE_STATUS_CTES}`;
+  const from = `(SELECT inv.*, es.last_sent_at, es.last_report_date, es.timezone, es.report_status, es.report_reason
+                 FROM ${invSource} inv LEFT JOIN es ON es.enterprise_id = inv.id) combined`;
+  return { prefix, from };
 }
 
 // ─── VIN query helpers ────────────────────────────────────────────────────────
@@ -1170,6 +1144,7 @@ const ROOFTOP_SORT_MAP = {
   notProcessedAfter24: "not_processed_after_24h",
   rate:                "not_processed_after_24h", // proxy: sort by count as approximation
   websiteScore:        "website_score",
+  reportStatus:        "CASE report_status WHEN 'healthy' THEN 1 WHEN 'stale' THEN 2 WHEN 'never_sent' THEN 3 WHEN 'not_configured' THEN 4 ELSE 5 END",
 };
 
 function buildRooftopFilters(queryParams) {
@@ -1192,6 +1167,16 @@ function buildRooftopFilters(queryParams) {
   if (queryParams.websiteScore === "Poor (<6)")     conditions.push("website_score < 6");
   if (queryParams.websiteScore === "Average (6\u20138)") conditions.push("(website_score >= 6 AND website_score < 8)");
   if (queryParams.websiteScore === "Good (8+)")     conditions.push("website_score >= 8");
+  if (queryParams.reportStatus) {
+    const rs = queryParams.reportStatus;
+    if (rs === 'not_configured') {
+      conditions.push(`(report_status = 'not_configured' OR report_status IS NULL)`);
+    } else if (rs.startsWith('reason:')) {
+      conditions.push(`report_reason = ${p(rs.slice(7))}`);
+    } else {
+      conditions.push(`report_status = ${p(rs)}`);
+    }
+  }
 
   return { where: conditions.length ? `WHERE ${conditions.join(" AND ")}` : "", params };
 }
@@ -1207,20 +1192,14 @@ app.get("/api/rooftops", async (req, res) => {
   const sortDir = req.query.sortDir === "asc" ? "ASC" : "DESC";
   const orderBy = `ORDER BY ${sortCol} ${sortDir} NULLS LAST`;
 
-  const [countRes, rowsRes, reportRes] = await Promise.all([
+  const [countRes, rowsRes] = await Promise.all([
     query(`${prefix} SELECT COUNT(*)::int AS n FROM ${from} ${where}`, params),
     query(`${prefix} SELECT * FROM ${from} ${where} ${orderBy} LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
       [...params, pageSize, offset]),
-    query(ROOFTOP_REPORT_STATUS_SQL),
   ]);
 
-  const reportMap = buildRooftopReportMap(reportRes.rows);
-  const total     = countRes.rows[0].n;
-
-  const data = rowsRes.rows.map(r => ({
-    ...toRooftopRow(r),
-    ...(reportMap[r.rooftop_id] ?? { reportStatus: null, reportReason: null, lastSentAt: null, lastReportDate: null, timezone: null }),
-  }));
+  const total = countRes.rows[0].n;
+  const data  = rowsRes.rows.map(r => toRooftopRow(r));
 
   res.json({ data, total, page, pageSize, pageCount: Math.ceil(total / pageSize) });
 });
@@ -1231,17 +1210,8 @@ app.get("/api/rooftops/export", async (req, res) => {
   const sortCol = ROOFTOP_SORT_MAP[req.query.sortBy] ?? "not_processed_after_24h";
   const sortDir = req.query.sortDir === "asc" ? "ASC" : "DESC";
 
-  const [rowsRes, reportRes] = await Promise.all([
-    query(`${prefix} SELECT * FROM ${from} ${where} ORDER BY ${sortCol} ${sortDir} NULLS LAST`, params),
-    query(ROOFTOP_REPORT_STATUS_SQL),
-  ]);
-
-  const reportMap = buildRooftopReportMap(reportRes.rows);
-  const data = rowsRes.rows.map(r => ({
-    ...toRooftopRow(r),
-    ...(reportMap[r.rooftop_id] ?? { reportStatus: null, reportReason: null }),
-  }));
-  res.json({ data });
+  const { rows } = await query(`${prefix} SELECT * FROM ${from} ${where} ORDER BY ${sortCol} ${sortDir} NULLS LAST`, params);
+  res.json({ data: rows.map(r => toRooftopRow(r)) });
 });
 
 // ─── GET /api/rooftops/:rooftopId/report-history ─────────────────────────────
@@ -1288,6 +1258,7 @@ const ENTERPRISE_SORT_MAP = {
   notIntegratedCount:     "not_integrated_count",
   publishingDisabledCount:"publishing_disabled_count",
   avgWebsiteScore:        "avg_website_score",
+  reportStatus:           "CASE report_status WHEN 'healthy' THEN 1 WHEN 'stale' THEN 2 WHEN 'never_sent' THEN 3 WHEN 'not_configured' THEN 4 ELSE 5 END",
 };
 
 function buildEnterpriseFilters(queryParams) {
@@ -1304,6 +1275,16 @@ function buildEnterpriseFilters(queryParams) {
   if (queryParams.websiteScore === "Poor (<6)")     conditions.push("avg_website_score < 6");
   if (queryParams.websiteScore === "Average (6\u20138)") conditions.push("(avg_website_score >= 6 AND avg_website_score < 8)");
   if (queryParams.websiteScore === "Good (8+)")     conditions.push("avg_website_score >= 8");
+  if (queryParams.reportStatus) {
+    const rs = queryParams.reportStatus;
+    if (rs === 'not_configured') {
+      conditions.push(`(report_status = 'not_configured' OR report_status IS NULL)`);
+    } else if (rs.startsWith('reason:')) {
+      conditions.push(`report_reason = ${p(rs.slice(7))}`);
+    } else {
+      conditions.push(`report_status = ${p(rs)}`);
+    }
+  }
 
   return { where: conditions.length ? `WHERE ${conditions.join(" AND ")}` : "", params };
 }
@@ -1319,20 +1300,14 @@ app.get("/api/enterprises", async (req, res) => {
   const sortDir = req.query.sortDir === "asc" ? "ASC" : "DESC";
   const orderBy = `ORDER BY ${sortCol} ${sortDir} NULLS LAST`;
 
-  const [countRes, rowsRes, reportRes] = await Promise.all([
+  const [countRes, rowsRes] = await Promise.all([
     query(`${prefix} SELECT COUNT(*)::int AS n FROM ${from} ${where}`, params),
     query(`${prefix} SELECT * FROM ${from} ${where} ${orderBy} LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
       [...params, pageSize, offset]),
-    query(ENTERPRISE_REPORT_STATUS_SQL),
   ]);
 
-  const reportMap = buildEnterpriseReportMap(reportRes.rows);
-  const total     = countRes.rows[0].n;
-
-  const data = rowsRes.rows.map(r => ({
-    ...toEnterpriseRow(r),
-    ...(reportMap[r.id] ?? { reportStatus: null, reportReason: null, lastSentAt: null, lastReportDate: null, timezone: null }),
-  }));
+  const total = countRes.rows[0].n;
+  const data  = rowsRes.rows.map(r => toEnterpriseRow(r));
 
   res.json({ data, total, page, pageSize, pageCount: Math.ceil(total / pageSize) });
 });
@@ -1343,17 +1318,8 @@ app.get("/api/enterprises/export", async (req, res) => {
   const sortCol = ENTERPRISE_SORT_MAP[req.query.sortBy] ?? "not_processed_after_24h";
   const sortDir = req.query.sortDir === "asc" ? "ASC" : "DESC";
 
-  const [rowsRes, reportRes] = await Promise.all([
-    query(`${prefix} SELECT * FROM ${from} ${where} ORDER BY ${sortCol} ${sortDir} NULLS LAST`, params),
-    query(ENTERPRISE_REPORT_STATUS_SQL),
-  ]);
-
-  const reportMap = buildEnterpriseReportMap(reportRes.rows);
-  const data = rowsRes.rows.map(r => ({
-    ...toEnterpriseRow(r),
-    ...(reportMap[r.id] ?? { reportStatus: null, reportReason: null, lastSentAt: null, lastReportDate: null, timezone: null }),
-  }));
-  res.json({ data });
+  const { rows } = await query(`${prefix} SELECT * FROM ${from} ${where} ORDER BY ${sortCol} ${sortDir} NULLS LAST`, params);
+  res.json({ data: rows.map(r => toEnterpriseRow(r)) });
 });
 
 // ─── GET /api/vins/export ─────────────────────────────────────────────────────
