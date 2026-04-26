@@ -424,6 +424,20 @@ const ROOFTOP_STATUS_CTES = `
       AND (rsl.last_sent_at IS NULL OR rq.created_at > rsl.last_sent_at)
     ORDER BY rq.rooftop_id, rq.created_at DESC NULLS LAST
   ),
+  group_error_latest AS (
+    -- Most recent group report error per enterprise AFTER the last successful group send.
+    -- Used to surface the reason for rooftops that have no individual recipients (group-only coverage).
+    SELECT DISTINCT ON (rq.enterprise_id)
+      rq.enterprise_id, rq.error_reason
+    FROM report_queue rq
+    JOIN daily_report_runs dr ON dr.run_id = rq.run_id
+    LEFT JOIN group_sent_latest gsl ON gsl.enterprise_id = rq.enterprise_id
+    WHERE dr.test_mode = false
+      AND rq.report_type = 'Group'
+      AND rq.status IN ('skipped', 'error')
+      AND (gsl.last_sent_at IS NULL OR rq.created_at > gsl.last_sent_at)
+    ORDER BY rq.enterprise_id, rq.created_at DESC NULLS LAST
+  ),
   recipients_rooftop AS (SELECT DISTINCT rooftop_id FROM email_recipients WHERE rooftop_id IS NOT NULL),
   recipients_group   AS (SELECT DISTINCT enterprise_id FROM email_recipients WHERE report_type = 'Group'),
   rs AS (
@@ -445,6 +459,7 @@ const ROOFTOP_STATUS_CTES = `
       CASE
         WHEN GREATEST(gsl.last_sent_at, rsl.last_sent_at) > NOW() - INTERVAL '48 hours' THEN NULL
         WHEN rr.rooftop_id IS NULL AND rg.enterprise_id IS NULL                          THEN 'no_recipient'
+        WHEN rr.rooftop_id IS NULL                                                       THEN gel.error_reason
         ELSE rel.error_reason
       END AS report_reason
     FROM rooftop_details rd
@@ -452,6 +467,7 @@ const ROOFTOP_STATUS_CTES = `
     LEFT JOIN group_sent_latest gsl    ON gsl.enterprise_id = rd.enterprise_id
     LEFT JOIN rooftop_sent_latest rsl  ON rsl.rooftop_id = rd.team_id
     LEFT JOIN rooftop_error_latest rel ON rel.rooftop_id = rd.team_id
+    LEFT JOIN group_error_latest gel   ON gel.enterprise_id = rd.enterprise_id
     LEFT JOIN recipients_rooftop rr    ON rr.rooftop_id = rd.team_id
     LEFT JOIN recipients_group rg      ON rg.enterprise_id = rd.enterprise_id
   )
