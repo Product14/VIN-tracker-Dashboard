@@ -393,6 +393,7 @@ function toTotals(r) {
 // CTE fragment embedded into buildRooftopSource — produces `rs` with report status per rooftop_id.
 const ROOFTOP_STATUS_CTES = `
   group_sent_latest AS (
+    -- Most recent successful group send per enterprise (inherits to all rooftops in that enterprise)
     SELECT DISTINCT ON (rq.enterprise_id)
       rq.enterprise_id, rq.processed_at AS last_sent_at, rq.report_date
     FROM report_queue rq
@@ -401,6 +402,7 @@ const ROOFTOP_STATUS_CTES = `
     ORDER BY rq.enterprise_id, rq.processed_at DESC NULLS LAST
   ),
   rooftop_sent_latest AS (
+    -- Most recent successful rooftop send per rooftop
     SELECT DISTINCT ON (rq.rooftop_id)
       rq.rooftop_id, rq.processed_at AS last_sent_at, rq.report_date
     FROM report_queue rq
@@ -409,11 +411,17 @@ const ROOFTOP_STATUS_CTES = `
     ORDER BY rq.rooftop_id, rq.processed_at DESC NULLS LAST
   ),
   rooftop_error_latest AS (
+    -- Most recent skip/error per rooftop that occurred AFTER the last successful send.
+    -- This prevents historical reasons (from before a fix) from bleeding into current status.
     SELECT DISTINCT ON (rq.rooftop_id)
       rq.rooftop_id, rq.error_reason
     FROM report_queue rq
     JOIN daily_report_runs dr ON dr.run_id = rq.run_id
-    WHERE dr.test_mode = false AND rq.report_type = 'Rooftop' AND rq.status IN ('skipped', 'error')
+    LEFT JOIN rooftop_sent_latest rsl ON rsl.rooftop_id = rq.rooftop_id
+    WHERE dr.test_mode = false
+      AND rq.report_type = 'Rooftop'
+      AND rq.status IN ('skipped', 'error')
+      AND (rsl.last_sent_at IS NULL OR rq.created_at > rsl.last_sent_at)
     ORDER BY rq.rooftop_id, rq.created_at DESC NULLS LAST
   ),
   recipients_rooftop AS (SELECT DISTINCT rooftop_id FROM email_recipients WHERE rooftop_id IS NOT NULL),
@@ -432,11 +440,11 @@ const ROOFTOP_STATUS_CTES = `
       CASE
         WHEN GREATEST(gsl.last_sent_at, rsl.last_sent_at) > NOW() - INTERVAL '48 hours' THEN 'healthy'
         WHEN GREATEST(gsl.last_sent_at, rsl.last_sent_at) IS NOT NULL                   THEN 'stale'
-        WHEN rr.rooftop_id IS NULL AND rg.enterprise_id IS NULL                          THEN 'not_configured'
         ELSE 'never_sent'
       END AS report_status,
       CASE
         WHEN GREATEST(gsl.last_sent_at, rsl.last_sent_at) > NOW() - INTERVAL '48 hours' THEN NULL
+        WHEN rr.rooftop_id IS NULL AND rg.enterprise_id IS NULL                          THEN 'no_recipient'
         ELSE rel.error_reason
       END AS report_reason
     FROM rooftop_details rd
@@ -452,6 +460,7 @@ const ROOFTOP_STATUS_CTES = `
 // CTE fragment embedded into buildEnterpriseSource — produces `es` with report status per enterprise_id.
 const ENTERPRISE_STATUS_CTES = `
   group_sent_ent AS (
+    -- Most recent successful group send per enterprise
     SELECT DISTINCT ON (rq.enterprise_id)
       rq.enterprise_id, rq.processed_at AS last_sent_at, rq.report_date
     FROM report_queue rq
@@ -460,11 +469,17 @@ const ENTERPRISE_STATUS_CTES = `
     ORDER BY rq.enterprise_id, rq.processed_at DESC NULLS LAST
   ),
   group_error_ent AS (
+    -- Most recent skip/error per enterprise that occurred AFTER the last successful send.
+    -- Prevents historical reasons from bleeding into current status.
     SELECT DISTINCT ON (rq.enterprise_id)
       rq.enterprise_id, rq.error_reason
     FROM report_queue rq
     JOIN daily_report_runs dr ON dr.run_id = rq.run_id
-    WHERE dr.test_mode = false AND rq.report_type = 'Group' AND rq.status IN ('skipped', 'error')
+    LEFT JOIN group_sent_ent gsl ON gsl.enterprise_id = rq.enterprise_id
+    WHERE dr.test_mode = false
+      AND rq.report_type = 'Group'
+      AND rq.status IN ('skipped', 'error')
+      AND (gsl.last_sent_at IS NULL OR rq.created_at > gsl.last_sent_at)
     ORDER BY rq.enterprise_id, rq.created_at DESC NULLS LAST
   ),
   recipients_ent AS (SELECT DISTINCT enterprise_id FROM email_recipients WHERE report_type = 'Group'),
@@ -477,11 +492,11 @@ const ENTERPRISE_STATUS_CTES = `
       CASE
         WHEN gsl.last_sent_at > NOW() - INTERVAL '48 hours' THEN 'healthy'
         WHEN gsl.last_sent_at IS NOT NULL                   THEN 'stale'
-        WHEN rg.enterprise_id IS NULL                       THEN 'not_configured'
         ELSE 'never_sent'
       END AS report_status,
       CASE
         WHEN gsl.last_sent_at > NOW() - INTERVAL '48 hours' THEN NULL
+        WHEN rg.enterprise_id IS NULL                       THEN 'no_recipient'
         ELSE gel.error_reason
       END AS report_reason
     FROM enterprise_details ed
@@ -1144,7 +1159,8 @@ const ROOFTOP_SORT_MAP = {
   notProcessedAfter24: "not_processed_after_24h",
   rate:                "not_processed_after_24h", // proxy: sort by count as approximation
   websiteScore:        "website_score",
-  reportStatus:        "CASE report_status WHEN 'healthy' THEN 1 WHEN 'stale' THEN 2 WHEN 'never_sent' THEN 3 WHEN 'not_configured' THEN 4 ELSE 5 END",
+  reportStatus:        "CASE report_status WHEN 'healthy' THEN 1 WHEN 'stale' THEN 2 WHEN 'never_sent' THEN 3 ELSE 4 END",
+  reportReason:        "report_reason",
 };
 
 function buildRooftopFilters(queryParams) {
@@ -1167,16 +1183,8 @@ function buildRooftopFilters(queryParams) {
   if (queryParams.websiteScore === "Poor (<6)")     conditions.push("website_score < 6");
   if (queryParams.websiteScore === "Average (6\u20138)") conditions.push("(website_score >= 6 AND website_score < 8)");
   if (queryParams.websiteScore === "Good (8+)")     conditions.push("website_score >= 8");
-  if (queryParams.reportStatus) {
-    const rs = queryParams.reportStatus;
-    if (rs === 'not_configured') {
-      conditions.push(`(report_status = 'not_configured' OR report_status IS NULL)`);
-    } else if (rs.startsWith('reason:')) {
-      conditions.push(`report_reason = ${p(rs.slice(7))}`);
-    } else {
-      conditions.push(`report_status = ${p(rs)}`);
-    }
-  }
+  if (queryParams.reportStatus) conditions.push(`report_status = ${p(queryParams.reportStatus)}`);
+  if (queryParams.reportReason) conditions.push(`report_reason = ${p(queryParams.reportReason)}`);
 
   return { where: conditions.length ? `WHERE ${conditions.join(" AND ")}` : "", params };
 }
@@ -1258,7 +1266,8 @@ const ENTERPRISE_SORT_MAP = {
   notIntegratedCount:     "not_integrated_count",
   publishingDisabledCount:"publishing_disabled_count",
   avgWebsiteScore:        "avg_website_score",
-  reportStatus:           "CASE report_status WHEN 'healthy' THEN 1 WHEN 'stale' THEN 2 WHEN 'never_sent' THEN 3 WHEN 'not_configured' THEN 4 ELSE 5 END",
+  reportStatus:           "CASE report_status WHEN 'healthy' THEN 1 WHEN 'stale' THEN 2 WHEN 'never_sent' THEN 3 ELSE 4 END",
+  reportReason:           "report_reason",
 };
 
 function buildEnterpriseFilters(queryParams) {
@@ -1275,16 +1284,8 @@ function buildEnterpriseFilters(queryParams) {
   if (queryParams.websiteScore === "Poor (<6)")     conditions.push("avg_website_score < 6");
   if (queryParams.websiteScore === "Average (6\u20138)") conditions.push("(avg_website_score >= 6 AND avg_website_score < 8)");
   if (queryParams.websiteScore === "Good (8+)")     conditions.push("avg_website_score >= 8");
-  if (queryParams.reportStatus) {
-    const rs = queryParams.reportStatus;
-    if (rs === 'not_configured') {
-      conditions.push(`(report_status = 'not_configured' OR report_status IS NULL)`);
-    } else if (rs.startsWith('reason:')) {
-      conditions.push(`report_reason = ${p(rs.slice(7))}`);
-    } else {
-      conditions.push(`report_status = ${p(rs)}`);
-    }
-  }
+  if (queryParams.reportStatus) conditions.push(`report_status = ${p(queryParams.reportStatus)}`);
+  if (queryParams.reportReason) conditions.push(`report_reason = ${p(queryParams.reportReason)}`);
 
   return { where: conditions.length ? `WHERE ${conditions.join(" AND ")}` : "", params };
 }
