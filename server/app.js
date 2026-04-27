@@ -2573,10 +2573,23 @@ async function handleProcessReportQueue(req, res) {
         }
 
         const data    = await computeRooftopDailyReport(rooftop_id, yesterdayStr, tz, imsOff);
-        if (imsOff && data.inv90.invPending > 1) {
-          await query(`UPDATE report_queue SET status='skipped', entity_id=$2, entity_name=$3, error_reason='pending_vins', processed_at=NOW() WHERE id=$1`, [id, rooftop_id, rt.team_name]);
-          console.log(`[process-queue] rooftop ${rooftop_id} skipped — IMS off, 90-day pending VINs > 1`);
-          skippedCount++; continue;
+        if (imsOff) {
+          if (data.inv90.received === 0) {
+            await query(`UPDATE report_queue SET status='skipped', entity_id=$2, entity_name=$3, error_reason='no_vehicles_90_days', processed_at=NOW() WHERE id=$1`, [id, rooftop_id, rt.team_name]);
+            console.log(`[process-queue] rooftop ${rooftop_id} skipped — IMS off, no vehicles in last 90 days`);
+            skippedCount++; continue;
+          }
+          if (data.inv90.invPending > 1) {
+            await query(`UPDATE report_queue SET status='skipped', entity_id=$2, entity_name=$3, error_reason='pending_vins', processed_at=NOW() WHERE id=$1`, [id, rooftop_id, rt.team_name]);
+            console.log(`[process-queue] rooftop ${rooftop_id} skipped — IMS off, 90-day pending VINs > 1`);
+            skippedCount++; continue;
+          }
+        } else {
+          if (data.totalActive === 0) {
+            await query(`UPDATE report_queue SET status='skipped', entity_id=$2, entity_name=$3, error_reason='no_active_inventory', processed_at=NOW() WHERE id=$1`, [id, rooftop_id, rt.team_name]);
+            console.log(`[process-queue] rooftop ${rooftop_id} skipped — IMS on, no active inventory`);
+            skippedCount++; continue;
+          }
         }
         const html    = buildRooftopReportHtml(data, dateLabel, tz);
         const to      = testMode ? testTo : (Array.isArray(row.to_emails) && row.to_emails.length > 0 ? row.to_emails : email.split(",").map(s => s.trim()).filter(Boolean));
@@ -2617,10 +2630,23 @@ async function handleProcessReportQueue(req, res) {
         }
 
         const data    = await computeGroupDailyReport(enterprise_id, yesterdayStr, tz);
-        if (data.invKpis.invPending > 1) {
-          await query(`UPDATE report_queue SET status='skipped', entity_id=$2, entity_name=$3, error_reason='pending_vins', processed_at=NOW() WHERE id=$1`, [id, enterprise_id, ent.name]);
-          console.log(`[process-queue] enterprise ${enterprise_id} skipped — inventory pending VINs > 1`);
-          skippedCount++; continue;
+        if (data.allImsIntegrated) {
+          if (data.invKpis.totalActive === 0) {
+            await query(`UPDATE report_queue SET status='skipped', entity_id=$2, entity_name=$3, error_reason='no_active_inventory', processed_at=NOW() WHERE id=$1`, [id, enterprise_id, ent.name]);
+            console.log(`[process-queue] enterprise ${enterprise_id} skipped — IMS on, no active inventory`);
+            skippedCount++; continue;
+          }
+        } else {
+          if (data.invKpis.received === 0) {
+            await query(`UPDATE report_queue SET status='skipped', entity_id=$2, entity_name=$3, error_reason='no_vehicles_90_days', processed_at=NOW() WHERE id=$1`, [id, enterprise_id, ent.name]);
+            console.log(`[process-queue] enterprise ${enterprise_id} skipped — IMS off, no vehicles in last 90 days`);
+            skippedCount++; continue;
+          }
+          if (data.invKpis.invPending > 1) {
+            await query(`UPDATE report_queue SET status='skipped', entity_id=$2, entity_name=$3, error_reason='pending_vins', processed_at=NOW() WHERE id=$1`, [id, enterprise_id, ent.name]);
+            console.log(`[process-queue] enterprise ${enterprise_id} skipped — inventory pending VINs > 1`);
+            skippedCount++; continue;
+          }
         }
         const html    = buildGroupReportHtml(data, dateLabel);
         const to      = testMode ? testTo : (Array.isArray(row.to_emails) && row.to_emails.length > 0 ? row.to_emails : email.split(",").map(s => s.trim()).filter(Boolean));
