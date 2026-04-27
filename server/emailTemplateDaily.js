@@ -68,6 +68,8 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
     rooftopId,
     enterpriseId,
     rooftopName,
+    imsOff,
+    inv90,
     // Yesterday
     newVins, imagesReceived,
     vinsDelivered, imagesProcessed,
@@ -79,6 +81,8 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
     processedVins,
     processedVinsTotal,
     noImageVins,
+    recentVins,
+    recentVinsTotal,
   } = data;
 
   const inventoryBaseUrl = `https://console.spyne.ai/inventory/v2/listings?enterprise_id=${enterpriseId || ""}${rooftopId ? `&team_id=${rooftopId}` : ""}`;
@@ -148,7 +152,35 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
 
   const invGap = `<td width="11" class="card-gap" style="width:11px;font-size:0;line-height:0;">&nbsp;</td>`;
 
-  const inventorySnapshot = `
+  // Simplified card for the 90-day rolling section (no percentage sub-label)
+  const invCard90 = (accentColor, label, bigNum) => `
+    <td width="174" valign="top" class="card-cell" style="width:174px;background:#F9FAFB;border:1px solid #E5E7EB;border-top:3px solid ${accentColor};">
+      <div style="padding:16px 16px 18px;">
+        <div style="font-size:9px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:#9CA3AF;line-height:1.4;margin-bottom:10px;">${label}</div>
+        <div style="font-size:28px;font-weight:700;color:#111827;line-height:1;font-family:Arial,Helvetica,sans-serif;margin-bottom:6px;">${n(bigNum)}</div>
+        <div style="font-size:11px;color:${accentColor};font-weight:600;line-height:1.4;">last 90 days</div>
+      </div>
+    </td>`;
+
+  const inventorySnapshot = imsOff ? `
+    <table width="544" class="card-row" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;">
+      <tr>
+        <td style="background:#F9FAFB;border:1px solid #E5E7EB;padding:18px 20px;">
+          <div style="font-size:10px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:#9CA3AF;line-height:1.4;margin-bottom:3px;">Last 3 Months</div>
+          <div style="font-size:17px;font-weight:700;color:#111827;line-height:1.3;">Snapshot</div>
+        </td>
+      </tr>
+    </table>
+    ${spacer(12)}
+    <table width="544" class="card-row" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;">
+      <tr>
+        ${invCard90("#2563EB", "Vehicles Received",  inv90.received)}
+        ${invGap}
+        ${invCard90("#059669", "Vehicles Published", inv90.invDelivered)}
+        ${invGap}
+        ${invCard90("#F59E0B", "Vehicles Pending",   inv90.invPending)}
+      </tr>
+    </table>` : `
     <table width="544" class="card-row" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;">
       <tr>
         <td style="background:#F9FAFB;border:1px solid #E5E7EB;padding:18px 20px;">
@@ -253,6 +285,45 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
       : `<div style="margin-top:14px;text-align:center;">
            <a href="${inventoryUrl}" style="display:inline-block;padding:8px 20px;background:#ffffff;border:1px solid #D1D5DB;color:#374151;font-size:12px;font-weight:600;text-decoration:none;border-radius:4px;font-family:Arial,Helvetica,sans-serif;">View Details</a>
          </div>`;
+
+  // ── Recent Vehicles (IMS off, quiet day only) ────────────────────────────
+  const recentRows = recentVins.length === 0
+    ? `<tr><td colspan="4" style="padding:24px 0;text-align:center;font-size:12px;color:#9CA3AF;line-height:1.4;">No vehicles published in the last 90 days.</td></tr>`
+    : recentVins.map(v => {
+        const thumb = v.thumbnail_url
+          ? `<img src="${v.thumbnail_url}" alt="" width="80" style="display:block;width:80px;height:auto;border:0;">`
+          : `<div style="width:80px;height:56px;background:#F3F4F6;font-size:0;line-height:0;">&nbsp;</div>`;
+        const vehicleName = [clean(v.year), clean(v.make), clean(v.model)].filter(Boolean).join(" ") || null;
+        const trimLine    = clean(v.trim);
+        const stockLine   = clean(v.stock_number);
+        const vUrl        = vinUrl(v.dealer_vin_id);
+        const nameHtml    = vehicleName
+          ? `<div style="font-size:12px;font-weight:700;line-height:1.3;margin-bottom:2px;"><span style="color:#111827;">${vehicleName}</span></div>`
+          : `<div style="font-size:12px;font-weight:700;color:#6B7280;line-height:1.3;margin-bottom:2px;">—</div>`;
+        return `<tr>
+          <td style="padding:10px 10px 10px 0;border-bottom:1px solid #F3F4F6;vertical-align:middle;">${thumb}</td>
+          <td style="padding:10px;border-bottom:1px solid #F3F4F6;vertical-align:middle;">
+            ${nameHtml}
+            ${trimLine ? `<div style="font-size:10.5px;color:#6B7280;line-height:1.3;margin-bottom:3px;">${trimLine}</div>` : ""}
+            <div style="font-size:10px;color:#9CA3AF;line-height:1.4;">${v.vin}</div>
+            ${stockLine ? `<div style="font-size:10px;color:#9CA3AF;line-height:1.4;">Stock&nbsp;#${stockLine}</div>` : ""}
+          </td>
+          <td style="padding:10px 0 10px 10px;border-bottom:1px solid #F3F4F6;vertical-align:middle;text-align:right;white-space:nowrap;">
+            <div style="font-size:10px;color:#9CA3AF;line-height:1.6;">Received&nbsp;&nbsp;${formatDt(v.received_at, timezone)}</div>
+            <div style="font-size:10px;color:#9CA3AF;line-height:1.6;">Published&nbsp;&nbsp;${formatDt(v.processed_at, timezone)}</div>
+            <div style="font-size:11px;font-weight:700;color:#059669;line-height:1.6;margin-top:1px;">TAT&nbsp;&nbsp;${formatTat(v.ttd_hrs)}</div>
+          </td>
+          <td style="padding:10px 0 10px 10px;border-bottom:1px solid #F3F4F6;vertical-align:middle;text-align:center;white-space:nowrap;">
+            ${vUrl ? `<a href="${vUrl}" style="display:inline-block;padding:4px 8px;color:#2563EB;font-size:10px;font-weight:600;text-decoration:none;font-family:Arial,Helvetica,sans-serif;letter-spacing:0.01em;">View &rarr;</a>` : ""}
+          </td>
+        </tr>`;
+      }).join("\n");
+
+  const recentMore = Math.max(0, recentVinsTotal - recentVins.length);
+  const recentCta = recentMore === 0 ? "" :
+    `<div style="margin-top:14px;text-align:center;">
+       <a href="${inventoryBaseUrl}" style="display:inline-block;padding:8px 20px;background:#ffffff;border:1px solid #D1D5DB;color:#374151;font-size:12px;font-weight:600;text-decoration:none;border-radius:4px;font-family:Arial,Helvetica,sans-serif;">+${recentMore} more vehicle${recentMore !== 1 ? "s" : ""} published</a>
+     </div>`;
 
   // ── Full HTML ─────────────────────────────────────────────────────────────
 
@@ -387,6 +458,29 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
         </tr>
         ` : ""}
 
+        ${imsOff && quietDay ? `
+        ${rule()}
+
+        <!-- ══ RECENT VEHICLES (IMS off, quiet day) ════════════════════════════ -->
+        <tr>
+          <td class="sec-pad" style="padding:28px 28px 24px;background:#F9FAFB;">
+            ${secHead("", "Recent Vehicles", "Most recently published vehicles from the last 90 days")}
+            <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;">
+              <thead>
+                <tr>
+                  <th style="${thStyle}padding-left:0;">Photo</th>
+                  <th style="${thStyle}">Vehicle</th>
+                  <th style="${thStyle}text-align:right;">Timeline</th>
+                  <th style="${thStyle}padding-right:0;text-align:center;"></th>
+                </tr>
+              </thead>
+              <tbody>${recentRows}</tbody>
+            </table>
+            ${recentCta}
+          </td>
+        </tr>
+        ` : ""}
+
         ${rule()}
 
         <!-- ══ CONTACT SUPPORT ════════════════════════════════════════════════ -->
@@ -446,7 +540,11 @@ export function buildGroupReportHtml(data, dateLabel) {
     inventoryByRooftop,
     processedVins,
     processedVinsTotal,
+    recentPublishedVins,
   } = data;
+
+  // True when no vehicles were received yesterday — drives quiet-day layout.
+  const quietDay = !newVins || newVins === 0;
 
   // ── Section header ────────────────────────────────────────────────────────
   const secHead = (eyebrow, title, sub, eyebrowColor = "#9CA3AF") => `
@@ -679,6 +777,57 @@ export function buildGroupReportHtml(data, dateLabel) {
       </tr>`;
   }
 
+  // ── Recent published VINs section (quiet days only) ──────────────────────
+  let recentPublishedSection = "";
+  if (quietDay && recentPublishedVins && recentPublishedVins.length > 0) {
+    const recentPubRows = recentPublishedVins.map(v => {
+      const vehicleName = [clean(v.year), clean(v.make), clean(v.model)].filter(Boolean).join(" ") || null;
+      const trimLine    = clean(v.trim);
+      const stockLine   = clean(v.stock_number);
+      const vUrl        = vinUrl(v.dealer_vin_id, v.rooftop_id);
+      const thumb       = v.thumbnail_url
+        ? `<img src="${v.thumbnail_url}" alt="" width="80" style="display:block;width:80px;height:auto;border:0;">`
+        : `<div style="width:80px;height:56px;background:#F3F4F6;font-size:0;line-height:0;">&nbsp;</div>`;
+      return `<tr>
+        <td style="padding:10px 10px 10px 0;border-bottom:1px solid #F3F4F6;vertical-align:middle;">${thumb}</td>
+        <td style="padding:10px;border-bottom:1px solid #F3F4F6;vertical-align:middle;">
+          ${vehicleName ? `<div style="font-size:12px;font-weight:700;color:#111827;line-height:1.3;margin-bottom:2px;">${vehicleName}</div>` : `<div style="font-size:12px;font-weight:700;color:#6B7280;line-height:1.3;margin-bottom:2px;">—</div>`}
+          ${trimLine ? `<div style="font-size:10.5px;color:#6B7280;line-height:1.3;margin-bottom:3px;">${trimLine}</div>` : ""}
+          <div style="font-size:10px;color:#9CA3AF;line-height:1.4;">${v.vin}</div>
+          ${stockLine ? `<div style="font-size:10px;color:#9CA3AF;line-height:1.4;">Stock&nbsp;#${stockLine}</div>` : ""}
+          ${v.rooftop_name ? `<div style="font-size:10px;color:#6B7280;line-height:1.4;margin-top:2px;">${v.rooftop_name}</div>` : ""}
+        </td>
+        <td style="padding:10px 0 10px 10px;border-bottom:1px solid #F3F4F6;vertical-align:middle;text-align:right;white-space:nowrap;">
+          <div style="font-size:10px;color:#9CA3AF;line-height:1.6;">Received&nbsp;&nbsp;${formatDt(v.received_at)}</div>
+          <div style="font-size:10px;color:#9CA3AF;line-height:1.6;">Published&nbsp;&nbsp;${formatDt(v.processed_at)}</div>
+          <div style="font-size:11px;font-weight:700;color:#059669;line-height:1.6;margin-top:1px;">TAT&nbsp;&nbsp;${formatTat(v.ttd_hrs)}</div>
+        </td>
+        <td style="padding:10px 0 10px 10px;border-bottom:1px solid #F3F4F6;vertical-align:middle;text-align:center;white-space:nowrap;">
+          ${vUrl ? `<a href="${vUrl}" style="display:inline-block;padding:4px 8px;color:#2563EB;font-size:10px;font-weight:600;text-decoration:none;font-family:Arial,Helvetica,sans-serif;letter-spacing:0.01em;">View &rarr;</a>` : ""}
+        </td>
+      </tr>`;
+    }).join("\n");
+
+    recentPublishedSection = `
+      <!-- ══ RECENT VEHICLES (quiet day) ═══════════════════════════════════════ -->
+      <tr>
+        <td class="sec-pad" style="padding:28px 28px 24px;background:#F9FAFB;">
+          ${secHead("", "Recent Vehicles", "Most recently published vehicles across all rooftops")}
+          <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;">
+            <thead>
+              <tr>
+                <th style="${thStyle2}padding-left:0;">Photo</th>
+                <th style="${thStyle2}">Vehicle</th>
+                <th style="${thStyle2}text-align:right;">Timeline</th>
+                <th style="${thStyle2}padding-right:0;text-align:center;"></th>
+              </tr>
+            </thead>
+            <tbody>${recentPubRows}</tbody>
+          </table>
+        </td>
+      </tr>`;
+  }
+
   // ── Per-rooftop breakdown table ───────────────────────────────────────────
   const thStyle = `padding:9px 10px;border-bottom:2px solid #E5E7EB;text-align:left;font-size:9px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#9CA3AF;line-height:1.4;white-space:nowrap;`;
 
@@ -763,16 +912,17 @@ export function buildGroupReportHtml(data, dateLabel) {
         <tr>
           <td style="padding:28px 28px 24px;">
             <div style="font-size:19px;font-weight:700;color:#111827;line-height:1.3;margin-bottom:8px;">Hi ${enterpriseName},</div>
-            <div style="font-size:13px;color:#6B7280;line-height:1.7;">${newVins > 0
-              ? `Here&rsquo;s your Studio AI group delivery summary for <strong style="color:#111827;">${dateLabel}</strong>. We received <strong style="color:#111827;">${n(newVins)}&thinsp;vehicle${newVins !== 1 ? "s" : ""}</strong> across <strong style="color:#111827;">${topProcessed.length}&thinsp;rooftop${topProcessed.length !== 1 ? "s" : ""}</strong> yesterday.`
-              : `No new vehicles were received on <strong style="color:#111827;">${dateLabel}</strong>.`
+            <div style="font-size:13px;color:#6B7280;line-height:1.7;">${quietDay
+              ? `No new vehicles were received on <strong style="color:#111827;">${dateLabel}</strong>. Here&rsquo;s a snapshot of your current inventory.`
+              : `Here&rsquo;s your Studio AI group delivery summary for <strong style="color:#111827;">${dateLabel}</strong>. We received <strong style="color:#111827;">${n(newVins)}&thinsp;vehicle${newVins !== 1 ? "s" : ""}</strong> across <strong style="color:#111827;">${topProcessed.length}&thinsp;rooftop${topProcessed.length !== 1 ? "s" : ""}</strong> yesterday.`
             }</div>
           </td>
         </tr>
 
         ${rule()}
 
-        <!-- ══ YESTERDAY'S SNAPSHOT ════════════════════════════════════════════ -->
+        <!-- ══ YESTERDAY'S SNAPSHOT — hidden on quiet days ═════════════════════ -->
+        ${!quietDay ? `
         <tr>
           <td class="sec-pad" style="padding:28px 28px 0;">
             ${secHead("Yesterday", "Performance Snapshot", "Vehicles and images received, published, and pending across all rooftops", "#2563EB")}
@@ -783,7 +933,7 @@ export function buildGroupReportHtml(data, dateLabel) {
         ${spacer(28)}
         ${rule()}
 
-        <!-- ══ ROOFTOP BREAKDOWN ════════════════════════════════════════════════ -->
+        <!-- ══ ROOFTOP BREAKDOWN — hidden on quiet days ════════════════════════ -->
         <tr>
           <td class="sec-pad" style="padding:28px 28px 24px;background:#F9FAFB;">
             ${secHead("Yesterday", "Rooftop Breakdown", "", "#2563EB")}
@@ -807,8 +957,11 @@ export function buildGroupReportHtml(data, dateLabel) {
         ${recentVinsSection}
 
         ${recentVinsSection ? rule() : ""}
+        ` : ""}
 
         ${inventorySection}
+
+        ${recentPublishedSection ? `${rule()}${recentPublishedSection}` : ""}
 
         ${rule()}
 

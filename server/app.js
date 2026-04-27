@@ -1420,7 +1420,7 @@ app.get("/api/scheduled-report", async (req, res) => {
 // All "yesterday" KPIs scope to VINs received on the given date (received_at date).
 // TTD = AVG(processed_at - received_at) for delivered VINs received yesterday.
 
-async function computeRooftopDailyReport(rooftopId, yesterday, timezone = "America/New_York") {
+async function computeRooftopDailyReport(rooftopId, yesterday, timezone = "America/New_York", imsOff = null) {
   // yesterday: YYYY-MM-DD date string for the target day (in the given timezone)
 
   const { rows: [kpi] } = await query(`
@@ -1442,16 +1442,14 @@ async function computeRooftopDailyReport(rooftopId, yesterday, timezone = "Ameri
     WHERE rooftop_id = $1
   `, [rooftopId, yesterday, timezone]);
 
-  const { rows: [totals] } = await query(`
-    SELECT
-      COUNT(*)                                                                          AS total_active,
-      COUNT(*) FILTER (WHERE status = 'Delivered' AND COALESCE(has_photos, 0) = 1)   AS total_delivered,
-      COUNT(*) FILTER (WHERE status != 'Delivered')                                   AS total_pending,
-      COUNT(*) FILTER (WHERE COALESCE(has_photos, 0) = 1)                             AS with_photos
-    FROM vins
-    WHERE rooftop_id = $1
-      AND (received_at IS NULL OR DATE(received_at::timestamptz AT TIME ZONE $3) <= $2::date)
-  `, [rooftopId, yesterday, timezone]);
+  // Detect IMS integration if not explicitly provided
+  if (imsOff === null) {
+    const { rows: [rtIms] } = await query(
+      "SELECT ims_integration_status FROM rooftop_details WHERE team_id = $1",
+      [rooftopId]
+    );
+    imsOff = !rtIms || rtIms.ims_integration_status !== "true";
+  }
 
   const { rows: [rooftop] } = await query(`
     SELECT team_name, enterprise_id FROM rooftop_details WHERE team_id = $1
@@ -1494,45 +1492,127 @@ async function computeRooftopDailyReport(rooftopId, yesterday, timezone = "Ameri
     `, [rooftopId, yesterday, timezone]),
   ]);
 
-  // VINs without images — top 5 for email display + total count for "+x more"
-  const [{ rows: noImageVins }, { rows: [noImageCount] }] = await Promise.all([
-    query(`
-      SELECT
-        vin,
-        dealer_vin_id,
-        stock_number,
-        make,
-        model,
-        year,
-        trim,
-        received_at,
-        EXTRACT(day FROM NOW() - received_at::timestamptz)::int AS days_on_lot
-      FROM vins
-      WHERE rooftop_id = $1
-        AND COALESCE(has_photos, 0) = 0
-      ORDER BY received_at ASC
-      LIMIT 5
-    `, [rooftopId]),
-    query(`
-      SELECT COUNT(*)::int AS total
-      FROM vins
-      WHERE rooftop_id = $1
-        AND COALESCE(has_photos, 0) = 0
-    `, [rooftopId]),
-  ]);
+  let totalActive = 0, totalDelivered = 0, totalPending = 0, withPhotos = 0;
+  let withPhotosPct = 0, deliveryPct = 0, pendingPct = 0;
+  let noImageVins = [], noImagesTotal = 0;
+  let inv90 = null;
+  let recentVins = [], recentVinsTotal = 0;
 
-  const totalActive    = Number(totals.total_active)    || 0;
-  const totalDelivered = Number(totals.total_delivered)  || 0;
-  const totalPending   = Number(totals.total_pending)    || 0;
-  const withPhotos     = Number(totals.with_photos)      || 0;
-  const deliveryPct    = totalActive > 0 ? Math.round(totalDelivered / totalActive * 1000) / 10 : 0;
-  const pendingPct     = totalActive > 0 ? Math.round(totalPending   / totalActive * 1000) / 10 : 0;
-  const withPhotosPct  = totalActive > 0 ? Math.round(withPhotos     / totalActive * 1000) / 10 : 0;
+  if (!imsOff) {
+    const { rows: [totals] } = await query(`
+      SELECT
+        COUNT(*)                                                                          AS total_active,
+        COUNT(*) FILTER (WHERE status = 'Delivered' AND COALESCE(has_photos, 0) = 1)   AS total_delivered,
+        COUNT(*) FILTER (WHERE status != 'Delivered')                                   AS total_pending,
+        COUNT(*) FILTER (WHERE COALESCE(has_photos, 0) = 1)                             AS with_photos
+      FROM vins
+      WHERE rooftop_id = $1
+        AND (received_at IS NULL OR DATE(received_at::timestamptz AT TIME ZONE $3) <= $2::date)
+    `, [rooftopId, yesterday, timezone]);
+
+    const [{ rows: noImageVinsRows }, { rows: [noImageCount] }] = await Promise.all([
+      query(`
+        SELECT
+          vin,
+          dealer_vin_id,
+          stock_number,
+          make,
+          model,
+          year,
+          trim,
+          received_at,
+          EXTRACT(day FROM NOW() - received_at::timestamptz)::int AS days_on_lot
+        FROM vins
+        WHERE rooftop_id = $1
+          AND COALESCE(has_photos, 0) = 0
+        ORDER BY received_at ASC
+        LIMIT 5
+      `, [rooftopId]),
+      query(`
+        SELECT COUNT(*)::int AS total
+        FROM vins
+        WHERE rooftop_id = $1
+          AND COALESCE(has_photos, 0) = 0
+      `, [rooftopId]),
+    ]);
+
+    noImageVins    = noImageVinsRows;
+    noImagesTotal  = Number(noImageCount.total) || 0;
+    totalActive    = Number(totals.total_active)    || 0;
+    totalDelivered = Number(totals.total_delivered)  || 0;
+    totalPending   = Number(totals.total_pending)    || 0;
+    withPhotos     = Number(totals.with_photos)      || 0;
+    deliveryPct    = totalActive > 0 ? Math.round(totalDelivered / totalActive * 1000) / 10 : 0;
+    pendingPct     = totalActive > 0 ? Math.round(totalPending   / totalActive * 1000) / 10 : 0;
+    withPhotosPct  = totalActive > 0 ? Math.round(withPhotos     / totalActive * 1000) / 10 : 0;
+  } else {
+    // Rolling 90-day snapshot — used when IMS integration is off
+    const { rows: [inv] } = await query(`
+      SELECT
+        COUNT(*)                                              AS received,
+        COUNT(*) FILTER (WHERE status = 'Delivered')         AS inv_delivered,
+        COUNT(*) FILTER (WHERE status != 'Delivered')        AS inv_pending
+      FROM vins
+      WHERE rooftop_id = $1
+        AND COALESCE(has_photos, 0) = 1
+        AND DATE(received_at::timestamptz AT TIME ZONE $3) <= $2::date
+        AND DATE(received_at::timestamptz AT TIME ZONE $3) >= ($2::date - INTERVAL '90 days')
+    `, [rooftopId, yesterday, timezone]);
+
+    inv90 = {
+      received:     Number(inv.received)      || 0,
+      invDelivered: Number(inv.inv_delivered) || 0,
+      invPending:   Number(inv.inv_pending)   || 0,
+    };
+
+    // 5 most recently published vehicles — shown on quiet days in place of yesterday's table
+    const [{ rows: recentVinsRows }, { rows: [recentVinsCount] }] = await Promise.all([
+      query(`
+        SELECT
+          vin,
+          dealer_vin_id,
+          stock_number,
+          thumbnail_url,
+          make,
+          model,
+          year,
+          trim,
+          received_at,
+          processed_at,
+          ROUND(
+            EXTRACT(EPOCH FROM (processed_at::timestamptz - received_at::timestamptz)) / 3600.0
+            ::numeric, 2
+          ) AS ttd_hrs
+        FROM vins
+        WHERE rooftop_id = $1
+          AND status = 'Delivered'
+          AND COALESCE(has_photos, 0) = 1
+          AND processed_at IS NOT NULL
+          AND DATE(received_at::timestamptz AT TIME ZONE $3) <= $2::date
+          AND DATE(received_at::timestamptz AT TIME ZONE $3) >= ($2::date - INTERVAL '90 days')
+        ORDER BY processed_at DESC
+        LIMIT 5
+      `, [rooftopId, yesterday, timezone]),
+      query(`
+        SELECT COUNT(*)::int AS total
+        FROM vins
+        WHERE rooftop_id = $1
+          AND status = 'Delivered'
+          AND COALESCE(has_photos, 0) = 1
+          AND processed_at IS NOT NULL
+          AND DATE(received_at::timestamptz AT TIME ZONE $3) <= $2::date
+          AND DATE(received_at::timestamptz AT TIME ZONE $3) >= ($2::date - INTERVAL '90 days')
+      `, [rooftopId, yesterday, timezone]),
+    ]);
+    recentVins      = recentVinsRows;
+    recentVinsTotal = Number(recentVinsCount.total) || 0;
+  }
 
   return {
     rooftopId,
     enterpriseId:    rooftop?.enterprise_id ?? null,
     rooftopName:     rooftop?.team_name ?? rooftopId,
+    imsOff,
     // Yesterday KPIs
     newVins:         Number(kpi.new_vins)        || 0,
     vinsDelivered:   Number(kpi.vins_delivered)  || 0,
@@ -1541,7 +1621,7 @@ async function computeRooftopDailyReport(rooftopId, yesterday, timezone = "Ameri
     imagesProcessed: Number(kpi.images_processed)|| 0,
     imagesPending:   Number(kpi.images_pending)  || 0,
     avgTtdHrs:       kpi.avg_ttd_hrs != null ? Number(kpi.avg_ttd_hrs) : null,
-    // Total inventory KPIs
+    // Total inventory KPIs (zeroed when IMS off)
     totalActive,
     withPhotos,
     withPhotosPct,
@@ -1549,11 +1629,15 @@ async function computeRooftopDailyReport(rooftopId, yesterday, timezone = "Ameri
     totalPending,
     deliveryPct,
     pendingPct,
+    // 90-day rolling KPIs (null when IMS on)
+    inv90,
     // Per-VIN tables
     processedVins,
     processedVinsTotal: Number(processedCount.total) || 0,
     noImageVins,
-    noImagesTotal: Number(noImageCount.total) || 0,
+    noImagesTotal,
+    recentVins,
+    recentVinsTotal,
   };
 }
 
@@ -1670,6 +1754,42 @@ async function computeGroupDailyReport(enterpriseId, yesterday, timezone = "Amer
   const hasNegativeTatInVins = deliveredVinsRaw.some(r => Number(r.ttd_hrs) < 0);
   const processedVins      = hasNegativeTatInVins ? null : deliveredVinsRaw.slice(0, 5);
   const processedVinsTotal = hasNegativeTatInVins ? 0    : deliveredVinsRaw.length;
+
+  // ── Recent published VINs fallback (quiet days only) ─────────────────────
+  // When no vehicles were received yesterday, fetch the 5 most recently
+  // published vehicles across any date so the email still has vehicle content.
+  let recentPublishedVins = null;
+  if (Number(kpi.new_vins) === 0) {
+    const { rows: recentRaw } = await query(`
+      SELECT
+        v.vin,
+        v.dealer_vin_id,
+        v.stock_number,
+        v.thumbnail_url,
+        v.make,
+        v.model,
+        v.year,
+        v.trim,
+        v.received_at,
+        v.processed_at,
+        v.rooftop_id,
+        COALESCE(rd.team_name, v.rooftop_id)                                       AS rooftop_name,
+        ROUND(
+          EXTRACT(EPOCH FROM (v.processed_at::timestamptz - v.received_at::timestamptz)) / 3600.0
+          ::numeric, 2
+        )                                                                           AS ttd_hrs
+      FROM vins v
+      LEFT JOIN rooftop_details rd ON v.rooftop_id = rd.team_id
+      WHERE v.enterprise_id = $1
+        AND v.status = 'Delivered'
+        AND COALESCE(v.has_photos, 0) = 1
+        AND v.processed_at IS NOT NULL
+      ORDER BY v.processed_at DESC
+      LIMIT 5
+    `, [enterpriseId]);
+    const hasNegativeTat = recentRaw.some(r => Number(r.ttd_hrs) < 0);
+    recentPublishedVins = hasNegativeTat ? [] : recentRaw;
+  }
 
   // ── IMS integration check ─────────────────────────────────────────────────
   const { rows: [imsCheck] } = await query(`
@@ -1809,6 +1929,8 @@ async function computeGroupDailyReport(enterpriseId, yesterday, timezone = "Amer
     // Recent delivered VINs yesterday (TAT asc, max 5; null = negative TAT detected)
     processedVins,
     processedVinsTotal,
+    // Most recently published VINs across all dates (quiet days only, null on normal days)
+    recentPublishedVins,
   };
 }
 
@@ -2129,47 +2251,93 @@ app.get("/api/send-daily-report", async (req, res) => {
   }
 
   // ── Enqueue one row per entity group ──────────────────────────────────────
+  // Batch approach: 2 total DB queries regardless of group count.
+  //   1. One UNNEST JOIN to find all already-sent entities (dedup)
+  //   2. One UNNEST INSERT for all remaining entities
   let enqueued = 0, dedupSkipped = 0;
+
+  // Single pass: collect eligible groups (non-empty emails) with pre-computed yesterdayStr
+  const eligible = [];
   for (const group of groups.values()) {
     const toEmails = [...group.emails];
     if (toEmails.length === 0) continue;
-
     const { yesterdayStr } = yesterdayFor(group.timezone);
+    eligible.push({ group, toEmails, yesterdayStr });
+  }
 
-    // Per-day dedup check (skip in test mode — tests must always fire)
+  if (eligible.length > 0) {
+    // ── Batch dedup (skip in test mode — tests must always fire) ───────────
+    const alreadySentKeys = new Set();
     if (!testMode) {
       try {
-        const { rows: existing } = await query(
-          `SELECT 1 FROM report_queue
-            WHERE entity_id   = $1
-              AND report_type = $2
-              AND report_date = ($3::date + INTERVAL '1 day') AT TIME ZONE $4 - INTERVAL '1 millisecond'
-              AND status = 'sent'
-            LIMIT 1`,
-          [group.entityId, group.reportType, yesterdayStr, group.timezone]
+        const { rows: dedupRows } = await query(
+          `SELECT u.entity_id, u.report_type
+             FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[])
+                  AS u(entity_id, report_type, yesterday_str, tz)
+             JOIN report_queue rq
+               ON  rq.entity_id   = u.entity_id
+               AND rq.report_type = u.report_type
+               AND rq.report_date = (u.yesterday_str::date + INTERVAL '1 day')
+                                     AT TIME ZONE u.tz - INTERVAL '1 millisecond'
+               AND rq.status      IN ('sent', 'pending', 'processing')
+             JOIN daily_report_runs dr ON dr.run_id = rq.run_id AND dr.test_mode = false`,
+          [
+            eligible.map(x => x.group.entityId),
+            eligible.map(x => x.group.reportType),
+            eligible.map(x => x.yesterdayStr),
+            eligible.map(x => x.group.timezone),
+          ]
         );
-        if (existing.length > 0) {
-          console.log(`[daily-report] ${group.reportType} ${group.entityId} already sent for ${yesterdayStr} (${group.timezone}) — skipping`);
-          dedupSkipped++;
-          continue;
-        }
+        for (const r of dedupRows) alreadySentKeys.add(`${r.entity_id}::${r.report_type}`);
       } catch (e) {
-        console.error("[daily-report] dedup check failed for", group.entityId, e?.message);
+        console.error("[daily-report] batch dedup check failed:", e?.message);
+        // Fail open: all groups proceed to INSERT; processor safety-net dedup handles any duplicates
       }
     }
 
-    try {
-      await query(
-        `INSERT INTO report_queue
-           (run_id, email, rooftop_id, enterprise_id, report_type, entity_id, to_emails, report_date)
-         VALUES ($1, $2, $3, $4, $5, $6, $7,
-           ($8::date + INTERVAL '1 day') AT TIME ZONE $9 - INTERVAL '1 millisecond')`,
-        [runId, toEmails[0], group.rooftopId, group.enterpriseId,
-         group.reportType, group.entityId, toEmails, yesterdayStr, group.timezone]
-      );
-      enqueued++;
-    } catch (e) {
-      console.error("[daily-report] failed to enqueue", group.entityId, e?.message);
+    // ── Partition: already-sent vs. to-insert ──────────────────────────────
+    const toInsert = [];
+    for (const item of eligible) {
+      const key = `${item.group.entityId}::${item.group.reportType}`;
+      if (alreadySentKeys.has(key)) {
+        console.log(`[daily-report] ${item.group.reportType} ${item.group.entityId} already sent for ${item.yesterdayStr} (${item.group.timezone}) — skipping`);
+        dedupSkipped++;
+      } else {
+        toInsert.push(item);
+      }
+    }
+
+    // ── Batch INSERT ───────────────────────────────────────────────────────
+    if (toInsert.length > 0) {
+      try {
+        await query(
+          `INSERT INTO report_queue
+             (run_id, email, rooftop_id, enterprise_id, report_type, entity_id, to_emails, report_date)
+           SELECT t.run_id, t.email, t.rooftop_id, t.enterprise_id,
+                  t.report_type, t.entity_id,
+                  ARRAY(SELECT json_array_elements_text(t.to_emails_json::json)),
+                  (t.yesterday_str::date + INTERVAL '1 day') AT TIME ZONE t.tz
+                    - INTERVAL '1 millisecond'
+             FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[],
+                         $5::text[], $6::text[], $7::text[], $8::text[], $9::text[])
+                  AS t(run_id, email, rooftop_id, enterprise_id,
+                       report_type, entity_id, yesterday_str, tz, to_emails_json)`,
+          [
+            toInsert.map(() => runId),
+            toInsert.map(x => x.toEmails[0]),
+            toInsert.map(x => x.group.rooftopId    ?? null),
+            toInsert.map(x => x.group.enterpriseId ?? null),
+            toInsert.map(x => x.group.reportType),
+            toInsert.map(x => x.group.entityId),
+            toInsert.map(x => x.yesterdayStr),
+            toInsert.map(x => x.group.timezone),
+            toInsert.map(x => JSON.stringify(x.toEmails)), // jagged-array-safe via JSON cast
+          ]
+        );
+        enqueued = toInsert.length;
+      } catch (e) {
+        console.error("[daily-report] batch INSERT failed:", e?.message);
+      }
     }
   }
 
@@ -2385,28 +2553,31 @@ async function handleProcessReportQueue(req, res) {
           ({ yesterdayStr, dateLabel } = yesterdayFor(tz));
         }
 
-        if (await imsOffForRooftop(rooftop_id)) {
-          await query(`UPDATE report_queue SET status='skipped', entity_id=$2, entity_name=$3, error_reason='ims_off', processed_at=NOW() WHERE id=$1`, [id, rooftop_id, rt.team_name]);
-          console.log(`[process-queue] rooftop ${rooftop_id} skipped — IMS not active`);
-          skippedCount++; continue;
-        }
-        if (await hasStalePendingVins("rooftop_id", rooftop_id, tz, yesterdayStr)) {
-          await query(`UPDATE report_queue SET status='skipped', entity_id=$2, entity_name=$3, error_reason='pending_vins', processed_at=NOW() WHERE id=$1`, [id, rooftop_id, rt.team_name]);
-          console.log(`[process-queue] rooftop ${rooftop_id} skipped — pending VINs > 1`);
-          skippedCount++; continue;
-        }
-        if (await hasNegativeTat("rooftop_id", rooftop_id, tz, yesterdayStr)) {
-          await query(`UPDATE report_queue SET status='skipped', entity_id=$2, entity_name=$3, error_reason='negative_tat', processed_at=NOW() WHERE id=$1`, [id, rooftop_id, rt.team_name]);
-          console.log(`[process-queue] rooftop ${rooftop_id} skipped — negative TAT detected`);
-          skippedCount++; continue;
-        }
-        if (await hasLowPhotoCoverage("rooftop_id", rooftop_id, tz, yesterdayStr)) {
-          await query(`UPDATE report_queue SET status='skipped', entity_id=$2, entity_name=$3, error_reason='low_photo_coverage', processed_at=NOW() WHERE id=$1`, [id, rooftop_id, rt.team_name]);
-          console.log(`[process-queue] rooftop ${rooftop_id} skipped — photo coverage < 75%`);
-          skippedCount++; continue;
+        const imsOff = await imsOffForRooftop(rooftop_id);
+        if (!imsOff) {
+          if (await hasStalePendingVins("rooftop_id", rooftop_id, tz, yesterdayStr)) {
+            await query(`UPDATE report_queue SET status='skipped', entity_id=$2, entity_name=$3, error_reason='pending_vins', processed_at=NOW() WHERE id=$1`, [id, rooftop_id, rt.team_name]);
+            console.log(`[process-queue] rooftop ${rooftop_id} skipped — pending VINs > 1`);
+            skippedCount++; continue;
+          }
+          if (await hasNegativeTat("rooftop_id", rooftop_id, tz, yesterdayStr)) {
+            await query(`UPDATE report_queue SET status='skipped', entity_id=$2, entity_name=$3, error_reason='negative_tat', processed_at=NOW() WHERE id=$1`, [id, rooftop_id, rt.team_name]);
+            console.log(`[process-queue] rooftop ${rooftop_id} skipped — negative TAT detected`);
+            skippedCount++; continue;
+          }
+          if (await hasLowPhotoCoverage("rooftop_id", rooftop_id, tz, yesterdayStr)) {
+            await query(`UPDATE report_queue SET status='skipped', entity_id=$2, entity_name=$3, error_reason='low_photo_coverage', processed_at=NOW() WHERE id=$1`, [id, rooftop_id, rt.team_name]);
+            console.log(`[process-queue] rooftop ${rooftop_id} skipped — photo coverage < 75%`);
+            skippedCount++; continue;
+          }
         }
 
-        const data    = await computeRooftopDailyReport(rooftop_id, yesterdayStr, tz);
+        const data    = await computeRooftopDailyReport(rooftop_id, yesterdayStr, tz, imsOff);
+        if (imsOff && data.inv90.invPending > 1) {
+          await query(`UPDATE report_queue SET status='skipped', entity_id=$2, entity_name=$3, error_reason='pending_vins', processed_at=NOW() WHERE id=$1`, [id, rooftop_id, rt.team_name]);
+          console.log(`[process-queue] rooftop ${rooftop_id} skipped — IMS off, 90-day pending VINs > 1`);
+          skippedCount++; continue;
+        }
         const html    = buildRooftopReportHtml(data, dateLabel, tz);
         const to      = testMode ? testTo : (Array.isArray(row.to_emails) && row.to_emails.length > 0 ? row.to_emails : email.split(",").map(s => s.trim()).filter(Boolean));
         const cc      = testMode ? testCc : (rt.poc_email || undefined);
@@ -2446,11 +2617,6 @@ async function handleProcessReportQueue(req, res) {
         }
 
         const data    = await computeGroupDailyReport(enterprise_id, yesterdayStr, tz);
-        if (!data.newVins || data.newVins === 0) {
-          await query(`UPDATE report_queue SET status='skipped', entity_id=$2, entity_name=$3, error_reason='no_vehicles_yesterday', processed_at=NOW() WHERE id=$1`, [id, enterprise_id, ent.name]);
-          console.log(`[process-queue] enterprise ${enterprise_id} skipped — no vehicles received yesterday`);
-          skippedCount++; continue;
-        }
         if (data.invKpis.invPending > 1) {
           await query(`UPDATE report_queue SET status='skipped', entity_id=$2, entity_name=$3, error_reason='pending_vins', processed_at=NOW() WHERE id=$1`, [id, enterprise_id, ent.name]);
           console.log(`[process-queue] enterprise ${enterprise_id} skipped — inventory pending VINs > 1`);
