@@ -174,7 +174,7 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
     ${spacer(12)}
     <table width="544" class="card-row" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;">
       <tr>
-        ${invCard90("#2563EB", "Vehicles Received",  inv90.received)}
+        ${invCard90("#2563EB", "Active Vehicles",    inv90.received)}
         ${invGap}
         ${invCard90("#059669", "Vehicles Published", inv90.invDelivered)}
         ${invGap}
@@ -322,7 +322,7 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
   const recentMore = Math.max(0, recentVinsTotal - recentVins.length);
   const recentCta = recentMore === 0 ? "" :
     `<div style="margin-top:14px;text-align:center;">
-       <a href="${inventoryBaseUrl}" style="display:inline-block;padding:8px 20px;background:#ffffff;border:1px solid #D1D5DB;color:#374151;font-size:12px;font-weight:600;text-decoration:none;border-radius:4px;font-family:Arial,Helvetica,sans-serif;">+${recentMore} more vehicle${recentMore !== 1 ? "s" : ""} published</a>
+       <a href="${inventoryBaseUrl}" style="display:inline-block;padding:8px 20px;background:#ffffff;border:1px solid #D1D5DB;color:#374151;font-size:12px;font-weight:600;text-decoration:none;border-radius:4px;font-family:Arial,Helvetica,sans-serif;">+${recentMore} more vehicle${recentMore !== 1 ? "s" : ""}</a>
      </div>`;
 
   // ── Full HTML ─────────────────────────────────────────────────────────────
