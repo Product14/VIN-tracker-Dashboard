@@ -92,7 +92,7 @@ function sectionTitle(title) {
  * @returns {string} full HTML email string
  */
 export function buildEmailHtml(summary, timeLabel, dashboardUrl) {
-  const { totals, byCSM, byType, byBucket, lastSync } = summary;
+  const { totals, byCSM, byType, byBucket, byRooftop, lastSync } = summary;
 
   const now = new Date();
   const dateLabel = now.toLocaleDateString("en-IN", {
@@ -111,6 +111,7 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl) {
   // ── Reason buckets ────────────────────────────────────────────────────────
   const bucketMap = Object.fromEntries((byBucket || []).map(b => [b.label, b.count]));
   const buckets = [
+    { label: "Upload Pending",     count: bucketMap["Upload Pending"]     ?? totals.bucketUploadPending,     color: "#2563eb" },
     { label: "Processing Pending", count: bucketMap["Processing Pending"] ?? totals.bucketProcessingPending, color: AMBER },
     { label: "Publishing Pending", count: bucketMap["Publishing Pending"] ?? totals.bucketPublishingPending, color: "#7c3aed" },
     { label: "QC Pending",         count: bucketMap["QC Pending"]         ?? totals.bucketQcPending,         color: "#0891b2" },
@@ -188,6 +189,60 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl) {
   const csmRows = sortedByCSM.map((r, i) =>
     sharedRow(csmLabel(r.name), r, i % 2 === 0)
   ).join("");
+
+  // ── By Rooftop table (pending >24hr, sorted desc, max 20, >0 only) ───────
+  // Only show a bucket column when at least one rooftop has a non-zero value for it.
+  const rooftopData = byRooftop || [];
+  const activeBucketCols = [
+    { key: "bucketUploadPending",     label: "Upload",     color: "#2563eb"  },
+    { key: "bucketProcessingPending", label: "Processing", color: AMBER      },
+    { key: "bucketPublishingPending", label: "Publishing", color: "#7c3aed"  },
+    { key: "bucketQcPending",         label: "QC Pending", color: "#0891b2"  },
+    { key: "bucketQcHold",           label: "QC Hold",    color: RED        },
+    { key: "bucketSold",             label: "Sold",       color: GREEN      },
+    { key: "bucketOthers",           label: "Others",     color: TEXT_MUTED },
+  ].filter(col => rooftopData.some(r => r[col.key] > 0))
+   .sort((a, b) => rooftopData.reduce((s, r) => s + (r[b.key] ?? 0), 0) - rooftopData.reduce((s, r) => s + (r[a.key] ?? 0), 0));
+
+  // Two-row grouped header: Rooftop/Type/CSM/Pending>24h are standalone rowspan=2
+  // columns; the amber group only covers the reason bucket sub-columns.
+  const thFixed   = `padding:9px 12px; text-align:left; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; color:${TEXT_MUTED}; white-space:nowrap; border-bottom:2px solid ${BORDER_COLOR}; background:${GRAY_BG}; vertical-align:bottom;`;
+  const thCount   = `padding:9px 12px; text-align:right; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; color:${TEXT_MUTED}; white-space:nowrap; border-bottom:2px solid ${BORDER_COLOR}; background:${GRAY_BG}; vertical-align:bottom;`;
+  const thGroup   = `padding:9px 12px; text-align:center; font-size:11px; font-weight:700; letter-spacing:0.04em; color:#92400e; background:#fffbeb; border-left:2px solid #fcd34d; border-right:2px solid #fcd34d; border-bottom:1px solid #fde68a; white-space:nowrap;`;
+  const thSub     = (first, last) => `padding:7px 12px; text-align:right; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; color:#92400e; background:#fffbeb; border-bottom:2px solid #fde68a; white-space:nowrap;${first ? " border-left:2px solid #fcd34d;" : ""}${last ? " border-right:2px solid #fcd34d;" : ""}`;
+
+  const rooftopHeaders = activeBucketCols.length === 0
+    // No active buckets — single header row, no grouping needed
+    ? `<tr style="background:${GRAY_BG};">
+        <th style="${thFixed}">Rooftop</th>
+        <th style="${thFixed}">Type</th>
+        <th style="${thFixed}">CSM</th>
+        <th style="${thCount}">Pending &gt;24h</th>
+      </tr>`
+    // Active buckets — two-row header with amber group over bucket columns only
+    : `<tr style="background:${GRAY_BG};">
+        <th rowspan="2" style="${thFixed}">Rooftop</th>
+        <th rowspan="2" style="${thFixed}">Type</th>
+        <th rowspan="2" style="${thFixed}">CSM</th>
+        <th rowspan="2" style="${thCount}">Pending &gt;24h</th>
+        <th colspan="${activeBucketCols.length}" style="${thGroup}">Pending Reasons</th>
+      </tr>
+      <tr>
+        ${activeBucketCols.map((col, idx) =>
+          `<th style="${thSub(idx === 0, idx === activeBucketCols.length - 1)}">${col.label}</th>`
+        ).join("")}
+      </tr>`;
+
+  const rooftopRows = rooftopData.map((r, i) => tableRow([
+    { value: r.name,                align: "left"                                          },
+    { value: r.type,                align: "left", muted: true                             },
+    { value: csmLabel(r.csm),      align: "left", muted: true                             },
+    { value: fmt(r.pendingAfter24), color: r.pendingAfter24 > 0 ? RED : null              },
+    ...activeBucketCols.map(col => ({
+      value: fmt(r[col.key]),
+      color: r[col.key] > 0 ? col.color : null,
+    })),
+  ], i % 2 === 0)).join("");
 
   // ── CTA button ────────────────────────────────────────────────────────────
   const ctaHtml = dashboardUrl ? `
@@ -277,6 +332,16 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl) {
                          style="border:1px solid ${BORDER_COLOR}; border-radius:8px; overflow:hidden; border-collapse:separate; border-spacing:0;">
                     ${csmHeaders}
                     ${csmRows || `<tr><td colspan="5" style="padding:16px; text-align:center; color:${TEXT_MUTED}; font-size:13px;">No data</td></tr>`}
+                  </table>
+                </td></tr>
+
+                <!-- By Rooftop section -->
+                ${sectionTitle("Pending >24hr by Rooftop")}
+                <tr><td>
+                  <table width="100%" cellpadding="0" cellspacing="0" border="0"
+                         style="border:1px solid ${BORDER_COLOR}; border-radius:8px; overflow:hidden; border-collapse:separate; border-spacing:0;">
+                    ${rooftopHeaders}
+                    ${rooftopRows || `<tr><td colspan="${4 + activeBucketCols.length}" style="padding:16px; text-align:center; color:${TEXT_MUTED}; font-size:13px;">No rooftops with pending >24hr</td></tr>`}
                   </table>
                 </td></tr>
 

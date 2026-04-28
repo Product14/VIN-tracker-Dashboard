@@ -377,6 +377,7 @@ function toTotals(r) {
     processedAfter24:        r.processed_after_24h,
     notProcessed:            r.not_processed,
     notProcessedAfter24:     r.not_processed_after_24h,
+    bucketUploadPending:     r.bucket_upload_pending,
     bucketProcessingPending: r.bucket_processing_pending,
     bucketPublishingPending: r.bucket_publishing_pending,
     bucketQcPending:         r.bucket_qc_pending,
@@ -542,6 +543,7 @@ function toRooftopRow(r) {
     websiteListingUrl:        r.website_listing_url ?? null,
     imsIntegrationStatus:     r.ims_integration_status ?? null,
     publishingStatus:         r.publishing_status ?? null,
+    bucketUploadPending:      r.bucket_upload_pending,
     bucketProcessingPending:  r.bucket_processing_pending,
     bucketPublishingPending:  r.bucket_publishing_pending,
     bucketQcPending:          r.bucket_qc_pending,
@@ -575,6 +577,7 @@ function toEnterpriseRow(r) {
     avgWebsiteScore:          r.avg_website_score ?? null,
     websiteUrl:               r.website_url ?? null,
     accountType:              r.account_type ?? null,
+    bucketUploadPending:      r.bucket_upload_pending,
     bucketProcessingPending:  r.bucket_processing_pending,
     bucketPublishingPending:  r.bucket_publishing_pending,
     bucketQcPending:          r.bucket_qc_pending,
@@ -607,6 +610,7 @@ function toCsmRow(r) {
     missingWebsiteCount:      r.missing_website_count ?? 0,
     integratedCount:          r.integrated_count ?? 0,
     publishingCount:          r.publishing_count ?? 0,
+    bucketUploadPending:      r.bucket_upload_pending,
     bucketProcessingPending:  r.bucket_processing_pending,
     bucketPublishingPending:  r.bucket_publishing_pending,
     bucketQcPending:          r.bucket_qc_pending,
@@ -633,6 +637,7 @@ function toTypeRow(r) {
     missingWebsiteCount:      r.missing_website_count ?? 0,
     integratedCount:          r.integrated_count ?? 0,
     publishingCount:          r.publishing_count ?? 0,
+    bucketUploadPending:      r.bucket_upload_pending,
     bucketProcessingPending:  r.bucket_processing_pending,
     bucketPublishingPending:  r.bucket_publishing_pending,
     bucketQcPending:          r.bucket_qc_pending,
@@ -682,9 +687,11 @@ function buildRooftopSource(dateFilter) {
         MAX(rd.website_listing_url)         AS website_listing_url,
         MAX(rd.ims_integration_status)      AS ims_integration_status,
         MAX(rd.publishing_status)           AS publishing_status,
+        SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Upload Pending'      AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_upload_pending,
         SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Processing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
         SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Publishing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
         SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'QC Pending'         AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
+        SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'QC Hold'            AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_hold,
         SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Sold'               AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_sold,
         SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Others'             AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_others
       FROM vins v
@@ -730,9 +737,11 @@ function buildEnterpriseSource(dateFilter) {
         ROUND(AVG(rd.website_score)::numeric, 2) AS avg_website_score,
         MAX(ed.website_url)                   AS website_url,
         MAX(ed.type)                          AS account_type,
+        SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Upload Pending'      AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_upload_pending,
         SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Processing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
         SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Publishing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
         SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'QC Pending'         AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
+        SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'QC Hold'            AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_hold,
         SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Sold'               AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_sold,
         SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Others'             AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_others
       FROM vins v
@@ -880,6 +889,7 @@ async function computeSummary(dateFilter) {
           v.rooftop_id,
           v.enterprise_id,
           ed.poc_email,
+          rd.team_name,
           rd.team_type,
           rd.website_score,
           rd.website_listing_url,
@@ -901,6 +911,7 @@ async function computeSummary(dateFilter) {
           SUM(CASE WHEN status = 'Delivered' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int                               AS processed_after_24h,
           SUM(CASE WHEN status != 'Delivered' THEN 1 ELSE 0 END)::int                                                           AS not_processed,
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS not_processed_after_24h,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Upload Pending'      AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_upload_pending,
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Processing Pending' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Publishing Pending' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'QC Pending'         AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
@@ -926,6 +937,7 @@ async function computeSummary(dateFilter) {
           COUNT(DISTINCT CASE WHEN (website_listing_url IS NULL OR website_listing_url = '') THEN rooftop_id END)::int              AS missing_website_count,
           COUNT(DISTINCT CASE WHEN ims_integration_status = 'false' THEN rooftop_id END)::int                                      AS integrated_count,
           COUNT(DISTINCT CASE WHEN publishing_status = 'false' THEN rooftop_id END)::int                                           AS publishing_count,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Upload Pending'      AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_upload_pending,
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Processing Pending' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Publishing Pending' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'QC Pending'         AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
@@ -952,6 +964,7 @@ async function computeSummary(dateFilter) {
           COUNT(DISTINCT CASE WHEN (website_listing_url IS NULL OR website_listing_url = '') THEN rooftop_id END)::int              AS missing_website_count,
           COUNT(DISTINCT CASE WHEN ims_integration_status = 'false' THEN rooftop_id END)::int                                      AS integrated_count,
           COUNT(DISTINCT CASE WHEN publishing_status = 'false' THEN rooftop_id END)::int                                           AS publishing_count,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Upload Pending'      AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_upload_pending,
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Processing Pending' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Publishing Pending' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'QC Pending'         AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
@@ -967,6 +980,24 @@ async function computeSummary(dateFilter) {
         WHERE status != 'Delivered' AND COALESCE(has_photos,0)=1 AND COALESCE(after_24h,0)=1
           AND reason_bucket IS NOT NULL AND reason_bucket != ''
         GROUP BY reason_bucket
+      ),
+      by_rooftop AS (
+        SELECT
+          rooftop_id,
+          MAX(team_name)                                                                                                                                    AS rooftop_name,
+          MAX(team_type)                                                                                                                                    AS rooftop_type,
+          MAX(poc_email)                                                                                                                                    AS csm,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int                            AS pending_after_24h,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND COALESCE(after_24h,0)=1 AND reason_bucket = 'Upload Pending'      THEN 1 ELSE 0 END)::int AS bucket_upload_pending,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND COALESCE(after_24h,0)=1 AND reason_bucket = 'Processing Pending' THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND COALESCE(after_24h,0)=1 AND reason_bucket = 'Publishing Pending' THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND COALESCE(after_24h,0)=1 AND reason_bucket = 'QC Pending'         THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND COALESCE(after_24h,0)=1 AND reason_bucket = 'QC Hold'            THEN 1 ELSE 0 END)::int AS bucket_qc_hold,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND COALESCE(after_24h,0)=1 AND reason_bucket = 'Sold'               THEN 1 ELSE 0 END)::int AS bucket_sold,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND COALESCE(after_24h,0)=1 AND reason_bucket = 'Others'             THEN 1 ELSE 0 END)::int AS bucket_others
+        FROM base
+        GROUP BY rooftop_id
+        HAVING SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END) > 0
       )
     SELECT
       (SELECT last_sync   FROM meta)                AS last_sync,
@@ -986,22 +1017,39 @@ async function computeSummary(dateFilter) {
        FROM by_type t)                              AS by_type_json,
       (SELECT json_agg(b ORDER BY
           CASE b.label
-            WHEN 'Processing Pending' THEN 1
-            WHEN 'Publishing Pending' THEN 2
-            WHEN 'QC Pending'         THEN 3
-            WHEN 'Sold'               THEN 4
-            ELSE 5
+            WHEN 'Upload Pending'      THEN 1
+            WHEN 'Processing Pending'  THEN 2
+            WHEN 'Publishing Pending'  THEN 3
+            WHEN 'QC Pending'          THEN 4
+            WHEN 'Sold'                THEN 5
+            ELSE 6
           END, b.label)
-       FROM by_bucket b)                            AS by_bucket_json
+       FROM by_bucket b)                            AS by_bucket_json,
+      (SELECT json_agg(r ORDER BY r.pending_after_24h DESC)
+       FROM (SELECT * FROM by_rooftop ORDER BY pending_after_24h DESC LIMIT 20) r) AS by_rooftop_json
   `);
   const row = rows[0];
   return {
-    lastSync:  row.last_sync  ?? null,
-    totalRows: row.total_rows ?? 0,
-    totals:    toTotals(row.totals_json),
-    byCSM:     (row.by_csm_json    ?? []).map(toCsmRow),
-    byType:    (row.by_type_json   ?? []).map(toTypeRow),
-    byBucket:  (row.by_bucket_json ?? []).map(r => ({ label: r.label, count: r.count })),
+    lastSync:   row.last_sync  ?? null,
+    totalRows:  row.total_rows ?? 0,
+    totals:     toTotals(row.totals_json),
+    byCSM:      (row.by_csm_json    ?? []).map(toCsmRow),
+    byType:     (row.by_type_json   ?? []).map(toTypeRow),
+    byBucket:   (row.by_bucket_json ?? []).map(r => ({ label: r.label, count: r.count })),
+    byRooftop:  (row.by_rooftop_json ?? []).map(r => ({
+      rooftopId:               r.rooftop_id,
+      name:                    r.rooftop_name ?? r.rooftop_id,
+      type:                    r.rooftop_type ?? "—",
+      csm:                     r.csm ?? null,
+      pendingAfter24:          r.pending_after_24h ?? 0,
+      bucketUploadPending:     r.bucket_upload_pending ?? 0,
+      bucketProcessingPending: r.bucket_processing_pending ?? 0,
+      bucketPublishingPending: r.bucket_publishing_pending ?? 0,
+      bucketQcPending:         r.bucket_qc_pending ?? 0,
+      bucketQcHold:            r.bucket_qc_hold ?? 0,
+      bucketSold:              r.bucket_sold ?? 0,
+      bucketOthers:            r.bucket_others ?? 0,
+    })),
   };
 }
 
@@ -1057,12 +1105,13 @@ async function computeFilterOptions() {
     query("SELECT DISTINCT account_type FROM v_by_enterprise WHERE account_type IS NOT NULL ORDER BY account_type"),
     query(`
       SELECT
-        BOOL_OR(bucket_processing_pending > 0) AS bucket_processing_pending,
-        BOOL_OR(bucket_publishing_pending > 0) AS bucket_publishing_pending,
-        BOOL_OR(bucket_qc_pending         > 0) AS bucket_qc_pending,
-        BOOL_OR(bucket_qc_hold            > 0) AS bucket_qc_hold,
-        BOOL_OR(bucket_sold               > 0) AS bucket_sold,
-        BOOL_OR(bucket_others             > 0) AS bucket_others
+        BOOL_OR(bucket_upload_pending      > 0) AS bucket_upload_pending,
+        BOOL_OR(bucket_processing_pending  > 0) AS bucket_processing_pending,
+        BOOL_OR(bucket_publishing_pending  > 0) AS bucket_publishing_pending,
+        BOOL_OR(bucket_qc_pending          > 0) AS bucket_qc_pending,
+        BOOL_OR(bucket_qc_hold             > 0) AS bucket_qc_hold,
+        BOOL_OR(bucket_sold                > 0) AS bucket_sold,
+        BOOL_OR(bucket_others              > 0) AS bucket_others
       FROM v_by_rooftop
     `),
     query(`
@@ -1082,6 +1131,7 @@ async function computeFilterOptions() {
     enterpriseCSMs:  enterpriseCSMsRes.rows.map(r => r.csm),
     enterpriseTypes: enterpriseTypesRes.rows.map(r => r.account_type),
     bucketFlags: {
+      bucketUploadPending:     bf.bucket_upload_pending     ?? false,
       bucketProcessingPending: bf.bucket_processing_pending ?? false,
       bucketPublishingPending: bf.bucket_publishing_pending ?? false,
       bucketQcPending:         bf.bucket_qc_pending         ?? false,

@@ -276,6 +276,7 @@ function downloadCSV(filename, headers, rows) {
 }
 
 const BUCKETS = [
+  { key: "bucketUploadPending",     label: "Upload Pending" },
   { key: "bucketProcessingPending", label: "Processing Pending" },
   { key: "bucketPublishingPending", label: "Publishing Pending" },
   { key: "bucketQcPending",         label: "QC Pending" },
@@ -723,7 +724,9 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
     else { onSortChange(null, "asc"); }
   };
 
-  const activeBuckets = BUCKETS.filter(b => bucketFlags[b.key]);
+  const activeBuckets = BUCKETS
+    .filter(b => bucketFlags[b.key])
+    .sort((a, b) => rows.reduce((s, r) => s + (r[b.key] ?? 0), 0) - rows.reduce((s, r) => s + (r[a.key] ?? 0), 0));
   const pendencyColSpan = 1 + activeBuckets.length;
   const activeCount = [filters.rooftopType, filters.csm, filters.enterprise, filters.websiteScore, filters.imsIntegration, filters.publishingStatus, filters.reportStatus, filters.reportReason].filter(Boolean).length;
   const cols = [
@@ -1023,7 +1026,9 @@ function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = f
 
   const SCORE_OPTIONS = ["Poor (<6)", "Average (6–8)", "Good (8+)"];
 
-  const activeBuckets = BUCKETS.filter(b => bucketFlags[b.key]);
+  const activeBuckets = BUCKETS
+    .filter(b => bucketFlags[b.key])
+    .sort((a, b) => rows.reduce((s, r) => s + (r[b.key] ?? 0), 0) - rows.reduce((s, r) => s + (r[a.key] ?? 0), 0));
   const pendencyColSpan = 1 + activeBuckets.length;
   const showNotIntegrated      = hasNotIntegrated;
   const showPublishingDisabled = hasPublishingDisabled;
@@ -1308,7 +1313,9 @@ function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = f
 
 function CSMTab({ csms, onDrillDown }) {
   const tdStyle = { padding: "10px 14px", borderBottom: "1px solid #f3f4f6" };
-  const activeBuckets = BUCKETS.filter(b => csms.some(r => (r[b.key] ?? 0) > 0));
+  const activeBuckets = BUCKETS
+    .filter(b => csms.some(r => (r[b.key] ?? 0) > 0))
+    .sort((a, b) => csms.reduce((s, r) => s + (r[b.key] ?? 0), 0) - csms.reduce((s, r) => s + (r[a.key] ?? 0), 0));
 
   const [imsFilter, setImsFilter] = useState(null);
   const [pubFilter, setPubFilter] = useState(null);
@@ -1417,7 +1424,9 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
     else { setSortCol(null); setSortDir("asc"); }
   };
 
-  const activeBuckets = BUCKETS.filter(b => rows.some(r => (r[b.key] ?? 0) > 0));
+  const activeBuckets = BUCKETS
+    .filter(b => rows.some(r => (r[b.key] ?? 0) > 0))
+    .sort((a, b) => rows.reduce((s, r) => s + (r[b.key] ?? 0), 0) - rows.reduce((s, r) => s + (r[a.key] ?? 0), 0));
   const showIntegrated  = rows.some(r => (r.integratedCount ?? 0) > 0);
   const showPublishing  = rows.some(r => (r.publishingCount ?? 0) > 0);
   const pendencyColSpan = activeBuckets.length;
