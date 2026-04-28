@@ -1215,18 +1215,28 @@ app.get("/api/vins/raw", (req, res) => {
 // ─── GET /api/rooftops ────────────────────────────────────────────────────────
 
 const ROOFTOP_SORT_MAP = {
-  name:                "name",
-  type:                "type",
-  enterprise:          "enterprise",
-  csm:                 "csm",
-  total:               "total",
-  processed:           "processed",
-  notProcessed:        "not_processed",
-  notProcessedAfter24: "not_processed_after_24h",
-  rate:                "not_processed_after_24h", // proxy: sort by count as approximation
-  websiteScore:        "website_score",
-  reportStatus:        "CASE report_status WHEN 'healthy' THEN 1 WHEN 'stale' THEN 2 WHEN 'never_sent' THEN 3 ELSE 4 END",
-  reportReason:        "report_reason",
+  name:                    "name",
+  type:                    "type",
+  enterprise:              "enterprise",
+  csm:                     "csm",
+  total:                   "total",
+  withPhotos:              "with_photos",
+  deliveredWithPhotos:     "delivered_with_photos",
+  pendingWithPhotos:       "pending_with_photos",
+  processed:               "processed",
+  notProcessed:            "not_processed",
+  notProcessedAfter24:     "not_processed_after_24h",
+  rate:                    "not_processed_after_24h", // proxy: sort by count as approximation
+  bucketUploadPending:     "bucket_upload_pending",
+  bucketProcessingPending: "bucket_processing_pending",
+  bucketPublishingPending: "bucket_publishing_pending",
+  bucketQcPending:         "bucket_qc_pending",
+  bucketQcHold:            "bucket_qc_hold",
+  bucketSold:              "bucket_sold",
+  bucketOthers:            "bucket_others",
+  websiteScore:            "website_score",
+  reportStatus:            "CASE report_status WHEN 'healthy' THEN 1 WHEN 'stale' THEN 2 WHEN 'never_sent' THEN 3 ELSE 4 END",
+  reportReason:            "report_reason",
 };
 
 function buildRooftopFilters(queryParams) {
@@ -1320,20 +1330,30 @@ app.get("/api/rooftops/:rooftopId/report-history", async (req, res) => {
 // ─── GET /api/enterprises ─────────────────────────────────────────────────────
 
 const ENTERPRISE_SORT_MAP = {
-  name:                   "name",
-  csm:                    "csm",
-  total:                  "total",
-  processed:              "processed",
-  notProcessed:           "not_processed",
-  notProcessedAfter24:    "not_processed_after_24h",
-  processedAfter24:       "processed_after_24h",
-  rate:                   "not_processed_after_24h", // proxy
-  rooftopCount:           "rooftop_count",
-  notIntegratedCount:     "not_integrated_count",
-  publishingDisabledCount:"publishing_disabled_count",
-  avgWebsiteScore:        "avg_website_score",
-  reportStatus:           "CASE report_status WHEN 'healthy' THEN 1 WHEN 'stale' THEN 2 WHEN 'never_sent' THEN 3 ELSE 4 END",
-  reportReason:           "report_reason",
+  name:                    "name",
+  csm:                     "csm",
+  total:                   "total",
+  withPhotos:              "with_photos",
+  deliveredWithPhotos:     "delivered_with_photos",
+  pendingWithPhotos:       "pending_with_photos",
+  processed:               "processed",
+  notProcessed:            "not_processed",
+  notProcessedAfter24:     "not_processed_after_24h",
+  processedAfter24:        "processed_after_24h",
+  rate:                    "not_processed_after_24h", // proxy
+  rooftopCount:            "rooftop_count",
+  notIntegratedCount:      "not_integrated_count",
+  publishingDisabledCount: "publishing_disabled_count",
+  bucketUploadPending:     "bucket_upload_pending",
+  bucketProcessingPending: "bucket_processing_pending",
+  bucketPublishingPending: "bucket_publishing_pending",
+  bucketQcPending:         "bucket_qc_pending",
+  bucketQcHold:            "bucket_qc_hold",
+  bucketSold:              "bucket_sold",
+  bucketOthers:            "bucket_others",
+  avgWebsiteScore:         "avg_website_score",
+  reportStatus:            "CASE report_status WHEN 'healthy' THEN 1 WHEN 'stale' THEN 2 WHEN 'never_sent' THEN 3 ELSE 4 END",
+  reportReason:            "report_reason",
 };
 
 function buildEnterpriseFilters(queryParams) {
