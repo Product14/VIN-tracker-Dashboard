@@ -453,28 +453,28 @@ const ROOFTOP_STATUS_CTES = `
       END AS last_report_date,
       COALESCE(ed.timezone, 'America/New_York') AS timezone,
       CASE
-        WHEN gsl.report_date = DATE_TRUNC('day', NOW() AT TIME ZONE COALESCE(ed.timezone, 'America/New_York')) - INTERVAL '1 millisecond'
-          OR rsl.report_date = DATE_TRUNC('day', NOW() AT TIME ZONE COALESCE(ed.timezone, 'America/New_York')) - INTERVAL '1 millisecond'
+        WHEN (gsl.report_date AT TIME ZONE COALESCE(ed.timezone, 'America/New_York'))::date = (NOW() AT TIME ZONE COALESCE(ed.timezone, 'America/New_York'))::date - 1
+          OR (rsl.report_date AT TIME ZONE COALESCE(ed.timezone, 'America/New_York'))::date = (NOW() AT TIME ZONE COALESCE(ed.timezone, 'America/New_York'))::date - 1
         THEN 'sent'
         ELSE 'not_sent'
       END AS report_status,
       CASE
-        WHEN gsl.report_date = DATE_TRUNC('day', NOW() AT TIME ZONE COALESCE(ed.timezone, 'America/New_York')) - INTERVAL '1 millisecond'
-          OR rsl.report_date = DATE_TRUNC('day', NOW() AT TIME ZONE COALESCE(ed.timezone, 'America/New_York')) - INTERVAL '1 millisecond'
+        WHEN (gsl.report_date AT TIME ZONE COALESCE(ed.timezone, 'America/New_York'))::date = (NOW() AT TIME ZONE COALESCE(ed.timezone, 'America/New_York'))::date - 1
+          OR (rsl.report_date AT TIME ZONE COALESCE(ed.timezone, 'America/New_York'))::date = (NOW() AT TIME ZONE COALESCE(ed.timezone, 'America/New_York'))::date - 1
         THEN NULL
         -- No recipients configured → always surface this regardless of run state
         WHEN rr.rooftop_id IS NULL AND rg.enterprise_id IS NULL THEN 'no_recipient'
         -- Group-only coverage: show group error if it's for yesterday, else not_triggered
         WHEN rr.rooftop_id IS NULL THEN
           CASE
-            WHEN gel.report_date = DATE_TRUNC('day', NOW() AT TIME ZONE COALESCE(ed.timezone, 'America/New_York')) - INTERVAL '1 millisecond'
+            WHEN (gel.report_date AT TIME ZONE COALESCE(ed.timezone, 'America/New_York'))::date = (NOW() AT TIME ZONE COALESCE(ed.timezone, 'America/New_York'))::date - 1
             THEN gel.error_reason
             ELSE 'not_triggered'
           END
         -- Rooftop-level coverage: show rooftop error if it's for yesterday, else not_triggered
         ELSE
           CASE
-            WHEN rel.report_date = DATE_TRUNC('day', NOW() AT TIME ZONE COALESCE(ed.timezone, 'America/New_York')) - INTERVAL '1 millisecond'
+            WHEN (rel.report_date AT TIME ZONE COALESCE(ed.timezone, 'America/New_York'))::date = (NOW() AT TIME ZONE COALESCE(ed.timezone, 'America/New_York'))::date - 1
             THEN rel.error_reason
             ELSE 'not_triggered'
           END
@@ -523,17 +523,17 @@ const ENTERPRISE_STATUS_CTES = `
       gsl.report_date AS last_report_date,
       COALESCE(ed.timezone, 'America/New_York') AS timezone,
       CASE
-        WHEN gsl.report_date = DATE_TRUNC('day', NOW() AT TIME ZONE COALESCE(ed.timezone, 'America/New_York')) - INTERVAL '1 millisecond'
+        WHEN (gsl.report_date AT TIME ZONE COALESCE(ed.timezone, 'America/New_York'))::date = (NOW() AT TIME ZONE COALESCE(ed.timezone, 'America/New_York'))::date - 1
         THEN 'sent'
         ELSE 'not_sent'
       END AS report_status,
       CASE
-        WHEN gsl.report_date = DATE_TRUNC('day', NOW() AT TIME ZONE COALESCE(ed.timezone, 'America/New_York')) - INTERVAL '1 millisecond'
+        WHEN (gsl.report_date AT TIME ZONE COALESCE(ed.timezone, 'America/New_York'))::date = (NOW() AT TIME ZONE COALESCE(ed.timezone, 'America/New_York'))::date - 1
         THEN NULL
         -- No recipients configured → always surface this regardless of run state
         WHEN rg.enterprise_id IS NULL THEN 'no_recipient'
         -- Show group error only if it's for yesterday's run, else not_triggered
-        WHEN gel.report_date = DATE_TRUNC('day', NOW() AT TIME ZONE COALESCE(ed.timezone, 'America/New_York')) - INTERVAL '1 millisecond'
+        WHEN (gel.report_date AT TIME ZONE COALESCE(ed.timezone, 'America/New_York'))::date = (NOW() AT TIME ZONE COALESCE(ed.timezone, 'America/New_York'))::date - 1
         THEN gel.error_reason
         ELSE 'not_triggered'
       END AS report_reason
@@ -2832,6 +2832,104 @@ app.get("/api/send-daily-report/status", async (req, res) => {
     pending:    countMap.pending    || 0,
     processing: countMap.processing || 0,
   });
+});
+
+// ─── Report Coverage (last 7 report dates) ───────────────────────────────────
+
+app.get("/api/report-coverage", async (_req, res) => {
+  try {
+    const { rows } = await query(`
+      WITH active_rooftops AS (
+        -- Only rooftops with at least one VIN in current inventory
+        SELECT rooftop_id AS team_id, enterprise_id FROM v_by_rooftop
+      ),
+      total_rt AS (
+        SELECT COUNT(*)::int AS total FROM active_rooftops
+      ),
+      dates AS (
+        SELECT DISTINCT
+          DATE(rq.report_date AT TIME ZONE 'America/New_York') AS report_day
+        FROM report_queue rq
+        JOIN daily_report_runs dr ON dr.run_id = rq.run_id
+        WHERE dr.test_mode = false AND rq.report_date IS NOT NULL
+        ORDER BY DATE(rq.report_date AT TIME ZONE 'America/New_York') DESC
+        LIMIT 7
+      ),
+      covered_per_date AS (
+        SELECT
+          DATE(rq.report_date AT TIME ZONE 'America/New_York') AS report_day,
+          ar.team_id
+        FROM report_queue rq
+        JOIN daily_report_runs dr ON dr.run_id = rq.run_id
+        JOIN active_rooftops ar ON (
+          (rq.report_type = 'Rooftop' AND rq.entity_id = ar.team_id) OR
+          (rq.report_type = 'Group'   AND rq.entity_id = ar.enterprise_id)
+        )
+        WHERE dr.test_mode = false AND rq.status = 'sent' AND rq.report_date IS NOT NULL
+      ),
+      sent_per_date AS (
+        SELECT report_day, COUNT(DISTINCT team_id)::int AS sent_count
+        FROM covered_per_date GROUP BY report_day
+      ),
+      in_queue_per_date AS (
+        SELECT
+          DATE(rq.report_date AT TIME ZONE 'America/New_York') AS report_day,
+          ar.team_id
+        FROM report_queue rq
+        JOIN daily_report_runs dr ON dr.run_id = rq.run_id
+        JOIN active_rooftops ar ON (
+          (rq.report_type = 'Rooftop' AND rq.entity_id = ar.team_id) OR
+          (rq.report_type = 'Group'   AND rq.entity_id = ar.enterprise_id)
+        )
+        WHERE dr.test_mode = false AND rq.report_date IS NOT NULL
+      ),
+      in_queue_count_per_date AS (
+        SELECT report_day, COUNT(DISTINCT team_id)::int AS in_queue_count
+        FROM in_queue_per_date GROUP BY report_day
+      ),
+      reasons_per_date AS (
+        SELECT
+          DATE(rq.report_date AT TIME ZONE 'America/New_York') AS report_day,
+          rq.error_reason,
+          COUNT(DISTINCT ar.team_id)::int AS cnt
+        FROM report_queue rq
+        JOIN daily_report_runs dr ON dr.run_id = rq.run_id
+        JOIN active_rooftops ar ON (
+          (rq.report_type = 'Rooftop' AND rq.entity_id = ar.team_id) OR
+          (rq.report_type = 'Group'   AND rq.entity_id = ar.enterprise_id)
+        )
+        WHERE dr.test_mode = false
+          AND rq.status IN ('skipped', 'error')
+          AND rq.report_date IS NOT NULL
+        GROUP BY DATE(rq.report_date AT TIME ZONE 'America/New_York'), rq.error_reason
+      )
+      SELECT
+        TO_CHAR(d.report_day, 'YYYY-MM-DD')                                                  AS "reportDay",
+        t.total                                                                              AS "totalRooftops",
+        COALESCE(s.sent_count, 0)                                                            AS sent,
+        t.total - COALESCE(s.sent_count, 0)                                                  AS "notSent",
+        ROUND(COALESCE(s.sent_count, 0)::numeric / NULLIF(t.total, 0) * 100, 1)             AS "sentPct",
+        t.total - COALESCE(iq.in_queue_count, 0)                                             AS "reasonNotTriggered",
+        COALESCE(MAX(CASE WHEN r.error_reason = 'no_recipient'       THEN r.cnt END), 0)    AS "reasonNoRecipient",
+        COALESCE(MAX(CASE WHEN r.error_reason = 'ims_off'            THEN r.cnt END), 0)    AS "reasonImsOff",
+        COALESCE(MAX(CASE WHEN r.error_reason = 'pending_vins'       THEN r.cnt END), 0)    AS "reasonPendingVins",
+        COALESCE(MAX(CASE WHEN r.error_reason = 'negative_tat'       THEN r.cnt END), 0)    AS "reasonNegativeTat",
+        COALESCE(MAX(CASE WHEN r.error_reason = 'low_photo_coverage' THEN r.cnt END), 0)    AS "reasonLowPhotoCoverage",
+        COALESCE(MAX(CASE WHEN r.error_reason = 'already_sent'       THEN r.cnt END), 0)    AS "reasonAlreadySent",
+        COALESCE(MAX(CASE WHEN r.error_reason = 'timed_out'          THEN r.cnt END), 0)    AS "reasonTimedOut"
+      FROM dates d
+      CROSS JOIN total_rt t
+      LEFT JOIN sent_per_date s             ON s.report_day = d.report_day
+      LEFT JOIN in_queue_count_per_date iq  ON iq.report_day = d.report_day
+      LEFT JOIN reasons_per_date r          ON r.report_day = d.report_day
+      GROUP BY d.report_day, t.total, s.sent_count, iq.in_queue_count
+      ORDER BY d.report_day DESC
+    `);
+    return res.json(rows);
+  } catch (err) {
+    console.error("/api/report-coverage error:", err);
+    return res.status(500).json({ error: err.message });
+  }
 });
 
 // ─── Email Preview (browser, real DB data, no emails sent) ───────────────────

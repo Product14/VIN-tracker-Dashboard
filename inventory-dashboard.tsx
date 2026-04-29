@@ -289,6 +289,17 @@ const BUCKETS = [
   { key: "bucketOthers",            label: "Others" },
 ];
 
+const REPORT_REASONS = [
+  { key: "reasonNotTriggered",     label: "Not Triggered" },
+  { key: "reasonNoRecipient",      label: "No Recipient" },
+  { key: "reasonImsOff",           label: "IMS Disabled" },
+  { key: "reasonPendingVins",      label: "Pending VINs" },
+  { key: "reasonNegativeTat",      label: "Negative TAT" },
+  { key: "reasonLowPhotoCoverage", label: "Low Photo Coverage" },
+  { key: "reasonAlreadySent",      label: "Already Sent" },
+  { key: "reasonTimedOut",         label: "Timed Out" },
+];
+
 function DownloadButton({ onClick }) {
   return (
     <button onClick={onClick} title="Download as CSV"
@@ -1886,6 +1897,119 @@ function AdminView({ syncing }: { syncing: boolean }) {
   );
 }
 
+function ReportCoverageTab({ rows, loading }: { rows: any[]; loading: boolean }) {
+  const activeReasons = REPORT_REASONS.filter(r => rows.some(row => (row[r.key] ?? 0) > 0));
+  const reasonColSpan = activeReasons.length;
+
+  const thBase: React.CSSProperties = { padding: "5px 8px", fontSize: 11, fontWeight: 600, color: "#374151", boxShadow: "inset 0 -2px 0 #e5e7eb", background: "#f9fafb", position: "sticky", top: 0, zIndex: 3, whiteSpace: "nowrap" };
+  const thRed: React.CSSProperties  = { padding: "5px 8px", fontSize: 11, fontWeight: 600, color: "#991b1b", boxShadow: "inset 0 -2px 0 #e5e7eb", background: "#fef2f2", position: "sticky", zIndex: 3, whiteSpace: "nowrap" };
+  const td: React.CSSProperties     = { padding: "10px 12px", borderBottom: "1px solid #f3f4f6", fontSize: 13 };
+
+  function fmtDay(d: string) {
+    return new Date(d + "T12:00:00Z").toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+  }
+
+  function sentPctColor(pct: number): string {
+    if (pct >= 80) return "#15803d";
+    if (pct >= 50) return "#b45309";
+    return "#b91c1c";
+  }
+
+  function sentPctBg(pct: number): string {
+    if (pct >= 80) return "#f0fdf4";
+    if (pct >= 50) return "#fffbeb";
+    return "#fef2f2";
+  }
+
+  const shimmerRows = Array(7).fill(0).map((_, i) => (
+    <tr key={i}>
+      {Array(5 + reasonColSpan || 5).fill(0).map((__, j) => (
+        <td key={j} style={{ ...td, textAlign: "center" }}>
+          <div style={{ height: 14, borderRadius: 4, background: "#f3f4f6", width: j === 0 ? 90 : 40, margin: "0 auto" }} />
+        </td>
+      ))}
+    </tr>
+  ));
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+        <h2 style={{ fontSize: 18, fontWeight: 700, color: "#1f2937", margin: 0 }}>Report Status — Last 7 Days</h2>
+        <DownloadButton onClick={() => {
+          const headers = ["Report Date", "Total Rooftops", "Sent", "Sent %", "Not Sent", ...activeReasons.map(r => r.label)];
+          const csvRows = rows.map(r => [
+            fmtDay(r.reportDay), r.totalRooftops, r.sent,
+            r.sentPct !== null && r.sentPct !== undefined ? r.sentPct : "",
+            r.notSent,
+            ...activeReasons.map(ar => r[ar.key] ?? 0),
+          ]);
+          downloadCSV("report-coverage.csv", headers, csvRows);
+        }} />
+      </div>
+      <div style={{ borderRadius: 10, border: "1px solid #e5e7eb", overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+          <thead>
+            <tr style={{ background: "#f9fafb" }}>
+              <th rowSpan={2} style={{ ...thBase, textAlign: "left" }}>Report Date</th>
+              <th rowSpan={2} style={{ ...thBase, textAlign: "center" }}>Total Rooftops</th>
+              <th rowSpan={2} style={{ ...thBase, textAlign: "center" }}>Sent</th>
+              <th rowSpan={2} style={{ ...thBase, textAlign: "center" }}>Sent %</th>
+              <th rowSpan={2} style={{ ...thBase, textAlign: "center" }}>Not Sent</th>
+              {reasonColSpan > 0 && (
+                <th colSpan={reasonColSpan} style={{ ...thBase, textAlign: "center", background: "#fef2f2", color: "#991b1b", boxShadow: "inset 0 -1px 0 #fca5a5", borderLeft: "2px solid #fca5a5", borderRight: "2px solid #fca5a5" }}>
+                  Not Sent Reasons
+                </th>
+              )}
+            </tr>
+            {reasonColSpan > 0 && (
+              <tr style={{ background: "#fef2f2" }}>
+                {activeReasons.map((r, idx) => (
+                  <th key={r.key} style={{ ...thRed, top: 28, textAlign: "center", ...(idx === 0 ? { borderLeft: "2px solid #fca5a5" } : {}), ...(idx === activeReasons.length - 1 ? { borderRight: "2px solid #fca5a5" } : {}) }}>
+                    {r.label}
+                  </th>
+                ))}
+              </tr>
+            )}
+          </thead>
+          <tbody>
+            {loading ? shimmerRows : rows.map((r, i) => (
+              <tr key={r.reportDay} style={{ background: i % 2 === 0 ? "#fff" : "#fafafa" }}>
+                <td style={{ ...td, fontWeight: 600, color: "#111827" }}>{fmtDay(r.reportDay)}</td>
+                <td style={{ ...td, textAlign: "center", color: "#374151" }}>{r.totalRooftops}</td>
+                <td style={{ ...td, textAlign: "center" }}>
+                  <Badge label={r.sent} color="green" />
+                </td>
+                <td style={{ ...td, textAlign: "center" }}>
+                  {r.sentPct !== null && r.sentPct !== undefined ? (
+                    <span style={{ fontWeight: 700, color: sentPctColor(Number(r.sentPct)), background: sentPctBg(Number(r.sentPct)), borderRadius: 6, padding: "2px 8px", fontSize: 12 }}>
+                      {r.sentPct}%
+                    </span>
+                  ) : "—"}
+                </td>
+                <td style={{ ...td, textAlign: "center" }}>
+                  {r.notSent > 0 ? <Badge label={r.notSent} color="red" /> : <span style={{ color: "#9ca3af" }}>0</span>}
+                </td>
+                {activeReasons.map((ar, idx) => (
+                  <td key={ar.key} style={{ ...td, textAlign: "center", background: i % 2 === 0 ? "#fff8f8" : "#fef2f2", ...(idx === 0 ? { borderLeft: "2px solid #fca5a5" } : {}), ...(idx === activeReasons.length - 1 ? { borderRight: "2px solid #fca5a5" } : {}) }}>
+                    {(r[ar.key] ?? 0) > 0 ? <Badge label={r[ar.key]} color="red" /> : <span style={{ color: "#9ca3af" }}>0</span>}
+                  </td>
+                ))}
+              </tr>
+            ))}
+            {!loading && rows.length === 0 && (
+              <tr>
+                <td colSpan={5 + reasonColSpan} style={{ ...td, textAlign: "center", color: "#9ca3af", padding: "32px 12px" }}>
+                  No report data found.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 export default function Dashboard() {
   const [page, setPage] = useState<"dashboard" | "admin">("dashboard");
   const [tab, setTab] = useState("Overview");
@@ -1938,7 +2062,11 @@ export default function Dashboard() {
   const [enterpriseSortCol, setEnterpriseSortCol] = useState<string | null>("notProcessedAfter24");
   const [enterpriseSortDir, setEnterpriseSortDir] = useState<"asc" | "desc">("desc");
 
-  const tabs = ["Overview", "Enterprise View", "Rooftop View", "VIN Data"];
+  // Report coverage data — sourced from /api/report-coverage
+  const [reportCovData, setReportCovData] = useState<any[]>([]);
+  const [reportCovLoading, setReportCovLoading] = useState(false);
+
+  const tabs = ["Overview", "Enterprise View", "Rooftop View", "VIN Data", "Report Status"];
   // Track whether the initial mount load has completed so the dateFilter
   // effect can safely skip its first run (mount effect handles it).
   const initialLoadDone = useRef(false);
@@ -2051,6 +2179,14 @@ export default function Dashboard() {
       });
   }, []);
 
+  const loadReportCoverage = useCallback(() => {
+    setReportCovLoading(true);
+    fetch(`${API_BASE}/api/report-coverage`)
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+      .then(data => { setReportCovData(data); setReportCovLoading(false); })
+      .catch(err => { setFetchError(err.message); setReportCovLoading(false); });
+  }, []);
+
   // On mount: load DB. If empty, run a full sync (awaited — POST /api/sync blocks
   // until Metabase fetch + DB insert are complete, then we reload summary).
   useEffect(() => {
@@ -2096,6 +2232,11 @@ export default function Dashboard() {
   useEffect(() => {
     if (tab === "VIN Data") loadRawPage(rawPage, rawFilters, rawSortCol, rawSortDir, dateFilter);
   }, [tab, rawPage, rawFilters, rawSortCol, rawSortDir, dateFilter]);
+
+  // Load report coverage when switching to Report Status tab
+  useEffect(() => {
+    if (tab === "Report Status") loadReportCoverage();
+  }, [tab]);
 
   // Tick every 30s so relative "synced X ago" label stays fresh
   useEffect(() => {
@@ -2327,6 +2468,9 @@ export default function Dashboard() {
               sortDir={rawSortDir}
               onSortChange={handleRawSort}
             />
+          )}
+          {tab === "Report Status" && (
+            <ReportCoverageTab rows={reportCovData} loading={reportCovLoading} />
           )}
         </>
       )}
