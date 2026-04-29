@@ -413,9 +413,9 @@ const ROOFTOP_STATUS_CTES = `
   ),
   rooftop_error_latest AS (
     -- Most recent skip/error per rooftop that occurred AFTER the last successful send.
-    -- This prevents historical reasons (from before a fix) from bleeding into current status.
+    -- report_date is included so we can check whether the error is for yesterday's run.
     SELECT DISTINCT ON (rq.rooftop_id)
-      rq.rooftop_id, rq.error_reason
+      rq.rooftop_id, rq.error_reason, rq.report_date
     FROM report_queue rq
     JOIN daily_report_runs dr ON dr.run_id = rq.run_id
     LEFT JOIN rooftop_sent_latest rsl ON rsl.rooftop_id = rq.rooftop_id
@@ -427,9 +427,9 @@ const ROOFTOP_STATUS_CTES = `
   ),
   group_error_latest AS (
     -- Most recent group report error per enterprise AFTER the last successful group send.
-    -- Used to surface the reason for rooftops that have no individual recipients (group-only coverage).
+    -- report_date is included so we can check whether the error is for yesterday's run.
     SELECT DISTINCT ON (rq.enterprise_id)
-      rq.enterprise_id, rq.error_reason
+      rq.enterprise_id, rq.error_reason, rq.report_date
     FROM report_queue rq
     JOIN daily_report_runs dr ON dr.run_id = rq.run_id
     LEFT JOIN group_sent_latest gsl ON gsl.enterprise_id = rq.enterprise_id
@@ -453,15 +453,31 @@ const ROOFTOP_STATUS_CTES = `
       END AS last_report_date,
       COALESCE(ed.timezone, 'America/New_York') AS timezone,
       CASE
-        WHEN GREATEST(gsl.last_sent_at, rsl.last_sent_at) > NOW() - INTERVAL '48 hours' THEN 'healthy'
-        WHEN GREATEST(gsl.last_sent_at, rsl.last_sent_at) IS NOT NULL                   THEN 'stale'
-        ELSE 'never_sent'
+        WHEN gsl.report_date = DATE_TRUNC('day', NOW() AT TIME ZONE COALESCE(ed.timezone, 'America/New_York')) - INTERVAL '1 millisecond'
+          OR rsl.report_date = DATE_TRUNC('day', NOW() AT TIME ZONE COALESCE(ed.timezone, 'America/New_York')) - INTERVAL '1 millisecond'
+        THEN 'sent'
+        ELSE 'not_sent'
       END AS report_status,
       CASE
-        WHEN GREATEST(gsl.last_sent_at, rsl.last_sent_at) > NOW() - INTERVAL '48 hours' THEN NULL
-        WHEN rr.rooftop_id IS NULL AND rg.enterprise_id IS NULL                          THEN 'no_recipient'
-        WHEN rr.rooftop_id IS NULL                                                       THEN gel.error_reason
-        ELSE rel.error_reason
+        WHEN gsl.report_date = DATE_TRUNC('day', NOW() AT TIME ZONE COALESCE(ed.timezone, 'America/New_York')) - INTERVAL '1 millisecond'
+          OR rsl.report_date = DATE_TRUNC('day', NOW() AT TIME ZONE COALESCE(ed.timezone, 'America/New_York')) - INTERVAL '1 millisecond'
+        THEN NULL
+        -- No recipients configured → always surface this regardless of run state
+        WHEN rr.rooftop_id IS NULL AND rg.enterprise_id IS NULL THEN 'no_recipient'
+        -- Group-only coverage: show group error if it's for yesterday, else not_triggered
+        WHEN rr.rooftop_id IS NULL THEN
+          CASE
+            WHEN gel.report_date = DATE_TRUNC('day', NOW() AT TIME ZONE COALESCE(ed.timezone, 'America/New_York')) - INTERVAL '1 millisecond'
+            THEN gel.error_reason
+            ELSE 'not_triggered'
+          END
+        -- Rooftop-level coverage: show rooftop error if it's for yesterday, else not_triggered
+        ELSE
+          CASE
+            WHEN rel.report_date = DATE_TRUNC('day', NOW() AT TIME ZONE COALESCE(ed.timezone, 'America/New_York')) - INTERVAL '1 millisecond'
+            THEN rel.error_reason
+            ELSE 'not_triggered'
+          END
       END AS report_reason
     FROM rooftop_details rd
     LEFT JOIN enterprise_details ed    ON ed.enterprise_id = rd.enterprise_id
@@ -487,9 +503,9 @@ const ENTERPRISE_STATUS_CTES = `
   ),
   group_error_ent AS (
     -- Most recent skip/error per enterprise that occurred AFTER the last successful send.
-    -- Prevents historical reasons from bleeding into current status.
+    -- report_date is included so we can check whether the error is for yesterday's run.
     SELECT DISTINCT ON (rq.enterprise_id)
-      rq.enterprise_id, rq.error_reason
+      rq.enterprise_id, rq.error_reason, rq.report_date
     FROM report_queue rq
     JOIN daily_report_runs dr ON dr.run_id = rq.run_id
     LEFT JOIN group_sent_ent gsl ON gsl.enterprise_id = rq.enterprise_id
@@ -507,14 +523,19 @@ const ENTERPRISE_STATUS_CTES = `
       gsl.report_date AS last_report_date,
       COALESCE(ed.timezone, 'America/New_York') AS timezone,
       CASE
-        WHEN gsl.last_sent_at > NOW() - INTERVAL '48 hours' THEN 'healthy'
-        WHEN gsl.last_sent_at IS NOT NULL                   THEN 'stale'
-        ELSE 'never_sent'
+        WHEN gsl.report_date = DATE_TRUNC('day', NOW() AT TIME ZONE COALESCE(ed.timezone, 'America/New_York')) - INTERVAL '1 millisecond'
+        THEN 'sent'
+        ELSE 'not_sent'
       END AS report_status,
       CASE
-        WHEN gsl.last_sent_at > NOW() - INTERVAL '48 hours' THEN NULL
-        WHEN rg.enterprise_id IS NULL                       THEN 'no_recipient'
-        ELSE gel.error_reason
+        WHEN gsl.report_date = DATE_TRUNC('day', NOW() AT TIME ZONE COALESCE(ed.timezone, 'America/New_York')) - INTERVAL '1 millisecond'
+        THEN NULL
+        -- No recipients configured → always surface this regardless of run state
+        WHEN rg.enterprise_id IS NULL THEN 'no_recipient'
+        -- Show group error only if it's for yesterday's run, else not_triggered
+        WHEN gel.report_date = DATE_TRUNC('day', NOW() AT TIME ZONE COALESCE(ed.timezone, 'America/New_York')) - INTERVAL '1 millisecond'
+        THEN gel.error_reason
+        ELSE 'not_triggered'
       END AS report_reason
     FROM enterprise_details ed
     LEFT JOIN group_sent_ent gsl ON gsl.enterprise_id = ed.enterprise_id
@@ -1235,7 +1256,7 @@ const ROOFTOP_SORT_MAP = {
   bucketSold:              "bucket_sold",
   bucketOthers:            "bucket_others",
   websiteScore:            "website_score",
-  reportStatus:            "CASE report_status WHEN 'healthy' THEN 1 WHEN 'stale' THEN 2 WHEN 'never_sent' THEN 3 ELSE 4 END",
+  reportStatus:            "CASE report_status WHEN 'sent' THEN 1 WHEN 'not_sent' THEN 2 ELSE 3 END",
   reportReason:            "report_reason",
 };
 
@@ -1352,7 +1373,7 @@ const ENTERPRISE_SORT_MAP = {
   bucketSold:              "bucket_sold",
   bucketOthers:            "bucket_others",
   avgWebsiteScore:         "avg_website_score",
-  reportStatus:            "CASE report_status WHEN 'healthy' THEN 1 WHEN 'stale' THEN 2 WHEN 'never_sent' THEN 3 ELSE 4 END",
+  reportStatus:            "CASE report_status WHEN 'sent' THEN 1 WHEN 'not_sent' THEN 2 ELSE 3 END",
   reportReason:            "report_reason",
 };
 

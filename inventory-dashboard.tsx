@@ -102,6 +102,7 @@ function fmtCsm(email: string | null | undefined): string {
 
 const REPORT_REASON_LABEL_MAP: Record<string, string> = {
   no_recipient:       "No Recipient",
+  not_triggered:      "Not Triggered",
   ims_off:            "IMS Disabled",
   pending_vins:       "Pending VINs",
   negative_tat:       "Negative TAT",
@@ -126,11 +127,14 @@ function fmtReportDate(isoTs: string | null | undefined, tz: string | null | und
   return `${date} ${tzAbbr}`;
 }
 
-function ReportStatusCell({ status, lastSentAt, dateLabel: dateLabelProp }: { status: string | null, lastSentAt: string | null, dateLabel?: string | null }) {
-  const sentDate = dateLabelProp ?? fmtSentDate(lastSentAt);
-  if (status === "healthy")    return <span style={{ color: "#166534", fontWeight: 600, fontSize: 12 }}>{sentDate}</span>;
-  if (status === "stale")      return <span style={{ color: "#92400e", fontSize: 12 }}>{sentDate}</span>;
-  if (status === "never_sent") return <span style={{ color: "#991b1b", fontSize: 12 }}>Never Sent</span>;
+function ReportStatusCell({ status, reason, lastSentAt, dateLabel: dateLabelProp }: { status: string | null, reason?: string | null, lastSentAt: string | null, dateLabel?: string | null }) {
+  if (status === "sent") return <span style={{ color: "#166534", fontWeight: 600, fontSize: 12 }}>Sent</span>;
+  const reasonLabel = fmtSkipReason(reason);
+  if (reasonLabel) {
+    const color = reason === "no_recipient" || reason === "not_triggered" ? "#6b7280" : "#92400e";
+    return <span style={{ color, fontSize: 12 }}>{reasonLabel}</span>;
+  }
+  if (status === "not_sent") return <span style={{ color: "#991b1b", fontSize: 12 }}>Not Sent</span>;
   return <span style={{ color: "#9ca3af", fontSize: 12 }}>—</span>;
 }
 
@@ -171,7 +175,7 @@ function RooftopReportHoverCell({ status, reason, lastSentAt, lastReportDate, ti
     <div ref={cellRef} style={{ display: "inline-block", cursor: "default" }}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={() => setHovered(false)}>
-      <ReportStatusCell status={status} lastSentAt={lastSentAt} dateLabel={fmtReportDate(lastReportDate, timezone)} />
+      <ReportStatusCell status={status} reason={reason} lastSentAt={lastSentAt} dateLabel={fmtReportDate(lastReportDate, timezone)} />
       {hovered && pos && ReactDOM.createPortal(
         <div style={{
           position: "fixed",
@@ -728,7 +732,7 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
     .filter(b => bucketFlags[b.key])
     .sort((a, b) => rows.reduce((s, r) => s + (r[b.key] ?? 0), 0) - rows.reduce((s, r) => s + (r[a.key] ?? 0), 0));
   const pendencyColSpan = 1 + activeBuckets.length;
-  const activeCount = [filters.rooftopType, filters.csm, filters.enterprise, filters.websiteScore, filters.imsIntegration, filters.publishingStatus, filters.reportStatus, filters.reportReason].filter(Boolean).length;
+  const activeCount = [filters.rooftopType, filters.csm, filters.enterprise, filters.websiteScore, filters.imsIntegration, filters.publishingStatus, !!(filters.reportStatus || filters.reportReason)].filter(Boolean).length;
   const cols = [
     { key: "enterprise",             label: "Enterprise Name" },
     { key: "name",                   label: "Rooftop Name" },
@@ -765,12 +769,11 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
       const res = await fetch(`${API_BASE}/api/rooftops/export?${params}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const { data } = await res.json();
-      const headers = ["Enterprise ID", "Enterprise Name", "Team ID", "Rooftop Name", "Type", "CSM", "IMS Integration", "Publishing", "Total Inventory", "With Photos", "Delivered", "Pending", "Pending VINs >24h", "Pending VINs >24h %", "Website Score", ...activeBuckets.map(b => b.label), "Report Status", "Last Sent", "Report Reason"];
+      const headers = ["Enterprise ID", "Enterprise Name", "Team ID", "Rooftop Name", "Type", "CSM", "IMS Integration", "Publishing", "Total Inventory", "With Photos", "Delivered", "Pending", "Pending VINs >24h", "Pending VINs >24h %", "Website Score", ...activeBuckets.map(b => b.label), "Report Status"];
       const csvRows = data.map(r => {
         const rate = r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0);
-        const statusLabel = REPORT_STATUS_DISPLAY[r.reportStatus] ?? r.reportStatus ?? "";
-        const reasonLabel = fmtSkipReason(r.reportReason) ?? "";
-        return [r.enterpriseId, r.enterprise, r.rooftopId, r.name, r.type, r.csm, r.imsIntegrationStatus ?? "", r.publishingStatus ?? "", r.total, r.withPhotos ?? 0, r.deliveredWithPhotos ?? 0, r.pendingWithPhotos ?? 0, r.notProcessedAfter24, rate, r.websiteScore !== null && r.websiteScore !== undefined ? Number(r.websiteScore).toFixed(1) : "", ...activeBuckets.map(b => r[b.key] ?? 0), statusLabel, fmtReportDate(r.lastReportDate, r.timezone) ?? "", reasonLabel];
+        const reportStatusLabel = r.reportStatus === "sent" ? "Sent" : (fmtSkipReason(r.reportReason) ?? "Not Sent");
+        return [r.enterpriseId, r.enterprise, r.rooftopId, r.name, r.type, r.csm, r.imsIntegrationStatus ?? "", r.publishingStatus ?? "", r.total, r.withPhotos ?? 0, r.deliveredWithPhotos ?? 0, r.pendingWithPhotos ?? 0, r.notProcessedAfter24, rate, r.websiteScore !== null && r.websiteScore !== undefined ? Number(r.websiteScore).toFixed(1) : "", ...activeBuckets.map(b => r[b.key] ?? 0), reportStatusLabel];
       });
       downloadCSV("rooftop-view.csv", headers, csvRows);
     } catch (err) {
@@ -831,16 +834,14 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
             placeholder="Publishing"
           />
           <SearchableSelect
-            value={filters.reportStatus ? REPORT_STATUS_DISPLAY[filters.reportStatus] : null}
-            onChange={v => setFilters(f => ({ ...f, reportStatus: v ? REPORT_STATUS_API[v] : null }))}
-            options={REPORT_STATUS_OPTIONS}
+            value={filters.reportStatus ? REPORT_FILTER_DISPLAY[filters.reportStatus] : filters.reportReason ? REPORT_FILTER_DISPLAY[filters.reportReason] : null}
+            onChange={v => {
+              if (!v) { setFilters(f => ({ ...f, reportStatus: null, reportReason: null })); return; }
+              const m = REPORT_FILTER_API[v];
+              setFilters(f => ({ ...f, reportStatus: m.type === "status" ? m.value : null, reportReason: m.type === "reason" ? m.value : null }));
+            }}
+            options={REPORT_FILTER_OPTIONS}
             placeholder="Report Status"
-          />
-          <SearchableSelect
-            value={filters.reportReason ? REPORT_REASON_DISPLAY[filters.reportReason] : null}
-            onChange={v => setFilters(f => ({ ...f, reportReason: v ? REPORT_REASON_API[v] : null }))}
-            options={REPORT_REASON_OPTIONS}
-            placeholder="Report Reason"
           />
           {activeCount > 0 && (
             <button onClick={() => setFilters(DEFAULT_ROOFTOP_FILTERS)}
@@ -884,6 +885,9 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
                   {c.label}
                 </th>
               ))}
+              <th rowSpan={2} onClick={() => handleSort("reportStatus")} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "nowrap", cursor: "pointer", userSelect: "none", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
+                Report Status {sortCol === "reportStatus" ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
+              </th>
               {[
                 { key: "total", label: "Total Inventory" },
                 { key: "withPhotos", label: "With Photos" },
@@ -900,12 +904,6 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
               </th>
               <th rowSpan={2} onClick={() => handleSort("websiteScore")} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "pointer", userSelect: "none", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
                 Website Score {sortCol === "websiteScore" ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
-              </th>
-              <th rowSpan={2} onClick={() => handleSort("reportStatus")} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "nowrap", cursor: "pointer", userSelect: "none", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
-                Report Status {sortCol === "reportStatus" ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
-              </th>
-              <th rowSpan={2} onClick={() => handleSort("reportReason")} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "nowrap", cursor: "pointer", userSelect: "none", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
-                Reason {sortCol === "reportReason" ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
               </th>
               <th rowSpan={2} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "default", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
                 Links
@@ -939,6 +937,9 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
                   <td style={tdStyle}><Truncated value={fmtCsm(r.csm)} maxWidth={130} /></td>
                   <td style={{ ...tdStyle, textAlign: "center" }}><StatusBadge value={r.imsIntegrationStatus} /></td>
                   <td style={{ ...tdStyle, textAlign: "center" }}><StatusBadge value={r.publishingStatus} /></td>
+                  <td style={{ ...tdStyle, textAlign: "center" }}>
+                    <RooftopReportHoverCell status={r.reportStatus} reason={r.reportReason} lastSentAt={r.lastSentAt} lastReportDate={r.lastReportDate} timezone={r.timezone} rooftopId={r.rooftopId} enterpriseId={r.enterpriseId} />
+                  </td>
                   <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.total} color="#4f46e5" onClick={() => onDrillDown({ rooftopId: r.rooftopId })} /></td>
                   <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.withPhotos ?? 0} color="#0ea5e9" onClick={() => onDrillDown({ rooftopId: r.rooftopId, hasPhotos: true })} /></td>
                   <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.deliveredWithPhotos ?? 0} color="#166534" onClick={() => onDrillDown({ rooftopId: r.rooftopId, status: "Delivered", hasPhotos: true })} /></td>
@@ -964,12 +965,6 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
                           {Number(r.websiteScore).toFixed(1)}
                         </span>
                       : <span style={{ color: "#9ca3af" }}>—</span>}
-                  </td>
-                  <td style={{ ...tdStyle, textAlign: "center" }}>
-                    <RooftopReportHoverCell status={r.reportStatus} reason={r.reportReason} lastSentAt={r.lastSentAt} lastReportDate={r.lastReportDate} timezone={r.timezone} rooftopId={r.rooftopId} enterpriseId={r.enterpriseId} />
-                  </td>
-                  <td style={{ ...tdStyle, textAlign: "center" }}>
-                    <ReportReasonCell reason={r.reportReason} />
                   </td>
                   <td style={{ ...tdStyle, textAlign: "center" }}>
                     <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
@@ -1056,7 +1051,7 @@ function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = f
     else { onSortChange(null, "asc"); }
   };
 
-  const activeCount = [filters.csm, filters.accountType, filters.websiteScore, filters.reportStatus, filters.reportReason].filter(Boolean).length;
+  const activeCount = [filters.csm, filters.accountType, filters.websiteScore, !!(filters.reportStatus || filters.reportReason)].filter(Boolean).length;
 
   const handleDownload = async () => {
     setDownloading(true);
@@ -1072,11 +1067,10 @@ function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = f
       const res = await fetch(`${API_BASE}/api/enterprises/export?${params}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const { data } = await res.json();
-      const headers = ["Enterprise ID", "Enterprise Name", "Account Type", "CSM", "Rooftops", ...(showNotIntegrated ? ["Not Integrated"] : []), ...(showPublishingDisabled ? ["Publishing Disabled"] : []), "Total Inventory", "With Photos", "Delivered", "Pending", "Pending VINs >24h", "Pending VINs >24h %", "Avg Website Score", ...activeBuckets.map(b => b.label), "Report Status", "Last Sent", "Report Reason"];
+      const headers = ["Enterprise ID", "Enterprise Name", "Account Type", "CSM", "Rooftops", ...(showNotIntegrated ? ["Not Integrated"] : []), ...(showPublishingDisabled ? ["Publishing Disabled"] : []), "Total Inventory", "With Photos", "Delivered", "Pending", "Pending VINs >24h", "Pending VINs >24h %", "Avg Website Score", ...activeBuckets.map(b => b.label), "Report Status"];
       const csvRows = data.map((r: any) => {
-        const statusLabel = REPORT_STATUS_DISPLAY[r.reportStatus] ?? r.reportStatus ?? "";
-        const reasonLabel = fmtSkipReason(r.reportReason) ?? "";
-        return [r.id, r.name, r.accountType ?? "", r.csm ?? "", r.rooftopCount ?? 0, ...(showNotIntegrated ? [r.notIntegratedCount ?? 0] : []), ...(showPublishingDisabled ? [r.publishingDisabledCount ?? 0] : []), r.total, r.withPhotos ?? 0, r.deliveredWithPhotos ?? 0, r.pendingWithPhotos ?? 0, r.notProcessedAfter24, r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0), r.avgWebsiteScore !== null && r.avgWebsiteScore !== undefined ? Number(r.avgWebsiteScore).toFixed(1) : "", ...activeBuckets.map(b => r[b.key] ?? 0), statusLabel, fmtReportDate(r.lastReportDate, r.timezone) ?? "", reasonLabel];
+        const reportStatusLabel = r.reportStatus === "sent" ? "Sent" : (fmtSkipReason(r.reportReason) ?? "Not Sent");
+        return [r.id, r.name, r.accountType ?? "", r.csm ?? "", r.rooftopCount ?? 0, ...(showNotIntegrated ? [r.notIntegratedCount ?? 0] : []), ...(showPublishingDisabled ? [r.publishingDisabledCount ?? 0] : []), r.total, r.withPhotos ?? 0, r.deliveredWithPhotos ?? 0, r.pendingWithPhotos ?? 0, r.notProcessedAfter24, r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0), r.avgWebsiteScore !== null && r.avgWebsiteScore !== undefined ? Number(r.avgWebsiteScore).toFixed(1) : "", ...activeBuckets.map(b => r[b.key] ?? 0), reportStatusLabel];
       });
       downloadCSV("enterprise-view.csv", headers, csvRows);
     } catch (err) {
@@ -1115,16 +1109,14 @@ function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = f
             placeholder="All Scores"
           />
           <SearchableSelect
-            value={filters.reportStatus ? REPORT_STATUS_DISPLAY[filters.reportStatus] : null}
-            onChange={v => setFilters(f => ({ ...f, reportStatus: v ? REPORT_STATUS_API[v] : null }))}
-            options={REPORT_STATUS_OPTIONS}
+            value={filters.reportStatus ? REPORT_FILTER_DISPLAY[filters.reportStatus] : filters.reportReason ? REPORT_FILTER_DISPLAY[filters.reportReason] : null}
+            onChange={v => {
+              if (!v) { setFilters(f => ({ ...f, reportStatus: null, reportReason: null })); return; }
+              const m = REPORT_FILTER_API[v];
+              setFilters(f => ({ ...f, reportStatus: m.type === "status" ? m.value : null, reportReason: m.type === "reason" ? m.value : null }));
+            }}
+            options={REPORT_FILTER_OPTIONS}
             placeholder="Report Status"
-          />
-          <SearchableSelect
-            value={filters.reportReason ? REPORT_REASON_DISPLAY[filters.reportReason] : null}
-            onChange={v => setFilters(f => ({ ...f, reportReason: v ? REPORT_REASON_API[v] : null }))}
-            options={REPORT_REASON_OPTIONS}
-            placeholder="Report Reason"
           />
           {(filters.search || activeCount > 0) && (
             <button onClick={() => setFilters(DEFAULT_ENTERPRISE_FILTERS)}
@@ -1167,6 +1159,15 @@ function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = f
                 { key: "rooftopCount", label: "Rooftops" },
                 ...(showNotIntegrated      ? [{ key: "notIntegratedCount",      label: "Not Integrated" }]      : []),
                 ...(showPublishingDisabled ? [{ key: "publishingDisabledCount", label: "Publishing Disabled" }] : []),
+              ].map(c => (
+                <th key={c.key} rowSpan={2} onClick={() => handleSort(c.key)} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "pointer", userSelect: "none", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
+                  {c.label} {sortCol === c.key ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
+                </th>
+              ))}
+              <th rowSpan={2} onClick={() => handleSort("reportStatus")} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "nowrap", cursor: "pointer", userSelect: "none", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
+                Report Status {sortCol === "reportStatus" ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
+              </th>
+              {[
                 { key: "total",               label: "Total Inventory" },
                 { key: "withPhotos",          label: "With Photos" },
                 { key: "deliveredWithPhotos", label: "Delivered" },
@@ -1182,12 +1183,6 @@ function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = f
               </th>
               <th rowSpan={2} onClick={() => handleSort("avgWebsiteScore")} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "pointer", userSelect: "none", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
                 Avg Website Score {sortCol === "avgWebsiteScore" ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
-              </th>
-              <th rowSpan={2} onClick={() => handleSort("reportStatus")} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "nowrap", cursor: "pointer", userSelect: "none", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
-                Report Status {sortCol === "reportStatus" ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
-              </th>
-              <th rowSpan={2} onClick={() => handleSort("reportReason")} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "nowrap", cursor: "pointer", userSelect: "none", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
-                Reason {sortCol === "reportReason" ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
               </th>
               <th rowSpan={2} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "default", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
                 Links
@@ -1234,6 +1229,9 @@ function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = f
                         : <span style={{ color: "#9ca3af" }}>0</span>}
                     </td>
                   )}
+                  <td style={{ ...tdStyle, textAlign: "center" }}>
+                    <ReportStatusCell status={r.reportStatus} reason={r.reportReason} lastSentAt={r.lastSentAt} dateLabel={fmtReportDate(r.lastReportDate, r.timezone)} />
+                  </td>
                   <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.total} color="#4f46e5" onClick={() => onDrillDown({ enterpriseId: r.id })} /></td>
                   <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.withPhotos ?? 0} color="#0ea5e9" onClick={() => onDrillDown({ enterpriseId: r.id, hasPhotos: true })} /></td>
                   <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.deliveredWithPhotos ?? 0} color="#166534" onClick={() => onDrillDown({ enterpriseId: r.id, status: "Delivered", hasPhotos: true })} /></td>
@@ -1259,12 +1257,6 @@ function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = f
                           {Number(r.avgWebsiteScore).toFixed(1)}
                         </span>
                       : <span style={{ color: "#9ca3af" }}>—</span>}
-                  </td>
-                  <td style={{ ...tdStyle, textAlign: "center" }}>
-                    <ReportStatusCell status={r.reportStatus} lastSentAt={r.lastSentAt} dateLabel={fmtReportDate(r.lastReportDate, r.timezone)} />
-                  </td>
-                  <td style={{ ...tdStyle, textAlign: "center" }}>
-                    <ReportReasonCell reason={r.reportReason} />
                   </td>
                   <td style={{ ...tdStyle, textAlign: "center" }}>
                     <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
@@ -1699,22 +1691,25 @@ function timeAgo(isoString: string): string {
 }
 
 const DEFAULT_FILTERS = { search: "", enterpriseId: null, rooftopId: null, rooftopType: null, csm: null, status: null, after24h: null, hasPhotos: null, hasVin: null, reasonBucket: null };
-const DEFAULT_ROOFTOP_FILTERS = { search: "", rooftopType: null, csm: null, enterprise: null, websiteScore: null, imsIntegration: null, publishingStatus: null, reportStatus: null, reportReason: null };
-const DEFAULT_ENTERPRISE_FILTERS = { search: "", csm: null, accountType: null, websiteScore: null, reportStatus: null, reportReason: null };
+const DEFAULT_ROOFTOP_FILTERS = { search: "", rooftopType: null, csm: null, enterprise: null, websiteScore: null, imsIntegration: null, publishingStatus: null, reportStatus: null, reportReason: null as string | null };
+const DEFAULT_ENTERPRISE_FILTERS = { search: "", csm: null, accountType: null, websiteScore: null, reportStatus: null, reportReason: null as string | null };
 
-// Report Status filter — 3 pipeline-health states
-const REPORT_STATUS_OPTIONS = ["Healthy", "Stale", "Never Sent"];
-const REPORT_STATUS_API: Record<string, string> = { Healthy: "healthy", Stale: "stale", "Never Sent": "never_sent" };
-const REPORT_STATUS_DISPLAY: Record<string, string> = Object.fromEntries(Object.entries(REPORT_STATUS_API).map(([k, v]) => [v, k]));
-
-// Report Reason filter — why a report wasn't sent / is stale
-const REPORT_REASON_OPTIONS = ["No Recipient", "IMS Disabled", "Pending VINs", "Negative TAT", "Low Photo Coverage", "Already Sent", "Timed Out"];
-const REPORT_REASON_API: Record<string, string> = {
-  "No Recipient": "no_recipient", "IMS Disabled": "ims_off", "Pending VINs": "pending_vins",
-  "Negative TAT": "negative_tat", "Low Photo Coverage": "low_photo_coverage",
-  "Already Sent": "already_sent", "Timed Out": "timed_out",
+// Merged Report Status filter — "Sent" or any not-sent reason
+const REPORT_FILTER_OPTIONS = ["Sent", "No Recipient", "Not Triggered", "IMS Disabled", "Pending VINs", "Negative TAT", "Low Photo Coverage", "Already Sent", "Timed Out"];
+const REPORT_FILTER_API: Record<string, { type: "status" | "reason"; value: string }> = {
+  "Sent":               { type: "status", value: "sent" },
+  "No Recipient":       { type: "reason", value: "no_recipient" },
+  "Not Triggered":      { type: "reason", value: "not_triggered" },
+  "IMS Disabled":       { type: "reason", value: "ims_off" },
+  "Pending VINs":       { type: "reason", value: "pending_vins" },
+  "Negative TAT":       { type: "reason", value: "negative_tat" },
+  "Low Photo Coverage": { type: "reason", value: "low_photo_coverage" },
+  "Already Sent":       { type: "reason", value: "already_sent" },
+  "Timed Out":          { type: "reason", value: "timed_out" },
 };
-const REPORT_REASON_DISPLAY: Record<string, string> = Object.fromEntries(Object.entries(REPORT_REASON_API).map(([k, v]) => [v, k]));
+const REPORT_FILTER_DISPLAY: Record<string, string> = Object.fromEntries(
+  Object.entries(REPORT_FILTER_API).map(([k, v]) => [v.value, k])
+);
 
 const EMPTY_SUMMARY = {
   totals:   { total: 0, enterpriseCount: 0, withPhotos: 0, deliveredWithPhotos: 0, pendingWithPhotos: 0, processed: 0, notProcessed: 0, processedAfter24: 0, notProcessedAfter24: 0, bucketProcessingPending: 0, bucketPublishingPending: 0, bucketQcPending: 0, bucketSold: 0, bucketOthers: 0 },
