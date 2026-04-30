@@ -2939,36 +2939,35 @@ app.get("/api/send-daily-report/status", async (req, res) => {
 app.get("/api/report-coverage", async (_req, res) => {
   try {
     const { rows } = await query(`
-      WITH total_rt AS (
-        SELECT COUNT(*)::int AS total FROM v_by_rooftop
-      ),
-      dates AS (
+      WITH dates AS (
         SELECT DISTINCT report_day
         FROM rooftop_report_status_daily
         ORDER BY report_day DESC
         LIMIT 7
       )
       SELECT
-        TO_CHAR(d.report_day, 'YYYY-MM-DD')                                             AS "reportDay",
-        t.total                                                                          AS "totalRooftops",
-        COUNT(*) FILTER (WHERE s.status = 'sent')::int                                  AS sent,
-        t.total - COUNT(*) FILTER (WHERE s.status = 'sent')::int                        AS "notSent",
+        TO_CHAR(d.report_day, 'YYYY-MM-DD')                                                            AS "reportDay",
+        COUNT(DISTINCT s.rooftop_id)::int                                                              AS "attemptedRooftops",
+        COUNT(*) FILTER (WHERE s.status = 'sent')::int                                                 AS sent,
+        COUNT(DISTINCT s.rooftop_id)::int - COUNT(*) FILTER (WHERE s.status = 'sent')::int            AS "notSent",
         ROUND(
-          COUNT(*) FILTER (WHERE s.status = 'sent')::numeric / NULLIF(t.total, 0) * 100,
+          COUNT(*) FILTER (WHERE s.status = 'sent')::numeric / NULLIF(COUNT(DISTINCT s.rooftop_id), 0) * 100,
           1
-        )                                                                                AS "sentPct",
-        t.total - COUNT(DISTINCT s.rooftop_id)::int                                     AS "reasonNotTriggered",
-        COUNT(*) FILTER (WHERE s.error_reason = 'no_recipient')::int                    AS "reasonNoRecipient",
-        COUNT(*) FILTER (WHERE s.error_reason = 'ims_off')::int                         AS "reasonImsOff",
-        COUNT(*) FILTER (WHERE s.error_reason = 'pending_vins')::int                    AS "reasonPendingVins",
-        COUNT(*) FILTER (WHERE s.error_reason = 'negative_tat')::int                    AS "reasonNegativeTat",
-        COUNT(*) FILTER (WHERE s.error_reason = 'low_photo_coverage')::int              AS "reasonLowPhotoCoverage",
-        COUNT(*) FILTER (WHERE s.error_reason = 'already_sent')::int                    AS "reasonAlreadySent",
-        COUNT(*) FILTER (WHERE s.error_reason = 'timed_out')::int                       AS "reasonTimedOut"
+        )                                                                                               AS "sentPct",
+        COUNT(*) FILTER (WHERE s.error_reason = 'no_recipient')::int                                   AS "reasonNoRecipient",
+        COUNT(*) FILTER (WHERE s.error_reason = 'ims_off')::int                                        AS "reasonImsOff",
+        COUNT(*) FILTER (WHERE s.error_reason = 'no_active_inventory')::int                            AS "reasonNoActiveInventory",
+        COUNT(*) FILTER (WHERE s.error_reason = 'no_vehicles_90_days')::int                            AS "reasonNoVehicles90Days",
+        COUNT(*) FILTER (WHERE s.error_reason = 'pending_vins')::int                                   AS "reasonPendingVins",
+        COUNT(*) FILTER (WHERE s.error_reason = 'negative_tat')::int                                   AS "reasonNegativeTat",
+        COUNT(*) FILTER (WHERE s.error_reason = 'low_photo_coverage')::int                             AS "reasonLowPhotoCoverage",
+        COUNT(*) FILTER (WHERE s.error_reason = 'already_sent')::int                                   AS "reasonAlreadySent",
+        COUNT(*) FILTER (WHERE s.error_reason = 'timed_out')::int                                      AS "reasonTimedOut"
       FROM dates d
-      CROSS JOIN total_rt t
-      LEFT JOIN rooftop_report_status_daily s ON s.report_day = d.report_day
-      GROUP BY d.report_day, t.total
+      LEFT JOIN rooftop_report_status_daily s
+        ON  s.report_day  = d.report_day
+        AND s.rooftop_id IN (SELECT rooftop_id FROM v_by_rooftop)
+      GROUP BY d.report_day
       ORDER BY d.report_day DESC
     `);
     return res.json(rows);

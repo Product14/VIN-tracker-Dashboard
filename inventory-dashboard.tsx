@@ -101,14 +101,15 @@ function fmtCsm(email: string | null | undefined): string {
 }
 
 const REPORT_REASON_LABEL_MAP: Record<string, string> = {
-  no_recipient:       "No Recipient",
-  not_triggered:      "Not Triggered",
-  ims_off:            "IMS Disabled",
-  pending_vins:       "Pending VINs",
-  negative_tat:       "Negative TAT",
-  low_photo_coverage: "Low Photo Coverage",
-  already_sent:       "Already Sent",
-  timed_out:          "Timed Out",
+  no_recipient:        "No Recipient",
+  ims_off:             "IMS Disabled",
+  no_active_inventory: "No Inventory",
+  no_vehicles_90_days: "Zero VINs (90d)",
+  pending_vins:        "Pending VINs",
+  negative_tat:        "Negative TAT",
+  low_photo_coverage:  "Low Photo Coverage",
+  already_sent:        "Already Sent",
+  timed_out:           "Timed Out",
 };
 function fmtSkipReason(r: string | null | undefined): string | null {
   if (!r) return null;
@@ -294,14 +295,15 @@ const BUCKETS = [
 ];
 
 const REPORT_REASONS = [
-  { key: "reasonNotTriggered",     label: "Not Triggered",      reasonCode: "not_triggered" },
-  { key: "reasonNoRecipient",      label: "No Recipient",       reasonCode: "no_recipient" },
-  { key: "reasonImsOff",           label: "IMS Disabled",       reasonCode: "ims_off" },
-  { key: "reasonPendingVins",      label: "Pending VINs",       reasonCode: "pending_vins" },
-  { key: "reasonNegativeTat",      label: "Negative TAT",       reasonCode: "negative_tat" },
-  { key: "reasonLowPhotoCoverage", label: "Low Photo Coverage", reasonCode: "low_photo_coverage" },
-  { key: "reasonAlreadySent",      label: "Already Sent",       reasonCode: "already_sent" },
-  { key: "reasonTimedOut",         label: "Timed Out",          reasonCode: "timed_out" },
+  { key: "reasonNoRecipient",        label: "No Recipient",       reasonCode: "no_recipient" },
+  { key: "reasonImsOff",             label: "IMS Disabled",       reasonCode: "ims_off" },
+  { key: "reasonNoActiveInventory",  label: "No Inventory",       reasonCode: "no_active_inventory" },
+  { key: "reasonNoVehicles90Days",   label: "Zero VINs (90d)",    reasonCode: "no_vehicles_90_days" },
+  { key: "reasonPendingVins",        label: "Pending VINs",       reasonCode: "pending_vins" },
+  { key: "reasonNegativeTat",        label: "Negative TAT",       reasonCode: "negative_tat" },
+  { key: "reasonLowPhotoCoverage",   label: "Low Photo Coverage", reasonCode: "low_photo_coverage" },
+  { key: "reasonAlreadySent",        label: "Already Sent",       reasonCode: "already_sent" },
+  { key: "reasonTimedOut",           label: "Timed Out",          reasonCode: "timed_out" },
 ];
 
 function DownloadButton({ onClick }) {
@@ -1972,9 +1974,9 @@ function ReportCoverageTab({ rows, loading, onRooftopDrillDown }: { rows: any[];
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
         <h2 style={{ fontSize: 18, fontWeight: 700, color: "#1f2937", margin: 0 }}>Report Status — Last 7 Days</h2>
         <DownloadButton onClick={() => {
-          const headers = ["Report Date", "Total Rooftops", "Sent", "Sent %", "Not Sent", ...activeReasons.map(r => r.label)];
+          const headers = ["Report Date", "Attempted", "Sent", "Sent %", "Not Sent", ...activeReasons.map(r => r.label)];
           const csvRows = rows.map(r => [
-            fmtDay(r.reportDay), r.totalRooftops, r.sent,
+            fmtDay(r.reportDay), r.attemptedRooftops, r.sent,
             r.sentPct !== null && r.sentPct !== undefined ? r.sentPct : "",
             r.notSent,
             ...activeReasons.map(ar => r[ar.key] ?? 0),
@@ -1987,7 +1989,7 @@ function ReportCoverageTab({ rows, loading, onRooftopDrillDown }: { rows: any[];
           <thead>
             <tr style={{ background: "#f9fafb" }}>
               <th rowSpan={2} style={{ ...thBase, textAlign: "left" }}>Report Date</th>
-              <th rowSpan={2} style={{ ...thBase, textAlign: "center" }}>Total Rooftops</th>
+              <th rowSpan={2} style={{ ...thBase, textAlign: "center" }}>Attempted</th>
               <th rowSpan={2} style={{ ...thBase, textAlign: "center" }}>Sent</th>
               <th rowSpan={2} style={{ ...thBase, textAlign: "center" }}>Sent %</th>
               <th rowSpan={2} style={{ ...thBase, textAlign: "center" }}>Not Sent</th>
@@ -2012,7 +2014,7 @@ function ReportCoverageTab({ rows, loading, onRooftopDrillDown }: { rows: any[];
               return (
               <tr key={r.reportDay} style={{ background: i % 2 === 0 ? "#fff" : "#fafafa" }}>
                 <td style={{ ...td, fontWeight: 600, color: "#111827" }}>{fmtDay(r.reportDay)}</td>
-                <td style={{ ...td, textAlign: "center", color: "#374151" }}>{r.totalRooftops}</td>
+                <td style={{ ...td, textAlign: "center", color: "#374151" }}>{r.attemptedRooftops}</td>
                 <td style={{ ...td, textAlign: "center" }}>
                   {onRooftopDrillDown
                     ? <span style={{ cursor: "pointer", textDecoration: "underline", textUnderlineOffset: 2 }} onClick={() => onRooftopDrillDown({ reportStatus: "sent", reportReason: null, reportDay: r.reportDay })}><Badge label={r.sent} color="green" /></span>
