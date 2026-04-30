@@ -114,6 +114,10 @@ function fmtSkipReason(r: string | null | undefined): string | null {
   if (!r) return null;
   return REPORT_REASON_LABEL_MAP[r] ?? r;
 }
+function fmtReportDayLabel(iso: string): string {
+  const d = new Date(iso + "T00:00:00Z");
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+}
 function fmtSentDate(isoTs: string | null | undefined): string | null {
   if (!isoTs) return null;
   return new Date(isoTs).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
@@ -290,14 +294,14 @@ const BUCKETS = [
 ];
 
 const REPORT_REASONS = [
-  { key: "reasonNotTriggered",     label: "Not Triggered" },
-  { key: "reasonNoRecipient",      label: "No Recipient" },
-  { key: "reasonImsOff",           label: "IMS Disabled" },
-  { key: "reasonPendingVins",      label: "Pending VINs" },
-  { key: "reasonNegativeTat",      label: "Negative TAT" },
-  { key: "reasonLowPhotoCoverage", label: "Low Photo Coverage" },
-  { key: "reasonAlreadySent",      label: "Already Sent" },
-  { key: "reasonTimedOut",         label: "Timed Out" },
+  { key: "reasonNotTriggered",     label: "Not Triggered",      reasonCode: "not_triggered" },
+  { key: "reasonNoRecipient",      label: "No Recipient",       reasonCode: "no_recipient" },
+  { key: "reasonImsOff",           label: "IMS Disabled",       reasonCode: "ims_off" },
+  { key: "reasonPendingVins",      label: "Pending VINs",       reasonCode: "pending_vins" },
+  { key: "reasonNegativeTat",      label: "Negative TAT",       reasonCode: "negative_tat" },
+  { key: "reasonLowPhotoCoverage", label: "Low Photo Coverage", reasonCode: "low_photo_coverage" },
+  { key: "reasonAlreadySent",      label: "Already Sent",       reasonCode: "already_sent" },
+  { key: "reasonTimedOut",         label: "Timed Out",          reasonCode: "timed_out" },
 ];
 
 function DownloadButton({ onClick }) {
@@ -725,8 +729,9 @@ function RawTab({ data, loading, filters, setFilters, total, page, pageCount, on
   );
 }
 
-function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterpriseOptions = [], bucketFlags = {}, rows, total, page, pageCount, loading, onPageChange, onDrillDown, filters, setFilters, sortCol, sortDir, onSortChange }) {
+function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterpriseOptions = [], bucketFlags = {}, rows, total, page, pageCount, loading, onPageChange, onDrillDown, filters, setFilters, sortCol, sortDir, onSortChange, reportDates = [] }: any) {
   const [downloading, setDownloading] = useState(false);
+  const [reportDatesExpanded, setReportDatesExpanded] = useState(false);
   const row1Ref = useRef<HTMLTableRowElement>(null);
   const [row1H, setRow1H] = useState(0);
   useEffect(() => { if (row1Ref.current) setRow1H(row1Ref.current.getBoundingClientRect().height); });
@@ -743,6 +748,8 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
     .filter(b => bucketFlags[b.key])
     .sort((a, b) => rows.reduce((s, r) => s + (r[b.key] ?? 0), 0) - rows.reduce((s, r) => s + (r[a.key] ?? 0), 0));
   const pendencyColSpan = 1 + activeBuckets.length;
+  const visibleDates: string[] = reportDatesExpanded ? reportDates : reportDates.slice(0, 1);
+  const showDateToggle = reportDates.length > 1;
   const activeCount = [filters.rooftopType, filters.csm, filters.enterprise, filters.websiteScore, filters.imsIntegration, filters.publishingStatus, !!(filters.reportStatus || filters.reportReason)].filter(Boolean).length;
   const cols = [
     { key: "enterprise",             label: "Enterprise Name" },
@@ -775,16 +782,22 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
     if (filters.websiteScore)     params.set("websiteScore",    filters.websiteScore);
     if (filters.reportStatus)     params.set("reportStatus",    filters.reportStatus);
     if (filters.reportReason)     params.set("reportReason",    filters.reportReason);
+    if (filters.reportDay)        params.set("reportDay",       filters.reportDay);
     if (sortCol) { params.set("sortBy", sortCol); params.set("sortDir", sortDir); }
     try {
       const res = await fetch(`${API_BASE}/api/rooftops/export?${params}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const { data } = await res.json();
-      const headers = ["Enterprise ID", "Enterprise Name", "Team ID", "Rooftop Name", "Type", "CSM", "IMS Integration", "Publishing", "Total Inventory", "With Photos", "Delivered", "Pending", "Pending VINs >24h", "Pending VINs >24h %", "Website Score", ...activeBuckets.map(b => b.label), "Report Status"];
+      const headers = ["Enterprise ID", "Enterprise Name", "Team ID", "Rooftop Name", "Type", "CSM", "IMS Integration", "Publishing", "Total Inventory", "With Photos", "Delivered", "Pending", "Pending VINs >24h", "Pending VINs >24h %", "Website Score", ...activeBuckets.map(b => b.label), ...reportDates.map((d: string) => fmtReportDayLabel(d))];
       const csvRows = data.map(r => {
         const rate = r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0);
-        const reportStatusLabel = r.reportStatus === "sent" ? "Sent" : (fmtSkipReason(r.reportReason) ?? "Not Sent");
-        return [r.enterpriseId, r.enterprise, r.rooftopId, r.name, r.type, r.csm, r.imsIntegrationStatus ?? "", r.publishingStatus ?? "", r.total, r.withPhotos ?? 0, r.deliveredWithPhotos ?? 0, r.pendingWithPhotos ?? 0, r.notProcessedAfter24, rate, r.websiteScore !== null && r.websiteScore !== undefined ? Number(r.websiteScore).toFixed(1) : "", ...activeBuckets.map(b => r[b.key] ?? 0), reportStatusLabel];
+        const reportCols = reportDates.map((d: string) => {
+          const entry = (r.reportHistory ?? []).find((h: any) => h.date === d);
+          if (!entry) return "—";
+          if (entry.status === "sent") return "Sent";
+          return fmtSkipReason(entry.reason) ?? entry.reason ?? "Not Sent";
+        });
+        return [r.enterpriseId, r.enterprise, r.rooftopId, r.name, r.type, r.csm, r.imsIntegrationStatus ?? "", r.publishingStatus ?? "", r.total, r.withPhotos ?? 0, r.deliveredWithPhotos ?? 0, r.pendingWithPhotos ?? 0, r.notProcessedAfter24, rate, r.websiteScore !== null && r.websiteScore !== undefined ? Number(r.websiteScore).toFixed(1) : "", ...activeBuckets.map(b => r[b.key] ?? 0), ...reportCols];
       });
       downloadCSV("rooftop-view.csv", headers, csvRows);
     } catch (err) {
@@ -896,9 +909,18 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
                   {c.label}
                 </th>
               ))}
-              <th rowSpan={2} onClick={() => handleSort("reportStatus")} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "nowrap", cursor: "pointer", userSelect: "none", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
-                Report Status {sortCol === "reportStatus" ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
-              </th>
+              {visibleDates.map((d: string) => (
+                <th key={d} rowSpan={2} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "nowrap", cursor: "default", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2, minWidth: 80 }}>
+                  {fmtReportDayLabel(d)}
+                </th>
+              ))}
+              {showDateToggle && (
+                <th rowSpan={2} onClick={() => setReportDatesExpanded(v => !v)}
+                  title={reportDatesExpanded ? "Collapse report history" : "Expand report history"}
+                  style={{ padding: "4px 8px", textAlign: "center", fontWeight: 700, color: "#6b7280", borderBottom: "2px solid #e5e7eb", whiteSpace: "nowrap", cursor: "pointer", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2, fontSize: 16, userSelect: "none" }}>
+                  {reportDatesExpanded ? "−" : "+"}
+                </th>
+              )}
               {[
                 { key: "total", label: "Total Inventory" },
                 { key: "withPhotos", label: "With Photos" },
@@ -933,9 +955,9 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
             </tr>
           </thead>
           <tbody className={loading && rows.length > 0 ? "tbody-loading" : ""}>
-            {loading && rows.length === 0 && <TableShimmer cols={cols.length + 1} />}
+            {loading && rows.length === 0 && <TableShimmer cols={cols.length + 1 + visibleDates.length + (showDateToggle ? 1 : 0)} />}
             {!loading && rows.length === 0 && (
-              <tr><td colSpan={cols.length + 1} style={{ padding: 40, textAlign: "center", color: "#9ca3af", fontSize: 14 }}>No records match the current filters.</td></tr>
+              <tr><td colSpan={cols.length + 1 + visibleDates.length + (showDateToggle ? 1 : 0)} style={{ padding: 40, textAlign: "center", color: "#9ca3af", fontSize: 14 }}>No records match the current filters.</td></tr>
             )}
             {rows.map((r, i) => {
               const rate = r.total === 0 ? 0 : (r.notProcessedAfter24 / r.total) * 100;
@@ -948,9 +970,23 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
                   <td style={tdStyle}><Truncated value={fmtCsm(r.csm)} maxWidth={130} /></td>
                   <td style={{ ...tdStyle, textAlign: "center" }}><StatusBadge value={r.imsIntegrationStatus} /></td>
                   <td style={{ ...tdStyle, textAlign: "center" }}><StatusBadge value={r.publishingStatus} /></td>
-                  <td style={{ ...tdStyle, textAlign: "center" }}>
-                    <RooftopReportHoverCell status={r.reportStatus} reason={r.reportReason} lastSentAt={r.lastSentAt} lastReportDate={r.lastReportDate} timezone={r.timezone} rooftopId={r.rooftopId} enterpriseId={r.enterpriseId} />
-                  </td>
+                  {visibleDates.map((d: string) => {
+                    const entry = (r.reportHistory ?? []).find((h: any) => h.date === d);
+                    if (!entry) return <td key={d} style={{ ...tdStyle, textAlign: "center", color: "#9ca3af" }}>—</td>;
+                    if (entry.status === "sent") return (
+                      <td key={d} style={{ ...tdStyle, textAlign: "center" }}>
+                        <span style={{ background: "#dcfce7", color: "#166534", borderRadius: 4, padding: "2px 7px", fontSize: 12, fontWeight: 500 }}>Sent</span>
+                      </td>
+                    );
+                    return (
+                      <td key={d} style={{ ...tdStyle, textAlign: "center" }}>
+                        <span style={{ background: "#fef3c7", color: "#92400e", borderRadius: 4, padding: "2px 7px", fontSize: 12, fontWeight: 500 }}>
+                          {fmtSkipReason(entry.reason) ?? entry.reason ?? "Not Sent"}
+                        </span>
+                      </td>
+                    );
+                  })}
+                  {showDateToggle && <td style={{ ...tdStyle }} />}
                   <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.total} color="#4f46e5" onClick={() => onDrillDown({ rooftopId: r.rooftopId })} /></td>
                   <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.withPhotos ?? 0} color="#0ea5e9" onClick={() => onDrillDown({ rooftopId: r.rooftopId, hasPhotos: true })} /></td>
                   <td style={{ ...tdStyle, textAlign: "center" }}><ClickableNum value={r.deliveredWithPhotos ?? 0} color="#166534" onClick={() => onDrillDown({ rooftopId: r.rooftopId, status: "Delivered", hasPhotos: true })} /></td>
@@ -1702,7 +1738,7 @@ function timeAgo(isoString: string): string {
 }
 
 const DEFAULT_FILTERS = { search: "", enterpriseId: null, rooftopId: null, rooftopType: null, csm: null, status: null, after24h: null, hasPhotos: null, hasVin: null, reasonBucket: null };
-const DEFAULT_ROOFTOP_FILTERS = { search: "", rooftopType: null, csm: null, enterprise: null, websiteScore: null, imsIntegration: null, publishingStatus: null, reportStatus: null, reportReason: null as string | null };
+const DEFAULT_ROOFTOP_FILTERS = { search: "", rooftopType: null, csm: null, enterprise: null, websiteScore: null, imsIntegration: null, publishingStatus: null, reportStatus: null, reportReason: null as string | null, reportDay: null as string | null };
 const DEFAULT_ENTERPRISE_FILTERS = { search: "", csm: null, accountType: null, websiteScore: null, reportStatus: null, reportReason: null as string | null };
 
 // Merged Report Status filter — "Sent" or any not-sent reason
@@ -1897,7 +1933,7 @@ function AdminView({ syncing }: { syncing: boolean }) {
   );
 }
 
-function ReportCoverageTab({ rows, loading }: { rows: any[]; loading: boolean }) {
+function ReportCoverageTab({ rows, loading, onRooftopDrillDown }: { rows: any[]; loading: boolean; onRooftopDrillDown?: (filters: any) => void }) {
   const activeReasons = REPORT_REASONS.filter(r => rows.some(row => (row[r.key] ?? 0) > 0));
   const reasonColSpan = activeReasons.length;
 
@@ -1972,12 +2008,15 @@ function ReportCoverageTab({ rows, loading }: { rows: any[]; loading: boolean })
             )}
           </thead>
           <tbody>
-            {loading ? shimmerRows : rows.map((r, i) => (
+            {loading ? shimmerRows : rows.map((r, i) => {
+              return (
               <tr key={r.reportDay} style={{ background: i % 2 === 0 ? "#fff" : "#fafafa" }}>
                 <td style={{ ...td, fontWeight: 600, color: "#111827" }}>{fmtDay(r.reportDay)}</td>
                 <td style={{ ...td, textAlign: "center", color: "#374151" }}>{r.totalRooftops}</td>
                 <td style={{ ...td, textAlign: "center" }}>
-                  <Badge label={r.sent} color="green" />
+                  {onRooftopDrillDown
+                    ? <span style={{ cursor: "pointer", textDecoration: "underline", textUnderlineOffset: 2 }} onClick={() => onRooftopDrillDown({ reportStatus: "sent", reportReason: null, reportDay: r.reportDay })}><Badge label={r.sent} color="green" /></span>
+                    : <Badge label={r.sent} color="green" />}
                 </td>
                 <td style={{ ...td, textAlign: "center" }}>
                   {r.sentPct !== null && r.sentPct !== undefined ? (
@@ -1987,15 +2026,22 @@ function ReportCoverageTab({ rows, loading }: { rows: any[]; loading: boolean })
                   ) : "—"}
                 </td>
                 <td style={{ ...td, textAlign: "center" }}>
-                  {r.notSent > 0 ? <Badge label={r.notSent} color="red" /> : <span style={{ color: "#9ca3af" }}>0</span>}
+                  {onRooftopDrillDown
+                    ? <span style={{ cursor: "pointer", textDecoration: "underline", textUnderlineOffset: 2 }} onClick={() => onRooftopDrillDown({ reportStatus: "not_sent", reportReason: null, reportDay: r.reportDay })}><Badge label={r.notSent} color="red" /></span>
+                    : (r.notSent > 0 ? <Badge label={r.notSent} color="red" /> : <span style={{ color: "#9ca3af" }}>0</span>)}
                 </td>
                 {activeReasons.map((ar, idx) => (
                   <td key={ar.key} style={{ ...td, textAlign: "center", background: i % 2 === 0 ? "#fff8f8" : "#fef2f2", ...(idx === 0 ? { borderLeft: "2px solid #fca5a5" } : {}), ...(idx === activeReasons.length - 1 ? { borderRight: "2px solid #fca5a5" } : {}) }}>
-                    {(r[ar.key] ?? 0) > 0 ? <Badge label={r[ar.key]} color="red" /> : <span style={{ color: "#9ca3af" }}>0</span>}
+                    {(r[ar.key] ?? 0) > 0
+                      ? onRooftopDrillDown
+                        ? <span style={{ cursor: "pointer", textDecoration: "underline", textUnderlineOffset: 2 }} onClick={() => onRooftopDrillDown({ reportStatus: null, reportReason: ar.reasonCode, reportDay: r.reportDay })}><Badge label={r[ar.key]} color="red" /></span>
+                        : <Badge label={r[ar.key]} color="red" />
+                      : <span style={{ color: "#9ca3af" }}>0</span>}
                   </td>
                 ))}
               </tr>
-            ))}
+              );
+            })}
             {!loading && rows.length === 0 && (
               <tr>
                 <td colSpan={5 + reasonColSpan} style={{ ...td, textAlign: "center", color: "#9ca3af", padding: "32px 12px" }}>
@@ -2052,6 +2098,7 @@ export default function Dashboard() {
   const [rooftopLoading, setRooftopLoading] = useState(false);
   const [rooftopSortCol, setRooftopSortCol] = useState<string | null>("notProcessedAfter24");
   const [rooftopSortDir, setRooftopSortDir] = useState<"asc" | "desc">("desc");
+  const [reportDates, setReportDates] = useState<string[]>([]);
 
   // Enterprise paginated data — sourced from /api/enterprises
   const [enterpriseRows, setEnterpriseRows] = useState<any[]>([]);
@@ -2107,12 +2154,14 @@ export default function Dashboard() {
     if (filters.websiteScore)     params.set("websiteScore",    filters.websiteScore);
     if (filters.reportStatus)     params.set("reportStatus",    filters.reportStatus);
     if (filters.reportReason)     params.set("reportReason",    filters.reportReason);
+    if (filters.reportDay)        params.set("reportDay",       filters.reportDay);
     if (sortCol) { params.set("sortBy", sortCol); params.set("sortDir", sortDir); }
     params.set("dateFilter", df);
     fetch(`${API_BASE}/api/rooftops?${params}`)
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
-      .then(({ data, total, pageCount }) => {
+      .then(({ data, total, pageCount, reportDates: dates }) => {
         setRooftopRows(data); setRooftopTotal(total); setRooftopPageCount(pageCount); setRooftopPage(page);
+        if (dates) setReportDates(dates);
         setRooftopLoading(false);
       })
       .catch(err => { setFetchError(err.message); setRooftopLoading(false); });
@@ -2128,6 +2177,7 @@ export default function Dashboard() {
     if (filters.websiteScore) params.set("websiteScore",  filters.websiteScore);
     if (filters.reportStatus) params.set("reportStatus",  filters.reportStatus);
     if (filters.reportReason) params.set("reportReason",  filters.reportReason);
+    if (filters.reportDay)    params.set("reportDay",     filters.reportDay);
     if (sortCol) { params.set("sortBy", sortCol); params.set("sortDir", sortDir); }
     params.set("dateFilter", df);
     fetch(`${API_BASE}/api/enterprises?${params}`)
@@ -2427,6 +2477,7 @@ export default function Dashboard() {
               sortCol={rooftopSortCol}
               sortDir={rooftopSortDir}
               onSortChange={handleRooftopSort}
+              reportDates={reportDates}
             />
           )}
           {tab === "Enterprise View" && (
@@ -2470,7 +2521,15 @@ export default function Dashboard() {
             />
           )}
           {tab === "Report Status" && (
-            <ReportCoverageTab rows={reportCovData} loading={reportCovLoading} />
+            <ReportCoverageTab
+              rows={reportCovData}
+              loading={reportCovLoading}
+              onRooftopDrillDown={(filters) => {
+                setRooftopFilters({ ...DEFAULT_ROOFTOP_FILTERS, ...filters });
+                setDateFilter("all");
+                setTab("Rooftop View");
+              }}
+            />
           )}
         </>
       )}

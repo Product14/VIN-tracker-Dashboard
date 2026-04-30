@@ -193,6 +193,22 @@ export async function initSchema() {
     WHERE rq.run_id = dr.run_id
       AND rq.report_date IS NULL
       AND dr.test_mode = false;
+
+    -- Snapshot table: one row per (rooftop, report_day) written at run completion.
+    -- Stores the definitive per-rooftop report status for each daily run so that
+    -- Report Status tab and Rooftop View drill-downs share a stable, consistent source.
+    -- report_day = report_date::date - 1 (UTC arithmetic recovers the local calendar date).
+    CREATE TABLE IF NOT EXISTS rooftop_report_status_daily (
+      report_day    DATE NOT NULL,
+      rooftop_id    TEXT NOT NULL,
+      enterprise_id TEXT,
+      status        TEXT NOT NULL,  -- 'sent' | 'skipped' | 'error'
+      error_reason  TEXT,           -- null when status = 'sent'
+      PRIMARY KEY (report_day, rooftop_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_rrsd_day_reason
+      ON rooftop_report_status_daily (report_day, error_reason)
+      WHERE status IN ('skipped', 'error');
   `);
 
   // Materialized views — dropped and recreated on every cold start so schema changes

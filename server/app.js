@@ -391,104 +391,6 @@ function toTotals(r) {
 // report_status becomes a real column in the main query (enables server-side
 // filtering and sorting by report status).
 
-// CTE fragment embedded into buildRooftopSource — produces `rs` with report status per rooftop_id.
-const ROOFTOP_STATUS_CTES = `
-  group_sent_latest AS (
-    -- Most recent successful group send per enterprise (inherits to all rooftops in that enterprise)
-    SELECT DISTINCT ON (rq.enterprise_id)
-      rq.enterprise_id, rq.processed_at AS last_sent_at, rq.report_date
-    FROM report_queue rq
-    JOIN daily_report_runs dr ON dr.run_id = rq.run_id
-    WHERE dr.test_mode = false AND rq.report_type = 'Group' AND rq.status = 'sent'
-    ORDER BY rq.enterprise_id, rq.processed_at DESC NULLS LAST
-  ),
-  rooftop_sent_latest AS (
-    -- Most recent successful rooftop send per rooftop
-    SELECT DISTINCT ON (rq.rooftop_id)
-      rq.rooftop_id, rq.processed_at AS last_sent_at, rq.report_date
-    FROM report_queue rq
-    JOIN daily_report_runs dr ON dr.run_id = rq.run_id
-    WHERE dr.test_mode = false AND rq.report_type = 'Rooftop' AND rq.status = 'sent'
-    ORDER BY rq.rooftop_id, rq.processed_at DESC NULLS LAST
-  ),
-  rooftop_error_latest AS (
-    -- Most recent skip/error per rooftop that occurred AFTER the last successful send.
-    -- report_date is included so we can check whether the error is for yesterday's run.
-    SELECT DISTINCT ON (rq.rooftop_id)
-      rq.rooftop_id, rq.error_reason, rq.report_date
-    FROM report_queue rq
-    JOIN daily_report_runs dr ON dr.run_id = rq.run_id
-    LEFT JOIN rooftop_sent_latest rsl ON rsl.rooftop_id = rq.rooftop_id
-    WHERE dr.test_mode = false
-      AND rq.report_type = 'Rooftop'
-      AND rq.status IN ('skipped', 'error')
-      AND (rsl.last_sent_at IS NULL OR rq.created_at > rsl.last_sent_at)
-    ORDER BY rq.rooftop_id, rq.created_at DESC NULLS LAST
-  ),
-  group_error_latest AS (
-    -- Most recent group report error per enterprise AFTER the last successful group send.
-    -- report_date is included so we can check whether the error is for yesterday's run.
-    SELECT DISTINCT ON (rq.enterprise_id)
-      rq.enterprise_id, rq.error_reason, rq.report_date
-    FROM report_queue rq
-    JOIN daily_report_runs dr ON dr.run_id = rq.run_id
-    LEFT JOIN group_sent_latest gsl ON gsl.enterprise_id = rq.enterprise_id
-    WHERE dr.test_mode = false
-      AND rq.report_type = 'Group'
-      AND rq.status IN ('skipped', 'error')
-      AND (gsl.last_sent_at IS NULL OR rq.created_at > gsl.last_sent_at)
-    ORDER BY rq.enterprise_id, rq.created_at DESC NULLS LAST
-  ),
-  recipients_rooftop AS (SELECT DISTINCT rooftop_id FROM email_recipients WHERE rooftop_id IS NOT NULL),
-  recipients_group   AS (SELECT DISTINCT enterprise_id FROM email_recipients WHERE report_type = 'Group'),
-  rs AS (
-    SELECT
-      rd.team_id AS rooftop_id,
-      GREATEST(gsl.last_sent_at, rsl.last_sent_at) AS last_sent_at,
-      CASE
-        WHEN gsl.last_sent_at IS NOT NULL AND (rsl.last_sent_at IS NULL OR gsl.last_sent_at >= rsl.last_sent_at)
-          THEN gsl.report_date
-        WHEN rsl.last_sent_at IS NOT NULL THEN rsl.report_date
-        ELSE NULL
-      END AS last_report_date,
-      COALESCE(ed.timezone, 'America/New_York') AS timezone,
-      CASE
-        WHEN (gsl.report_date AT TIME ZONE COALESCE(ed.timezone, 'America/New_York'))::date = (NOW() AT TIME ZONE COALESCE(ed.timezone, 'America/New_York'))::date - 1
-          OR (rsl.report_date AT TIME ZONE COALESCE(ed.timezone, 'America/New_York'))::date = (NOW() AT TIME ZONE COALESCE(ed.timezone, 'America/New_York'))::date - 1
-        THEN 'sent'
-        ELSE 'not_sent'
-      END AS report_status,
-      CASE
-        WHEN (gsl.report_date AT TIME ZONE COALESCE(ed.timezone, 'America/New_York'))::date = (NOW() AT TIME ZONE COALESCE(ed.timezone, 'America/New_York'))::date - 1
-          OR (rsl.report_date AT TIME ZONE COALESCE(ed.timezone, 'America/New_York'))::date = (NOW() AT TIME ZONE COALESCE(ed.timezone, 'America/New_York'))::date - 1
-        THEN NULL
-        -- No recipients configured → always surface this regardless of run state
-        WHEN rr.rooftop_id IS NULL AND rg.enterprise_id IS NULL THEN 'no_recipient'
-        -- Group-only coverage: show group error if it's for yesterday, else not_triggered
-        WHEN rr.rooftop_id IS NULL THEN
-          CASE
-            WHEN (gel.report_date AT TIME ZONE COALESCE(ed.timezone, 'America/New_York'))::date = (NOW() AT TIME ZONE COALESCE(ed.timezone, 'America/New_York'))::date - 1
-            THEN gel.error_reason
-            ELSE 'not_triggered'
-          END
-        -- Rooftop-level coverage: show rooftop error if it's for yesterday, else not_triggered
-        ELSE
-          CASE
-            WHEN (rel.report_date AT TIME ZONE COALESCE(ed.timezone, 'America/New_York'))::date = (NOW() AT TIME ZONE COALESCE(ed.timezone, 'America/New_York'))::date - 1
-            THEN rel.error_reason
-            ELSE 'not_triggered'
-          END
-      END AS report_reason
-    FROM rooftop_details rd
-    LEFT JOIN enterprise_details ed    ON ed.enterprise_id = rd.enterprise_id
-    LEFT JOIN group_sent_latest gsl    ON gsl.enterprise_id = rd.enterprise_id
-    LEFT JOIN rooftop_sent_latest rsl  ON rsl.rooftop_id = rd.team_id
-    LEFT JOIN rooftop_error_latest rel ON rel.rooftop_id = rd.team_id
-    LEFT JOIN group_error_latest gel   ON gel.enterprise_id = rd.enterprise_id
-    LEFT JOIN recipients_rooftop rr    ON rr.rooftop_id = rd.team_id
-    LEFT JOIN recipients_group rg      ON rg.enterprise_id = rd.enterprise_id
-  )
-`;
 
 // CTE fragment embedded into buildEnterpriseSource — produces `es` with report status per enterprise_id.
 const ENTERPRISE_STATUS_CTES = `
@@ -571,11 +473,7 @@ function toRooftopRow(r) {
     bucketQcHold:             r.bucket_qc_hold,
     bucketSold:               r.bucket_sold,
     bucketOthers:             r.bucket_others,
-    reportStatus:             r.report_status    ?? null,
-    reportReason:             r.report_reason    ?? null,
-    lastSentAt:               r.last_sent_at     ?? null,
-    lastReportDate:           r.last_report_date ?? null,
-    timezone:                 r.timezone         ?? null,
+    reportHistory:            r.report_history   ?? [],
   };
 }
 
@@ -682,8 +580,7 @@ function getDateCondition(dateFilter, alias = '') {
 }
 
 // Returns { prefix, from } for the rooftop aggregation source.
-// Always embeds ROOFTOP_STATUS_CTES so report_status is a real column
-// available for SQL-level filtering and sorting.
+// Joins report_history CTE (last 7 report days from snapshot) per rooftop for display columns.
 function buildRooftopSource(dateFilter) {
   const dc = getDateCondition(dateFilter, 'v');
   let invCte = '', invSource;
@@ -726,9 +623,25 @@ function buildRooftopSource(dateFilter) {
   } else {
     invSource = 'v_by_rooftop';
   }
-  const prefix = `WITH ${invCte}${ROOFTOP_STATUS_CTES}`;
-  const from = `(SELECT inv.*, rs.last_sent_at, rs.last_report_date, rs.timezone, rs.report_status, rs.report_reason
-                 FROM ${invSource} inv LEFT JOIN rs ON rs.rooftop_id = inv.rooftop_id) combined`;
+  const prefix = `WITH ${invCte}top7_dates AS (
+    SELECT DISTINCT report_day FROM rooftop_report_status_daily ORDER BY report_day DESC LIMIT 7
+  ),
+  report_history AS (
+    SELECT
+      rooftop_id,
+      JSON_AGG(
+        JSON_BUILD_OBJECT(
+          'date',   TO_CHAR(report_day, 'YYYY-MM-DD'),
+          'status', status,
+          'reason', error_reason
+        ) ORDER BY report_day DESC
+      ) AS report_history
+    FROM rooftop_report_status_daily
+    WHERE report_day IN (SELECT report_day FROM top7_dates)
+    GROUP BY rooftop_id
+  )`;
+  const from = `(SELECT inv.*, rh.report_history
+                 FROM ${invSource} inv LEFT JOIN report_history rh ON rh.rooftop_id = inv.rooftop_id) combined`;
   return { prefix, from };
 }
 
@@ -1256,8 +1169,6 @@ const ROOFTOP_SORT_MAP = {
   bucketSold:              "bucket_sold",
   bucketOthers:            "bucket_others",
   websiteScore:            "website_score",
-  reportStatus:            "CASE report_status WHEN 'sent' THEN 1 WHEN 'not_sent' THEN 2 ELSE 3 END",
-  reportReason:            "report_reason",
 };
 
 function buildRooftopFilters(queryParams) {
@@ -1280,8 +1191,41 @@ function buildRooftopFilters(queryParams) {
   if (queryParams.websiteScore === "Poor (<6)")     conditions.push("website_score < 6");
   if (queryParams.websiteScore === "Average (6\u20138)") conditions.push("(website_score >= 6 AND website_score < 8)");
   if (queryParams.websiteScore === "Good (8+)")     conditions.push("website_score >= 8");
-  if (queryParams.reportStatus) conditions.push(`report_status = ${p(queryParams.reportStatus)}`);
-  if (queryParams.reportReason) conditions.push(`report_reason = ${p(queryParams.reportReason)}`);
+  // Filter using snapshot table — with reportDay uses that specific day; without uses most recent day.
+  // 'not_sent' = NOT IN sent set (includes not_triggered which has no snapshot row).
+  if (queryParams.reportStatus) {
+    const day = queryParams.reportDay
+      ? p(queryParams.reportDay)
+      : `(SELECT MAX(report_day) FROM rooftop_report_status_daily)`;
+    if (queryParams.reportStatus === 'not_sent') {
+      conditions.push(`rooftop_id NOT IN (
+        SELECT rooftop_id FROM rooftop_report_status_daily
+        WHERE report_day = ${day} AND status = 'sent'
+      )`);
+    } else {
+      conditions.push(`rooftop_id IN (
+        SELECT rooftop_id FROM rooftop_report_status_daily
+        WHERE report_day = ${day} AND status = ${p(queryParams.reportStatus)}
+      )`);
+    }
+  }
+  // 'not_triggered' rooftops are absent from the snapshot — filter with NOT IN.
+  if (queryParams.reportReason) {
+    const day = queryParams.reportDay
+      ? p(queryParams.reportDay)
+      : `(SELECT MAX(report_day) FROM rooftop_report_status_daily)`;
+    if (queryParams.reportReason === 'not_triggered') {
+      conditions.push(`rooftop_id NOT IN (
+        SELECT rooftop_id FROM rooftop_report_status_daily
+        WHERE report_day = ${day}
+      )`);
+    } else {
+      conditions.push(`rooftop_id IN (
+        SELECT rooftop_id FROM rooftop_report_status_daily
+        WHERE report_day = ${day} AND error_reason = ${p(queryParams.reportReason)}
+      )`);
+    }
+  }
 
   return { where: conditions.length ? `WHERE ${conditions.join(" AND ")}` : "", params };
 }
@@ -1297,16 +1241,19 @@ app.get("/api/rooftops", async (req, res) => {
   const sortDir = req.query.sortDir === "asc" ? "ASC" : "DESC";
   const orderBy = `ORDER BY ${sortCol} ${sortDir} NULLS LAST`;
 
-  const [countRes, rowsRes] = await Promise.all([
+  const [countRes, rowsRes, datesRes] = await Promise.all([
     query(`${prefix} SELECT COUNT(*)::int AS n FROM ${from} ${where}`, params),
     query(`${prefix} SELECT * FROM ${from} ${where} ${orderBy} LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
       [...params, pageSize, offset]),
+    query(`SELECT DISTINCT TO_CHAR(report_day, 'YYYY-MM-DD') AS d
+           FROM rooftop_report_status_daily ORDER BY d DESC LIMIT 7`),
   ]);
 
-  const total = countRes.rows[0].n;
-  const data  = rowsRes.rows.map(r => toRooftopRow(r));
+  const total       = countRes.rows[0].n;
+  const data        = rowsRes.rows.map(r => toRooftopRow(r));
+  const reportDates = datesRes.rows.map(r => r.d);
 
-  res.json({ data, total, page, pageSize, pageCount: Math.ceil(total / pageSize) });
+  res.json({ data, total, page, pageSize, pageCount: Math.ceil(total / pageSize), reportDates });
 });
 
 app.get("/api/rooftops/export", async (req, res) => {
@@ -1391,8 +1338,25 @@ function buildEnterpriseFilters(queryParams) {
   if (queryParams.websiteScore === "Poor (<6)")     conditions.push("avg_website_score < 6");
   if (queryParams.websiteScore === "Average (6\u20138)") conditions.push("(avg_website_score >= 6 AND avg_website_score < 8)");
   if (queryParams.websiteScore === "Good (8+)")     conditions.push("avg_website_score >= 8");
-  if (queryParams.reportStatus) conditions.push(`report_status = ${p(queryParams.reportStatus)}`);
-  if (queryParams.reportReason) conditions.push(`report_reason = ${p(queryParams.reportReason)}`);
+  // When reportDay is set (drill-down from Report Status tab), filter using the snapshot
+  // table so counts match exactly. Without reportDay, use live report_status/report_reason.
+  if (queryParams.reportStatus && queryParams.reportDay) {
+    conditions.push(`enterprise_id IN (
+      SELECT DISTINCT enterprise_id FROM rooftop_report_status_daily
+      WHERE report_day = ${p(queryParams.reportDay)} AND status = 'sent'
+    )`);
+  } else if (queryParams.reportStatus) {
+    conditions.push(`report_status = ${p(queryParams.reportStatus)}`);
+  }
+  if (queryParams.reportReason && queryParams.reportDay) {
+    conditions.push(`enterprise_id IN (
+      SELECT DISTINCT enterprise_id FROM rooftop_report_status_daily
+      WHERE report_day = ${p(queryParams.reportDay)}
+        AND error_reason = ${p(queryParams.reportReason)}
+    )`);
+  } else if (queryParams.reportReason) {
+    conditions.push(`report_reason = ${p(queryParams.reportReason)}`);
+  }
 
   return { where: conditions.length ? `WHERE ${conditions.join(" AND ")}` : "", params };
 }
@@ -2450,6 +2414,97 @@ app.get("/api/send-daily-report", async (req, res) => {
 // Safe to run concurrently — locking prevents duplicate sends.
 // Stuck rows (processing > 10 min) are automatically reset and retried.
 
+// ─── Snapshot helper ─────────────────────────────────────────────────────────
+// Writes (or upserts) one row per active rooftop into rooftop_report_status_daily
+// for the report_day belonging to the given run_id.
+// Priority: sent (1) > individual Rooftop-type error (2) > Group-type error (3).
+async function writeReportStatusSnapshot(runId) {
+  await query(`
+    INSERT INTO rooftop_report_status_daily
+      (report_day, rooftop_id, enterprise_id, status, error_reason)
+    WITH
+    report_sent AS (
+      SELECT
+        rq.rooftop_id                  AS r_id,
+        rq.enterprise_id,
+        (rq.report_date::date - 1)     AS r_date,
+        rq.status,
+        NULL::text                     AS error_reason,
+        1                              AS priority
+      FROM report_queue rq
+      WHERE rq.run_id = $1
+        AND rq.status = 'sent'
+        AND rq.report_type = 'Rooftop'
+        AND rq.report_date IS NOT NULL
+    ),
+    group_sent AS (
+      SELECT
+        rv.rooftop_id                  AS r_id,
+        rq.enterprise_id,
+        (rq.report_date::date - 1)     AS r_date,
+        rq.status,
+        NULL::text                     AS error_reason,
+        1                              AS priority
+      FROM report_queue rq
+      JOIN v_by_rooftop rv ON rv.enterprise_id = rq.enterprise_id
+      WHERE rq.run_id = $1
+        AND rq.status = 'sent'
+        AND rq.report_type = 'Group'
+        AND rq.report_date IS NOT NULL
+    ),
+    rooftop_not_sent AS (
+      SELECT DISTINCT ON (rq.rooftop_id, (rq.report_date::date - 1))
+        rq.rooftop_id                  AS r_id,
+        rq.enterprise_id,
+        (rq.report_date::date - 1)     AS r_date,
+        rq.status,
+        rq.error_reason,
+        2                              AS priority
+      FROM report_queue rq
+      WHERE rq.run_id = $1
+        AND rq.status != 'sent'
+        AND rq.report_type = 'Rooftop'
+        AND rq.report_date IS NOT NULL
+      ORDER BY rq.rooftop_id, (rq.report_date::date - 1), rq.id DESC
+    ),
+    group_not_sent AS (
+      SELECT DISTINCT ON (rq.enterprise_id, (rq.report_date::date - 1))
+        rv.rooftop_id                  AS r_id,
+        rq.enterprise_id,
+        (rq.report_date::date - 1)     AS r_date,
+        rq.status,
+        rq.error_reason,
+        3                              AS priority
+      FROM report_queue rq
+      JOIN v_by_rooftop rv ON rv.enterprise_id = rq.enterprise_id
+      WHERE rq.run_id = $1
+        AND rq.status != 'sent'
+        AND rq.report_type = 'Group'
+        AND rq.report_date IS NOT NULL
+      ORDER BY rq.enterprise_id, (rq.report_date::date - 1), rq.id DESC
+    ),
+    all_data AS (
+      SELECT * FROM report_sent
+      UNION ALL SELECT * FROM group_sent
+      UNION ALL SELECT * FROM rooftop_not_sent
+      UNION ALL SELECT * FROM group_not_sent
+    ),
+    final AS (
+      SELECT DISTINCT ON (r_id, r_date)
+        r_id, enterprise_id, r_date, status, error_reason
+      FROM all_data
+      WHERE r_id IS NOT NULL AND r_date IS NOT NULL
+      ORDER BY r_id, r_date, priority
+    )
+    SELECT r_date, r_id, enterprise_id, status, error_reason FROM final
+    ON CONFLICT (report_day, rooftop_id)
+    DO UPDATE SET
+      status        = EXCLUDED.status,
+      error_reason  = EXCLUDED.error_reason,
+      enterprise_id = EXCLUDED.enterprise_id
+  `, [runId]);
+}
+
 async function handleProcessReportQueue(req, res) {
   const cronSecret = process.env.CRON_SECRET;
   if (cronSecret && req.headers.authorization !== `Bearer ${cronSecret}`) {
@@ -2785,6 +2840,14 @@ async function handleProcessReportQueue(req, res) {
       if (count === 0) {
         await query(`UPDATE daily_report_runs SET status = 'done', completed_at = NOW() WHERE run_id = $1`, [runId]);
         console.log(`[process-queue] run ${runId} complete`);
+
+        // Snapshot: write per-rooftop final status for this run's report_day.
+        try {
+          await writeReportStatusSnapshot(runId);
+          console.log(`[process-queue] snapshot written for run ${runId}`);
+        } catch (snapErr) {
+          console.error(`[process-queue] snapshot write failed for run ${runId}:`, snapErr?.message);
+        }
       }
     } catch (e) {
       console.error(`[process-queue] failed to check run completion for ${runId}:`, e?.message);
@@ -2797,6 +2860,43 @@ async function handleProcessReportQueue(req, res) {
 // Vercel crons fire GET; manual/API triggers use POST — support both.
 app.get("/api/process-report-queue",  handleProcessReportQueue);
 app.post("/api/process-report-queue", handleProcessReportQueue);
+
+// ─── Backfill rooftop_report_status_daily ────────────────────────────────────
+// POST /api/admin/backfill-report-status
+// One-time (and idempotent) endpoint to populate the snapshot table for all
+// completed non-test runs. Safe to run multiple times — ON CONFLICT upserts.
+
+app.post("/api/admin/backfill-report-status", async (_req, res) => {
+  try {
+    const { rows: runs } = await query(`
+      SELECT run_id
+      FROM daily_report_runs
+      WHERE test_mode = false AND status = 'done'
+      ORDER BY completed_at ASC
+    `);
+
+    let succeeded = 0;
+    let failed = 0;
+    const errors = [];
+
+    for (const { run_id } of runs) {
+      try {
+        await writeReportStatusSnapshot(run_id);
+        succeeded++;
+      } catch (err) {
+        failed++;
+        errors.push({ run_id, error: err.message });
+        console.error(`[backfill] failed for run ${run_id}:`, err.message);
+      }
+    }
+
+    console.log(`[backfill] complete — ${succeeded} succeeded, ${failed} failed of ${runs.length} runs`);
+    return res.json({ ok: true, total: runs.length, succeeded, failed, errors });
+  } catch (err) {
+    console.error("[backfill] error:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
 
 // ─── Daily Report Status ──────────────────────────────────────────────────────
 // GET /api/send-daily-report/status?runId=xxx
@@ -2839,90 +2939,36 @@ app.get("/api/send-daily-report/status", async (req, res) => {
 app.get("/api/report-coverage", async (_req, res) => {
   try {
     const { rows } = await query(`
-      WITH active_rooftops AS (
-        -- Only rooftops with at least one VIN in current inventory
-        SELECT rooftop_id AS team_id, enterprise_id FROM v_by_rooftop
-      ),
-      total_rt AS (
-        SELECT COUNT(*)::int AS total FROM active_rooftops
+      WITH total_rt AS (
+        SELECT COUNT(*)::int AS total FROM v_by_rooftop
       ),
       dates AS (
-        SELECT DISTINCT
-          DATE(rq.report_date AT TIME ZONE 'America/New_York') AS report_day
-        FROM report_queue rq
-        JOIN daily_report_runs dr ON dr.run_id = rq.run_id
-        WHERE dr.test_mode = false AND rq.report_date IS NOT NULL
-        ORDER BY DATE(rq.report_date AT TIME ZONE 'America/New_York') DESC
+        SELECT DISTINCT report_day
+        FROM rooftop_report_status_daily
+        ORDER BY report_day DESC
         LIMIT 7
-      ),
-      covered_per_date AS (
-        SELECT
-          DATE(rq.report_date AT TIME ZONE 'America/New_York') AS report_day,
-          ar.team_id
-        FROM report_queue rq
-        JOIN daily_report_runs dr ON dr.run_id = rq.run_id
-        JOIN active_rooftops ar ON (
-          (rq.report_type = 'Rooftop' AND rq.entity_id = ar.team_id) OR
-          (rq.report_type = 'Group'   AND rq.entity_id = ar.enterprise_id)
-        )
-        WHERE dr.test_mode = false AND rq.status = 'sent' AND rq.report_date IS NOT NULL
-      ),
-      sent_per_date AS (
-        SELECT report_day, COUNT(DISTINCT team_id)::int AS sent_count
-        FROM covered_per_date GROUP BY report_day
-      ),
-      in_queue_per_date AS (
-        SELECT
-          DATE(rq.report_date AT TIME ZONE 'America/New_York') AS report_day,
-          ar.team_id
-        FROM report_queue rq
-        JOIN daily_report_runs dr ON dr.run_id = rq.run_id
-        JOIN active_rooftops ar ON (
-          (rq.report_type = 'Rooftop' AND rq.entity_id = ar.team_id) OR
-          (rq.report_type = 'Group'   AND rq.entity_id = ar.enterprise_id)
-        )
-        WHERE dr.test_mode = false AND rq.report_date IS NOT NULL
-      ),
-      in_queue_count_per_date AS (
-        SELECT report_day, COUNT(DISTINCT team_id)::int AS in_queue_count
-        FROM in_queue_per_date GROUP BY report_day
-      ),
-      reasons_per_date AS (
-        SELECT
-          DATE(rq.report_date AT TIME ZONE 'America/New_York') AS report_day,
-          rq.error_reason,
-          COUNT(DISTINCT ar.team_id)::int AS cnt
-        FROM report_queue rq
-        JOIN daily_report_runs dr ON dr.run_id = rq.run_id
-        JOIN active_rooftops ar ON (
-          (rq.report_type = 'Rooftop' AND rq.entity_id = ar.team_id) OR
-          (rq.report_type = 'Group'   AND rq.entity_id = ar.enterprise_id)
-        )
-        WHERE dr.test_mode = false
-          AND rq.status IN ('skipped', 'error')
-          AND rq.report_date IS NOT NULL
-        GROUP BY DATE(rq.report_date AT TIME ZONE 'America/New_York'), rq.error_reason
       )
       SELECT
-        TO_CHAR(d.report_day, 'YYYY-MM-DD')                                                  AS "reportDay",
-        t.total                                                                              AS "totalRooftops",
-        COALESCE(s.sent_count, 0)                                                            AS sent,
-        t.total - COALESCE(s.sent_count, 0)                                                  AS "notSent",
-        ROUND(COALESCE(s.sent_count, 0)::numeric / NULLIF(t.total, 0) * 100, 1)             AS "sentPct",
-        t.total - COALESCE(iq.in_queue_count, 0)                                             AS "reasonNotTriggered",
-        COALESCE(MAX(CASE WHEN r.error_reason = 'no_recipient'       THEN r.cnt END), 0)    AS "reasonNoRecipient",
-        COALESCE(MAX(CASE WHEN r.error_reason = 'ims_off'            THEN r.cnt END), 0)    AS "reasonImsOff",
-        COALESCE(MAX(CASE WHEN r.error_reason = 'pending_vins'       THEN r.cnt END), 0)    AS "reasonPendingVins",
-        COALESCE(MAX(CASE WHEN r.error_reason = 'negative_tat'       THEN r.cnt END), 0)    AS "reasonNegativeTat",
-        COALESCE(MAX(CASE WHEN r.error_reason = 'low_photo_coverage' THEN r.cnt END), 0)    AS "reasonLowPhotoCoverage",
-        COALESCE(MAX(CASE WHEN r.error_reason = 'already_sent'       THEN r.cnt END), 0)    AS "reasonAlreadySent",
-        COALESCE(MAX(CASE WHEN r.error_reason = 'timed_out'          THEN r.cnt END), 0)    AS "reasonTimedOut"
+        TO_CHAR(d.report_day, 'YYYY-MM-DD')                                             AS "reportDay",
+        t.total                                                                          AS "totalRooftops",
+        COUNT(*) FILTER (WHERE s.status = 'sent')::int                                  AS sent,
+        t.total - COUNT(*) FILTER (WHERE s.status = 'sent')::int                        AS "notSent",
+        ROUND(
+          COUNT(*) FILTER (WHERE s.status = 'sent')::numeric / NULLIF(t.total, 0) * 100,
+          1
+        )                                                                                AS "sentPct",
+        t.total - COUNT(DISTINCT s.rooftop_id)::int                                     AS "reasonNotTriggered",
+        COUNT(*) FILTER (WHERE s.error_reason = 'no_recipient')::int                    AS "reasonNoRecipient",
+        COUNT(*) FILTER (WHERE s.error_reason = 'ims_off')::int                         AS "reasonImsOff",
+        COUNT(*) FILTER (WHERE s.error_reason = 'pending_vins')::int                    AS "reasonPendingVins",
+        COUNT(*) FILTER (WHERE s.error_reason = 'negative_tat')::int                    AS "reasonNegativeTat",
+        COUNT(*) FILTER (WHERE s.error_reason = 'low_photo_coverage')::int              AS "reasonLowPhotoCoverage",
+        COUNT(*) FILTER (WHERE s.error_reason = 'already_sent')::int                    AS "reasonAlreadySent",
+        COUNT(*) FILTER (WHERE s.error_reason = 'timed_out')::int                       AS "reasonTimedOut"
       FROM dates d
       CROSS JOIN total_rt t
-      LEFT JOIN sent_per_date s             ON s.report_day = d.report_day
-      LEFT JOIN in_queue_count_per_date iq  ON iq.report_day = d.report_day
-      LEFT JOIN reasons_per_date r          ON r.report_day = d.report_day
-      GROUP BY d.report_day, t.total, s.sent_count, iq.in_queue_count
+      LEFT JOIN rooftop_report_status_daily s ON s.report_day = d.report_day
+      GROUP BY d.report_day, t.total
       ORDER BY d.report_day DESC
     `);
     return res.json(rows);
