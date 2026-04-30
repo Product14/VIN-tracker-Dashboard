@@ -1448,12 +1448,17 @@ app.get("/api/scheduled-report", async (req, res) => {
     }
   }
 
-  // ── Step 2: Compute fresh summary directly from DB ───────────────────────
+  // ── Step 2: Compute fresh summary + report coverage directly from DB ──────
   // Always query live — never read from cache — so lastSync reflects the
   // sync that just completed, not a previously cached value.
   let summary;
+  let reportCovData = [];
+  let totalActiveRooftops = 0;
   try {
-    summary = await computeSummary(null);
+    const [s, cov] = await Promise.all([computeSummary(null), computeReportCoverage()]);
+    summary             = s;
+    reportCovData       = cov.rows;
+    totalActiveRooftops = cov.totalActiveRooftops;
   } catch (err) {
     console.error("[scheduled-report] failed to compute summary:", err?.message);
     return res.status(500).json({ error: "Failed to compute summary data" });
@@ -1461,7 +1466,7 @@ app.get("/api/scheduled-report", async (req, res) => {
 
   // ── Step 3: Build HTML and send ───────────────────────────────────────────
   try {
-    const html = buildEmailHtml(summary, timeLabel, dashboardUrl);
+    const html = buildEmailHtml(summary, timeLabel, dashboardUrl, reportCovData, totalActiveRooftops);
     await sendReport(html, timeLabel);
     console.log("[scheduled-report] done");
     return res.json({ ok: true, timeLabel, syncSkipped });
@@ -2936,9 +2941,9 @@ app.get("/api/send-daily-report/status", async (req, res) => {
 
 // ─── Report Coverage (last 7 report dates) ───────────────────────────────────
 
-app.get("/api/report-coverage", async (_req, res) => {
-  try {
-    const { rows } = await query(`
+async function computeReportCoverage() {
+  const [coverageRes, activeRes] = await Promise.all([
+    query(`
       WITH dates AS (
         SELECT DISTINCT report_day
         FROM rooftop_report_status_daily
@@ -2969,7 +2974,18 @@ app.get("/api/report-coverage", async (_req, res) => {
         AND s.rooftop_id IN (SELECT rooftop_id FROM v_by_rooftop)
       GROUP BY d.report_day
       ORDER BY d.report_day DESC
-    `);
+    `),
+    query(`SELECT COUNT(*)::int AS total FROM v_by_rooftop`),
+  ]);
+  return {
+    rows: coverageRes.rows,
+    totalActiveRooftops: activeRes.rows[0]?.total ?? 0,
+  };
+}
+
+app.get("/api/report-coverage", async (_req, res) => {
+  try {
+    const { rows } = await computeReportCoverage();
     return res.json(rows);
   } catch (err) {
     console.error("/api/report-coverage error:", err);

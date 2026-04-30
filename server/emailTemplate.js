@@ -41,6 +41,18 @@ function score(val) {
   return Number(val).toFixed(1);
 }
 
+const REPORT_REASONS = [
+  { key: "reasonNoRecipient",       label: "No Recipient"        },
+  { key: "reasonImsOff",            label: "IMS Off"             },
+  { key: "reasonNoActiveInventory", label: "No Active Inventory" },
+  { key: "reasonNoVehicles90Days",  label: "No Vehicles 90 Days" },
+  { key: "reasonPendingVins",       label: "Pending VINs"        },
+  { key: "reasonNegativeTat",       label: "Negative TAT"        },
+  { key: "reasonLowPhotoCoverage",  label: "Low Photo Coverage"  },
+  { key: "reasonAlreadySent",       label: "Already Sent"        },
+  { key: "reasonTimedOut",          label: "Timed Out"           },
+];
+
 // ─── Partial builders ─────────────────────────────────────────────────────────
 
 function kpiCard(label, value, color, width) {
@@ -74,6 +86,27 @@ function tableRow(cells, zebra) {
 }
 
 
+function reportKpiCard(label, value, sub, color) {
+  return `
+    <td style="width:25%; padding:4px;" valign="top">
+      <div style="background:#fff; border:1px solid ${BORDER_COLOR}; border-radius:8px; padding:14px 12px; border-top:3px solid ${color};">
+        <div style="font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:${TEXT_MUTED}; margin-bottom:4px;">${label}</div>
+        <div style="font-size:22px; font-weight:700; color:${color}; line-height:1;">${value}</div>
+        <div style="font-size:11px; color:${TEXT_MUTED}; margin-top:3px; min-height:16px;">${sub || ""}</div>
+      </div>
+    </td>`;
+}
+
+function sentPctColor(pct) {
+  if (pct >= 80) return "#15803d";
+  if (pct >= 50) return "#b45309";
+  return "#b91c1c";
+}
+
+function fmtReportDay(d) {
+  return new Date(d + "T12:00:00Z").toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+}
+
 function sectionTitle(title) {
   return `
     <tr>
@@ -91,7 +124,7 @@ function sectionTitle(title) {
  * @param {string} dashboardUrl - link for the CTA button
  * @returns {string} full HTML email string
  */
-export function buildEmailHtml(summary, timeLabel, dashboardUrl) {
+export function buildEmailHtml(summary, timeLabel, dashboardUrl, reportCovData = [], totalActiveRooftops = 0) {
   const { totals, byCSM, byType, byBucket, byRooftop, lastSync } = summary;
 
   const now = new Date();
@@ -244,6 +277,61 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl) {
     })),
   ], i % 2 === 0)).join("");
 
+  // ── Report Status section ─────────────────────────────────────────────────
+  const activeReasons = REPORT_REASONS.filter(r => reportCovData.some(row => (row[r.key] ?? 0) > 0));
+  const ystRow = reportCovData[0];
+  const ystAttempted   = ystRow?.attemptedRooftops ?? 0;
+  const ystSent        = ystRow?.sent ?? 0;
+  const ystSentPct     = totalActiveRooftops > 0 ? Math.round((ystSent / totalActiveRooftops) * 100) : 0;
+  const ystNoRecipient = totalActiveRooftops - ystAttempted;
+
+  const reportKpiRow = `
+    <tr>
+      ${reportKpiCard("Active Rooftops", fmt(totalActiveRooftops), null,                              "#6366f1")}
+      ${reportKpiCard("Attempted",       fmt(ystAttempted),        `of ${fmt(totalActiveRooftops)}`,  "#0891b2")}
+      ${reportKpiCard("Sent",            fmt(ystSent),             `${ystSentPct}% of total`,         GREEN    )}
+      ${reportKpiCard("No Recipients",   fmt(ystNoRecipient),      null,                              RED      )}
+    </tr>`;
+
+  const thRptFixed = `padding:9px 12px; text-align:left;  font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; color:${TEXT_MUTED}; white-space:nowrap; border-bottom:2px solid ${BORDER_COLOR}; background:${GRAY_BG}; vertical-align:bottom;`;
+  const thRptCount = `padding:9px 12px; text-align:right; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; color:${TEXT_MUTED}; white-space:nowrap; border-bottom:2px solid ${BORDER_COLOR}; background:${GRAY_BG}; vertical-align:bottom;`;
+  const thRptGroup = `padding:9px 12px; text-align:center; font-size:11px; font-weight:700; letter-spacing:0.04em; color:#991b1b; background:#fef2f2; border-left:2px solid #fca5a5; border-right:2px solid #fca5a5; border-bottom:1px solid #fca5a5; white-space:nowrap;`;
+  const thRptSub   = (first, last) => `padding:7px 12px; text-align:right; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; color:#991b1b; background:#fef2f2; border-bottom:2px solid #fca5a5; white-space:nowrap;${first ? " border-left:2px solid #fca5a5;" : ""}${last ? " border-right:2px solid #fca5a5;" : ""}`;
+
+  const reportTableHeaders = activeReasons.length === 0
+    ? `<tr style="background:${GRAY_BG};">
+        <th style="${thRptFixed}">Report Date</th>
+        <th style="${thRptCount}">Attempted</th>
+        <th style="${thRptCount}">Sent</th>
+        <th style="${thRptCount}">Sent %</th>
+        <th style="${thRptCount}">Not Sent</th>
+      </tr>`
+    : `<tr style="background:${GRAY_BG};">
+        <th rowspan="2" style="${thRptFixed}">Report Date</th>
+        <th rowspan="2" style="${thRptCount}">Attempted</th>
+        <th rowspan="2" style="${thRptCount}">Sent</th>
+        <th rowspan="2" style="${thRptCount}">Sent %</th>
+        <th rowspan="2" style="${thRptCount}">Not Sent</th>
+        <th colspan="${activeReasons.length}" style="${thRptGroup}">Not Sent Reasons</th>
+      </tr>
+      <tr>
+        ${activeReasons.map((r, idx) =>
+          `<th style="${thRptSub(idx === 0, idx === activeReasons.length - 1)}">${r.label}</th>`
+        ).join("")}
+      </tr>`;
+
+  const reportTableRows = reportCovData.map((r, i) => {
+    const pctVal = r.sentPct != null ? `${r.sentPct}%` : "—";
+    return tableRow([
+      { value: fmtReportDay(r.reportDay),  align: "left"                                                             },
+      { value: fmt(r.attemptedRooftops)                                                                              },
+      { value: fmt(r.sent),               color: r.sent > 0 ? GREEN : null                                          },
+      { value: pctVal,                    color: r.sentPct != null ? sentPctColor(Number(r.sentPct)) : null         },
+      { value: fmt(r.notSent),            color: r.notSent > 0 ? RED : null                                         },
+      ...activeReasons.map(ar => ({ value: fmt(r[ar.key] ?? 0), color: (r[ar.key] ?? 0) > 0 ? RED : null })),
+    ], i % 2 === 0);
+  }).join("");
+
   // ── CTA button ────────────────────────────────────────────────────────────
   const ctaHtml = dashboardUrl ? `
     <tr>
@@ -315,6 +403,14 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl) {
                 </td></tr>
                 </td></tr>
 
+                <!-- Report Status KPIs -->
+                ${sectionTitle("Report Status")}
+                <tr><td style="padding-bottom:12px;">
+                  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                    ${reportKpiRow}
+                  </table>
+                </td></tr>
+
                 <!-- By Rooftop Type section -->
                 ${sectionTitle("By Rooftop Type")}
                 <tr><td>
@@ -342,6 +438,21 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl) {
                          style="border:1px solid ${BORDER_COLOR}; border-radius:8px; overflow:hidden; border-collapse:separate; border-spacing:0;">
                     ${rooftopHeaders}
                     ${rooftopRows || `<tr><td colspan="${4 + activeBucketCols.length}" style="padding:16px; text-align:center; color:${TEXT_MUTED}; font-size:13px;">No rooftops with pending >24hr</td></tr>`}
+                  </table>
+                </td></tr>
+
+                <!-- Breakline -->
+                <tr><td style="padding:24px 0 0;">
+                  <div style="border-top:2px solid ${BORDER_COLOR};"></div>
+                </td></tr>
+
+                <!-- Report Status 7-day table -->
+                ${sectionTitle("Last 7 Days")}
+                <tr><td>
+                  <table width="100%" cellpadding="0" cellspacing="0" border="0"
+                         style="border:1px solid ${BORDER_COLOR}; border-radius:8px; overflow:hidden; border-collapse:separate; border-spacing:0;">
+                    ${reportTableHeaders}
+                    ${reportTableRows || `<tr><td colspan="${5 + activeReasons.length}" style="padding:16px; text-align:center; color:${TEXT_MUTED}; font-size:13px;">No report data found.</td></tr>`}
                   </table>
                 </td></tr>
 
