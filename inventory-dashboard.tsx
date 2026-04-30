@@ -1935,9 +1935,14 @@ function AdminView({ syncing }: { syncing: boolean }) {
   );
 }
 
-function ReportCoverageTab({ rows, loading, onRooftopDrillDown }: { rows: any[]; loading: boolean; onRooftopDrillDown?: (filters: any) => void }) {
+function ReportCoverageTab({ rows, loading, onRooftopDrillDown, totalActiveRooftops }: { rows: any[]; loading: boolean; onRooftopDrillDown?: (filters: any) => void; totalActiveRooftops?: number }) {
   const activeReasons = REPORT_REASONS.filter(r => rows.some(row => (row[r.key] ?? 0) > 0));
   const reasonColSpan = activeReasons.length;
+
+  const yesterdayRow = rows[0];
+  const attemptedYesterday = yesterdayRow?.attemptedRooftops ?? 0;
+  const attemptedSub = totalActiveRooftops != null ? `of ${totalActiveRooftops} active` : undefined;
+  const noRecipient = totalActiveRooftops != null && !loading ? totalActiveRooftops - attemptedYesterday : 0;
 
   const thBase: React.CSSProperties = { padding: "5px 8px", fontSize: 11, fontWeight: 600, color: "#374151", boxShadow: "inset 0 -2px 0 #e5e7eb", background: "#f9fafb", position: "sticky", top: 0, zIndex: 3, whiteSpace: "nowrap" };
   const thRed: React.CSSProperties  = { padding: "5px 8px", fontSize: 11, fontWeight: 600, color: "#991b1b", boxShadow: "inset 0 -2px 0 #e5e7eb", background: "#fef2f2", position: "sticky", zIndex: 3, whiteSpace: "nowrap" };
@@ -1971,6 +1976,27 @@ function ReportCoverageTab({ rows, loading, onRooftopDrillDown }: { rows: any[];
 
   return (
     <div>
+      <div style={{ display: "flex", gap: 16, marginBottom: 20 }}>
+        <StatCard
+          label="Active Rooftops"
+          value={totalActiveRooftops ?? "—"}
+          loading={totalActiveRooftops == null}
+          color="#6366f1"
+        />
+        <StatCard
+          label="Attempted"
+          value={loading ? 0 : attemptedYesterday}
+          sub={loading ? undefined : attemptedSub}
+          loading={loading}
+          color="#0891b2"
+        />
+        <StatCard
+          label="No Recipients"
+          value={loading || totalActiveRooftops == null ? 0 : noRecipient}
+          loading={loading || totalActiveRooftops == null}
+          color="#dc2626"
+        />
+      </div>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
         <h2 style={{ fontSize: 18, fontWeight: 700, color: "#1f2937", margin: 0 }}>Report Status — Last 7 Days</h2>
         <DownloadButton onClick={() => {
@@ -2526,6 +2552,7 @@ export default function Dashboard() {
             <ReportCoverageTab
               rows={reportCovData}
               loading={reportCovLoading}
+              totalActiveRooftops={filterOptions ? rooftopOptions.length : undefined}
               onRooftopDrillDown={(filters) => {
                 setRooftopFilters({ ...DEFAULT_ROOFTOP_FILTERS, ...filters });
                 setDateFilter("all");
