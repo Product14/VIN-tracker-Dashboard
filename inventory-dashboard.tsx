@@ -1943,6 +1943,8 @@ function ReportCoverageTab({ rows, loading, onRooftopDrillDown, totalActiveRooft
   const attemptedYesterday = yesterdayRow?.attemptedRooftops ?? 0;
   const attemptedSub = totalActiveRooftops != null ? `of ${totalActiveRooftops} active` : undefined;
   const noRecipient = totalActiveRooftops != null && !loading ? totalActiveRooftops - attemptedYesterday : 0;
+  const sentYesterday = yesterdayRow?.sent ?? 0;
+  const sentPct = totalActiveRooftops ? Math.round((sentYesterday / totalActiveRooftops) * 100) : 0;
 
   const thBase: React.CSSProperties = { padding: "5px 8px", fontSize: 11, fontWeight: 600, color: "#374151", boxShadow: "inset 0 -2px 0 #e5e7eb", background: "#f9fafb", position: "sticky", top: 0, zIndex: 3, whiteSpace: "nowrap" };
   const thRed: React.CSSProperties  = { padding: "5px 8px", fontSize: 11, fontWeight: 600, color: "#991b1b", boxShadow: "inset 0 -2px 0 #e5e7eb", background: "#fef2f2", position: "sticky", zIndex: 3, whiteSpace: "nowrap" };
@@ -1989,6 +1991,13 @@ function ReportCoverageTab({ rows, loading, onRooftopDrillDown, totalActiveRooft
           sub={loading ? undefined : attemptedSub}
           loading={loading}
           color="#0891b2"
+        />
+        <StatCard
+          label="Sent"
+          value={loading ? 0 : sentYesterday}
+          sub={loading || totalActiveRooftops == null ? undefined : `${sentPct}%`}
+          loading={loading || totalActiveRooftops == null}
+          color="#15803d"
         />
         <StatCard
           label="No Recipients"
