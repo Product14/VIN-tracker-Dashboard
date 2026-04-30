@@ -2473,20 +2473,24 @@ async function writeReportStatusSnapshot(runId) {
       ORDER BY rq.rooftop_id, (rq.report_date::date - 1), rq.id DESC
     ),
     group_not_sent AS (
-      SELECT DISTINCT ON (rq.enterprise_id, (rq.report_date::date - 1))
+      SELECT
         rv.rooftop_id                  AS r_id,
         rq.enterprise_id,
         (rq.report_date::date - 1)     AS r_date,
         rq.status,
         rq.error_reason,
         3                              AS priority
-      FROM report_queue rq
+      FROM (
+        SELECT DISTINCT ON (enterprise_id, (report_date::date - 1))
+          enterprise_id, status, error_reason, report_date
+        FROM report_queue
+        WHERE run_id = $1
+          AND status != 'sent'
+          AND report_type = 'Group'
+          AND report_date IS NOT NULL
+        ORDER BY enterprise_id, (report_date::date - 1), id DESC
+      ) rq
       JOIN v_by_rooftop rv ON rv.enterprise_id = rq.enterprise_id
-      WHERE rq.run_id = $1
-        AND rq.status != 'sent'
-        AND rq.report_type = 'Group'
-        AND rq.report_date IS NOT NULL
-      ORDER BY rq.enterprise_id, (rq.report_date::date - 1), rq.id DESC
     ),
     all_data AS (
       SELECT * FROM report_sent
