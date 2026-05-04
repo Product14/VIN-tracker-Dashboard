@@ -492,7 +492,7 @@ function FilterBar({ filters, setFilters, rooftopOptions = [], typeOptions = [],
   const rooftopNames = useMemo(() => [...new Set(availableRooftops.map(r => r.name).filter(Boolean))].sort(), [availableRooftops]);
   const selectedRooftopName = filters.rooftopId ? (rooftopIdToName[filters.rooftopId] ?? filters.rooftopId) : null;
 
-  const activeCount = [filters.enterpriseId, filters.rooftopId, filters.rooftopType, filters.csm, filters.status, filters.after24h !== null ? "x" : null, filters.hasPhotos !== null && filters.hasPhotos !== undefined ? "x" : null, filters.hasVin !== null && filters.hasVin !== undefined ? "x" : null, filters.reasonBucket].filter(Boolean).length;
+  const activeCount = [filters.enterpriseId, filters.rooftopId, filters.rooftopType, filters.csm, filters.status, filters.after24h !== null ? "x" : null, filters.hasPhotos !== null && filters.hasPhotos !== undefined ? "x" : null, filters.hasVin !== null && filters.hasVin !== undefined ? "x" : null, filters.reasonBucket, filters.inventoryScore].filter(Boolean).length;
 
   return (
     <div style={{ marginBottom: 16 }}>
@@ -553,8 +553,14 @@ function FilterBar({ filters, setFilters, rooftopOptions = [], typeOptions = [],
           options={BUCKETS.map(b => b.label)}
           placeholder="All Buckets"
         />
+        <SearchableSelect
+          value={filters.inventoryScore}
+          onChange={v => setFilters(f => ({ ...f, inventoryScore: v }))}
+          options={["Poor (<6)", "Average (6–8)", "Good (8+)"]}
+          placeholder="All Inv. Scores"
+        />
         {activeCount > 0 && (
-          <button onClick={() => setFilters({ search: "", enterpriseId: null, rooftopId: null, rooftopType: null, csm: null, status: null, after24h: null, hasPhotos: null, hasVin: null, reasonBucket: null })}
+          <button onClick={() => setFilters({ search: "", enterpriseId: null, rooftopId: null, rooftopType: null, csm: null, status: null, after24h: null, hasPhotos: null, hasVin: null, reasonBucket: null, inventoryScore: null })}
             style={{ padding: "7px 14px", borderRadius: 8, border: "1px solid #fca5a5", background: "#fef2f2", color: "#dc2626", fontSize: 13, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>
             Clear {activeCount} filter{activeCount > 1 ? "s" : ""}
           </button>
@@ -571,6 +577,7 @@ function FilterBar({ filters, setFilters, rooftopOptions = [], typeOptions = [],
           {filters.hasPhotos !== null && filters.hasPhotos !== undefined && <Badge label={filters.hasPhotos ? "Has Photos" : "No Photos"} color="blue" />}
           {filters.hasVin !== null && filters.hasVin !== undefined && <Badge label={filters.hasVin ? "Has VIN" : "No VIN"} color="blue" />}
           {filters.reasonBucket && <Badge label={`Bucket: ${filters.reasonBucket}`} color="amber" />}
+          {filters.inventoryScore && <Badge label={`Inv. Score: ${filters.inventoryScore}`} color="blue" />}
         </div>
       )}
     </div>
@@ -617,6 +624,7 @@ function RawTab({ data, loading, filters, setFilters, total, page, pageCount, on
     { key: "processedAt",  label: "Delivered" },
     { key: "reasonBucket", label: "Reason Bucket" },
     { key: "holdReason",   label: "Hold Reason" },
+    { key: "vinScore",     label: "Inv. Score",    numeric: true },
   ];
 
   const handleDownload = async () => {
@@ -632,13 +640,14 @@ function RawTab({ data, loading, filters, setFilters, total, page, pageCount, on
     if (filters.hasPhotos !== null && filters.hasPhotos !== undefined) params.set("hasPhotos", filters.hasPhotos ? "true" : "false");
     if (filters.hasVin !== null && filters.hasVin !== undefined) params.set("hasVin", filters.hasVin ? "true" : "false");
     if (filters.reasonBucket)      params.set("reasonBucket", filters.reasonBucket);
+    if (filters.inventoryScore)    params.set("inventoryScore", filters.inventoryScore);
     if (sortCol) { params.set("sortBy", sortCol); params.set("sortDir", sortDir); }
     try {
       const res = await fetch(`${API_BASE}/api/vins/export?${params}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const { data } = await res.json();
-      const headers = ["Enterprise ID", "Enterprise Name", "Team ID", "Rooftop Name", "Type", "CSM", "VIN", "Dealer VIN ID", "Has Photos", "Status", "After 24h?", "Received", "Delivered", "Reason Bucket", "Hold Reason"];
-      const rows = data.map(d => [d.enterpriseId, d.enterprise, d.rooftopId, d.rooftop, d.rooftopType, d.csm, d.vin, d.dealerVinId ?? "", d.hasPhotos ? "Yes" : "No", d.status, isAfter24h(d) ? "Yes" : "No", d.receivedAt ? new Date(d.receivedAt).toLocaleString() : "", d.processedAt ? new Date(d.processedAt).toLocaleString() : "", d.reasonBucket || "", d.holdReason || ""]);
+      const headers = ["Enterprise ID", "Enterprise Name", "Team ID", "Rooftop Name", "Type", "CSM", "VIN", "Dealer VIN ID", "Has Photos", "Status", "After 24h?", "Received", "Delivered", "Reason Bucket", "Hold Reason", "Inv. Score"];
+      const rows = data.map(d => [d.enterpriseId, d.enterprise, d.rooftopId, d.rooftop, d.rooftopType, d.csm, d.vin, d.dealerVinId ?? "", d.hasPhotos ? "Yes" : "No", d.status, isAfter24h(d) ? "Yes" : "No", d.receivedAt ? new Date(d.receivedAt).toLocaleString() : "", d.processedAt ? new Date(d.processedAt).toLocaleString() : "", d.reasonBucket || "", d.holdReason || "", d.vinScore != null ? Number(d.vinScore).toFixed(1) : ""]);
       downloadCSV("vin-data.csv", headers, rows);
     } catch (err) {
       console.error("Export failed:", err);
@@ -671,9 +680,9 @@ function RawTab({ data, loading, filters, setFilters, total, page, pageCount, on
             </tr>
           </thead>
           <tbody className={loading && data.length > 0 ? "tbody-loading" : ""}>
-            {loading && data.length === 0 && <TableShimmer cols={14} />}
+            {loading && data.length === 0 && <TableShimmer cols={15} />}
             {!loading && data.length === 0 && (
-              <tr><td colSpan={14} style={{ padding: 40, textAlign: "center", color: "#9ca3af", fontSize: 14 }}>No records match the current filters.</td></tr>
+              <tr><td colSpan={15} style={{ padding: 40, textAlign: "center", color: "#9ca3af", fontSize: 14 }}>No records match the current filters.</td></tr>
             )}
             {data.map((d, i) => (
               <tr key={d.vin} style={{ background: i % 2 === 0 ? "#fff" : "#f9fafb" }}>
@@ -708,6 +717,11 @@ function RawTab({ data, loading, filters, setFilters, total, page, pageCount, on
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6", whiteSpace: "nowrap", fontSize: 12 }}>{d.processedAt ? new Date(d.processedAt).toLocaleString() : "—"}</td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}>{d.reasonBucket ? <Badge label={d.reasonBucket} color="amber" /> : <span style={{ color: "#9ca3af" }}>—</span>}</td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}>{d.holdReason ? <Truncated value={d.holdReason} maxWidth={180} /> : <span style={{ color: "#9ca3af" }}>—</span>}</td>
+                <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6", textAlign: "center" }}>
+                  {d.vinScore != null
+                    ? <span style={{ fontWeight: 700, color: d.vinScore >= 8 ? "#166534" : d.vinScore >= 6 ? "#92400e" : "#991b1b" }}>{Number(d.vinScore).toFixed(1)}</span>
+                    : <span style={{ color: "#9ca3af" }}>—</span>}
+                </td>
               </tr>
             ))}
           </tbody>
@@ -752,7 +766,7 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
   const pendencyColSpan = 1 + activeBuckets.length;
   const visibleDates: string[] = reportDatesExpanded ? reportDates : reportDates.slice(0, 1);
   const showDateToggle = reportDates.length > 1;
-  const activeCount = [filters.rooftopType, filters.csm, filters.enterprise, filters.websiteScore, filters.imsIntegration, filters.publishingStatus, !!(filters.reportStatus || filters.reportReason)].filter(Boolean).length;
+  const activeCount = [filters.rooftopType, filters.csm, filters.enterprise, filters.websiteScore, filters.inventoryScore, filters.imsIntegration, filters.publishingStatus, !!(filters.reportStatus || filters.reportReason)].filter(Boolean).length;
   const cols = [
     { key: "enterprise",             label: "Enterprise Name" },
     { key: "name",                   label: "Rooftop Name" },
@@ -767,6 +781,7 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
     { key: "notProcessedAfter24",    label: "Pending VINs >24h",   numeric: true },
     ...activeBuckets.map(b => ({ key: b.key, label: b.label, numeric: true })),
     { key: "websiteScore",           label: "Website Score",       numeric: true },
+    { key: "avgInventoryScore",      label: "Inv. Score",          numeric: true },
     { key: "_links",                 label: "Links",               numeric: true, noSort: true },
   ];
 
@@ -782,6 +797,7 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
     if (filters.imsIntegration)   params.set("imsIntegration",  filters.imsIntegration);
     if (filters.publishingStatus) params.set("publishingStatus", filters.publishingStatus);
     if (filters.websiteScore)     params.set("websiteScore",    filters.websiteScore);
+    if (filters.inventoryScore)   params.set("inventoryScore",  filters.inventoryScore);
     if (filters.reportStatus)     params.set("reportStatus",    filters.reportStatus);
     if (filters.reportReason)     params.set("reportReason",    filters.reportReason);
     if (filters.reportDay)        params.set("reportDay",       filters.reportDay);
@@ -790,7 +806,7 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
       const res = await fetch(`${API_BASE}/api/rooftops/export?${params}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const { data } = await res.json();
-      const headers = ["Enterprise ID", "Enterprise Name", "Team ID", "Rooftop Name", "Type", "CSM", "IMS Integration", "Publishing", "Total Inventory", "With Photos", "Delivered", "Pending", "Pending VINs >24h", "Pending VINs >24h %", "Website Score", ...activeBuckets.map(b => b.label), ...reportDates.map((d: string) => fmtReportDayLabel(d))];
+      const headers = ["Enterprise ID", "Enterprise Name", "Team ID", "Rooftop Name", "Type", "CSM", "IMS Integration", "Publishing", "Total Inventory", "With Photos", "Delivered", "Pending", "Pending VINs >24h", "Pending VINs >24h %", "Website Score", "Inv. Score", ...activeBuckets.map(b => b.label), ...reportDates.map((d: string) => fmtReportDayLabel(d))];
       const csvRows = data.map(r => {
         const rate = r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0);
         const reportCols = reportDates.map((d: string) => {
@@ -799,7 +815,7 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
           if (entry.status === "sent") return "Sent";
           return fmtSkipReason(entry.reason) ?? entry.reason ?? "Not Sent";
         });
-        return [r.enterpriseId, r.enterprise, r.rooftopId, r.name, r.type, r.csm, r.imsIntegrationStatus ?? "", r.publishingStatus ?? "", r.total, r.withPhotos ?? 0, r.deliveredWithPhotos ?? 0, r.pendingWithPhotos ?? 0, r.notProcessedAfter24, rate, r.websiteScore !== null && r.websiteScore !== undefined ? Number(r.websiteScore).toFixed(1) : "", ...activeBuckets.map(b => r[b.key] ?? 0), ...reportCols];
+        return [r.enterpriseId, r.enterprise, r.rooftopId, r.name, r.type, r.csm, r.imsIntegrationStatus ?? "", r.publishingStatus ?? "", r.total, r.withPhotos ?? 0, r.deliveredWithPhotos ?? 0, r.pendingWithPhotos ?? 0, r.notProcessedAfter24, rate, r.websiteScore !== null && r.websiteScore !== undefined ? Number(r.websiteScore).toFixed(1) : "", r.avgInventoryScore != null ? Number(r.avgInventoryScore).toFixed(1) : "", ...activeBuckets.map(b => r[b.key] ?? 0), ...reportCols];
       });
       downloadCSV("rooftop-view.csv", headers, csvRows);
     } catch (err) {
@@ -848,6 +864,12 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
             placeholder="All Scores"
           />
           <SearchableSelect
+            value={filters.inventoryScore}
+            onChange={v => setFilters(f => ({ ...f, inventoryScore: v }))}
+            options={SCORE_OPTIONS}
+            placeholder="All Inv. Scores"
+          />
+          <SearchableSelect
             value={filters.imsIntegration}
             onChange={v => setFilters(f => ({ ...f, imsIntegration: v }))}
             options={["Yes", "No"]}
@@ -882,6 +904,7 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
             {filters.csm && <Badge label={`CSM: ${filters.csm}`} color="blue" />}
             {filters.enterprise && <Badge label={`Enterprise: ${filters.enterprise}`} color="blue" />}
             {filters.websiteScore && <Badge label={`Score: ${filters.websiteScore}`} color="blue" />}
+            {filters.inventoryScore && <Badge label={`Inv. Score: ${filters.inventoryScore}`} color="blue" />}
             {filters.imsIntegration && <Badge label={`IMS: ${filters.imsIntegration}`} color="blue" />}
             {filters.publishingStatus && <Badge label={`Publishing: ${filters.publishingStatus}`} color="blue" />}
           </div>
@@ -939,6 +962,9 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
               </th>
               <th rowSpan={2} onClick={() => handleSort("websiteScore")} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "pointer", userSelect: "none", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
                 Website Score {sortCol === "websiteScore" ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
+              </th>
+              <th rowSpan={2} onClick={() => handleSort("avgInventoryScore")} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "pointer", userSelect: "none", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
+                Inv. Score {sortCol === "avgInventoryScore" ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
               </th>
               <th rowSpan={2} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "default", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
                 Links
@@ -1012,6 +1038,13 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
                     {r.websiteScore !== null && r.websiteScore !== undefined
                       ? <span style={{ fontWeight: 700, color: r.websiteScore >= 8 ? "#166534" : r.websiteScore >= 6 ? "#92400e" : "#991b1b" }}>
                           {Number(r.websiteScore).toFixed(1)}
+                        </span>
+                      : <span style={{ color: "#9ca3af" }}>—</span>}
+                  </td>
+                  <td style={{ ...tdStyle, textAlign: "center" }}>
+                    {r.avgInventoryScore != null
+                      ? <span style={{ fontWeight: 700, color: r.avgInventoryScore >= 8 ? "#166534" : r.avgInventoryScore >= 6 ? "#92400e" : "#991b1b" }}>
+                          {Number(r.avgInventoryScore).toFixed(1)}
                         </span>
                       : <span style={{ color: "#9ca3af" }}>—</span>}
                   </td>
@@ -1091,6 +1124,7 @@ function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = f
     { key: "notProcessedAfter24", label: "Pending VINs >24h",   numeric: true },
     ...activeBuckets.map(b => ({ key: b.key, label: b.label, numeric: true })),
     { key: "avgWebsiteScore",     label: "Avg Website Score",   numeric: true },
+    { key: "avgInventoryScore",   label: "Avg Inv. Score",      numeric: true },
     { key: "_links",              label: "Links",               numeric: true, noSort: true },
   ];
 
@@ -1100,7 +1134,7 @@ function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = f
     else { onSortChange(null, "asc"); }
   };
 
-  const activeCount = [filters.csm, filters.accountType, filters.websiteScore, !!(filters.reportStatus || filters.reportReason)].filter(Boolean).length;
+  const activeCount = [filters.csm, filters.accountType, filters.websiteScore, filters.inventoryScore, !!(filters.reportStatus || filters.reportReason)].filter(Boolean).length;
 
   const handleDownload = async () => {
     setDownloading(true);
@@ -1108,18 +1142,19 @@ function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = f
     if (filters.search)       params.set("search",        filters.search);
     if (filters.csm)          params.set("csm",           filters.csm);
     if (filters.accountType)  params.set("accountType",   filters.accountType);
-    if (filters.websiteScore) params.set("websiteScore",  filters.websiteScore);
-    if (filters.reportStatus) params.set("reportStatus",  filters.reportStatus);
-    if (filters.reportReason) params.set("reportReason",  filters.reportReason);
+    if (filters.websiteScore)   params.set("websiteScore",   filters.websiteScore);
+    if (filters.inventoryScore) params.set("inventoryScore", filters.inventoryScore);
+    if (filters.reportStatus)   params.set("reportStatus",   filters.reportStatus);
+    if (filters.reportReason)   params.set("reportReason",   filters.reportReason);
     if (sortCol) { params.set("sortBy", sortCol); params.set("sortDir", sortDir); }
     try {
       const res = await fetch(`${API_BASE}/api/enterprises/export?${params}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const { data } = await res.json();
-      const headers = ["Enterprise ID", "Enterprise Name", "Account Type", "CSM", "Rooftops", ...(showNotIntegrated ? ["Not Integrated"] : []), ...(showPublishingDisabled ? ["Publishing Disabled"] : []), "Total Inventory", "With Photos", "Delivered", "Pending", "Pending VINs >24h", "Pending VINs >24h %", "Avg Website Score", ...activeBuckets.map(b => b.label), "Report Status"];
+      const headers = ["Enterprise ID", "Enterprise Name", "Account Type", "CSM", "Rooftops", ...(showNotIntegrated ? ["Not Integrated"] : []), ...(showPublishingDisabled ? ["Publishing Disabled"] : []), "Total Inventory", "With Photos", "Delivered", "Pending", "Pending VINs >24h", "Pending VINs >24h %", "Avg Website Score", "Avg Inv. Score", ...activeBuckets.map(b => b.label), "Report Status"];
       const csvRows = data.map((r: any) => {
         const reportStatusLabel = r.reportStatus === "sent" ? "Sent" : (fmtSkipReason(r.reportReason) ?? "Not Sent");
-        return [r.id, r.name, r.accountType ?? "", r.csm ?? "", r.rooftopCount ?? 0, ...(showNotIntegrated ? [r.notIntegratedCount ?? 0] : []), ...(showPublishingDisabled ? [r.publishingDisabledCount ?? 0] : []), r.total, r.withPhotos ?? 0, r.deliveredWithPhotos ?? 0, r.pendingWithPhotos ?? 0, r.notProcessedAfter24, r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0), r.avgWebsiteScore !== null && r.avgWebsiteScore !== undefined ? Number(r.avgWebsiteScore).toFixed(1) : "", ...activeBuckets.map(b => r[b.key] ?? 0), reportStatusLabel];
+        return [r.id, r.name, r.accountType ?? "", r.csm ?? "", r.rooftopCount ?? 0, ...(showNotIntegrated ? [r.notIntegratedCount ?? 0] : []), ...(showPublishingDisabled ? [r.publishingDisabledCount ?? 0] : []), r.total, r.withPhotos ?? 0, r.deliveredWithPhotos ?? 0, r.pendingWithPhotos ?? 0, r.notProcessedAfter24, r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0), r.avgWebsiteScore !== null && r.avgWebsiteScore !== undefined ? Number(r.avgWebsiteScore).toFixed(1) : "", r.avgInventoryScore != null ? Number(r.avgInventoryScore).toFixed(1) : "", ...activeBuckets.map(b => r[b.key] ?? 0), reportStatusLabel];
       });
       downloadCSV("enterprise-view.csv", headers, csvRows);
     } catch (err) {
@@ -1158,6 +1193,12 @@ function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = f
             placeholder="All Scores"
           />
           <SearchableSelect
+            value={filters.inventoryScore}
+            onChange={v => setFilters(f => ({ ...f, inventoryScore: v }))}
+            options={SCORE_OPTIONS}
+            placeholder="All Inv. Scores"
+          />
+          <SearchableSelect
             value={filters.reportStatus ? REPORT_FILTER_DISPLAY[filters.reportStatus] : filters.reportReason ? REPORT_FILTER_DISPLAY[filters.reportReason] : null}
             onChange={v => {
               if (!v) { setFilters(f => ({ ...f, reportStatus: null, reportReason: null })); return; }
@@ -1181,11 +1222,12 @@ function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = f
           {downloading ? "⟳ Downloading…" : "↓ Download CSV"}
         </button>
       </div>
-      {(filters.csm || filters.accountType || filters.websiteScore) && (
+      {(filters.csm || filters.accountType || filters.websiteScore || filters.inventoryScore) && (
         <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
-          {filters.csm         && <Badge label={`CSM: ${fmtCsm(filters.csm)}`} color="blue" />}
-          {filters.accountType && <Badge label={`Type: ${filters.accountType}`} color="blue" />}
-          {filters.websiteScore && <Badge label={`Score: ${filters.websiteScore}`} color="blue" />}
+          {filters.csm           && <Badge label={`CSM: ${fmtCsm(filters.csm)}`} color="blue" />}
+          {filters.accountType   && <Badge label={`Type: ${filters.accountType}`} color="blue" />}
+          {filters.websiteScore  && <Badge label={`Score: ${filters.websiteScore}`} color="blue" />}
+          {filters.inventoryScore && <Badge label={`Inv. Score: ${filters.inventoryScore}`} color="blue" />}
         </div>
       )}
       <div style={{ maxHeight: "calc(100vh - 260px)", overflow: "auto", borderRadius: 10, border: "1px solid #e5e7eb" }}>
@@ -1232,6 +1274,9 @@ function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = f
               </th>
               <th rowSpan={2} onClick={() => handleSort("avgWebsiteScore")} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "pointer", userSelect: "none", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
                 Avg Website Score {sortCol === "avgWebsiteScore" ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
+              </th>
+              <th rowSpan={2} onClick={() => handleSort("avgInventoryScore")} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "pointer", userSelect: "none", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
+                Avg Inv. Score {sortCol === "avgInventoryScore" ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
               </th>
               <th rowSpan={2} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "default", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
                 Links
@@ -1304,6 +1349,13 @@ function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = f
                     {r.avgWebsiteScore !== null && r.avgWebsiteScore !== undefined
                       ? <span style={{ fontWeight: 700, color: r.avgWebsiteScore >= 8 ? "#166534" : r.avgWebsiteScore >= 6 ? "#92400e" : "#991b1b" }}>
                           {Number(r.avgWebsiteScore).toFixed(1)}
+                        </span>
+                      : <span style={{ color: "#9ca3af" }}>—</span>}
+                  </td>
+                  <td style={{ ...tdStyle, textAlign: "center" }}>
+                    {r.avgInventoryScore != null
+                      ? <span style={{ fontWeight: 700, color: r.avgInventoryScore >= 8 ? "#166534" : r.avgInventoryScore >= 6 ? "#92400e" : "#991b1b" }}>
+                          {Number(r.avgInventoryScore).toFixed(1)}
                         </span>
                       : <span style={{ color: "#9ca3af" }}>—</span>}
                   </td>
@@ -1503,6 +1555,7 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
       publishingCount: (t.publishingCount ?? 0) + (r.publishingCount ?? 0),
       missingWebsiteCount: (t.missingWebsiteCount ?? 0) + (r.missingWebsiteCount ?? 0),
       avgWebsiteScore: null,
+      avgInventoryScore: null,
     };
     BUCKETS.forEach(b => { obj[b.key] = (t[b.key] ?? 0) + (r[b.key] ?? 0); });
     return obj;
@@ -1524,8 +1577,8 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
           {title}
         </h3>
         <DownloadButton onClick={() => {
-          const headers = [nameCol, "Enterprises", "Rooftops", "Inventory", "With Photos", "Delivered", "Pending", "Pending VINs >24h", "Pending VINs >24h %", "Avg Website Score", ...activeBuckets.map(b => b.label), ...(showPublishing ? ["Publishing Disabled"] : []), "Missing Website", ...(showIntegrated ? ["Not Integrated"] : [])];
-          const csvRows = sorted.map(r => [r.label, r.enterpriseCount ?? 0, r.rooftopCount, r.total, r.withPhotos ?? 0, r.deliveredWithPhotos ?? 0, r.pendingWithPhotos ?? 0, r.notProcessedAfter24, r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0), r.avgWebsiteScore !== null && r.avgWebsiteScore !== undefined ? Number(r.avgWebsiteScore).toFixed(1) : "", ...activeBuckets.map(b => r[b.key] ?? 0), ...(showPublishing ? [r.publishingCount ?? 0] : []), r.missingWebsiteCount ?? 0, ...(showIntegrated ? [r.integratedCount ?? 0] : [])]);
+          const headers = [nameCol, "Enterprises", "Rooftops", "Inventory", "With Photos", "Delivered", "Pending", "Pending VINs >24h", "Pending VINs >24h %", "Avg Website Score", "Avg Inv. Score", ...activeBuckets.map(b => b.label), ...(showPublishing ? ["Publishing Disabled"] : []), "Missing Website", ...(showIntegrated ? ["Not Integrated"] : [])];
+          const csvRows = sorted.map(r => [r.label, r.enterpriseCount ?? 0, r.rooftopCount, r.total, r.withPhotos ?? 0, r.deliveredWithPhotos ?? 0, r.pendingWithPhotos ?? 0, r.notProcessedAfter24, r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0), r.avgWebsiteScore !== null && r.avgWebsiteScore !== undefined ? Number(r.avgWebsiteScore).toFixed(1) : "", r.avgInventoryScore != null ? Number(r.avgInventoryScore).toFixed(1) : "", ...activeBuckets.map(b => r[b.key] ?? 0), ...(showPublishing ? [r.publishingCount ?? 0] : []), r.missingWebsiteCount ?? 0, ...(showIntegrated ? [r.integratedCount ?? 0] : [])]);
           downloadCSV(`overview-${filterKey}.csv`, headers, csvRows);
         }} />
       </div>
@@ -1546,6 +1599,7 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
                 <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("pendingWithPhotos")}>Pending{si("pendingWithPhotos")}</th>
                 <th rowSpan={2} style={{ ...thBase, textAlign: "center" }}>Pending &gt;24h %</th>
                 <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("avgWebsiteScore")}>Avg Score{si("avgWebsiteScore")}</th>
+                <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("avgInventoryScore")}>Avg Inv. Score{si("avgInventoryScore")}</th>
                 {activeBuckets.length > 0 && (
                   <th colSpan={pendencyColSpan} style={{ ...thBase, textAlign: "center", background: "#fffbeb", color: "#92400e", boxShadow: "inset 0 -1px 0 #fde68a", borderLeft: "2px solid #fcd34d", borderRight: "2px solid #fcd34d" }}>
                     Pending &gt;24h Breakdown
@@ -1614,6 +1668,14 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
                           </span>
                         : <span style={{ color: "#9ca3af" }}>—</span>}
                     </td>
+                    {/* Avg Inv. Score */}
+                    <td style={{ ...td, textAlign: "center" }}>
+                      {r.avgInventoryScore != null
+                        ? <span style={{ fontWeight: 700, color: r.avgInventoryScore >= 8 ? "#166534" : r.avgInventoryScore >= 6 ? "#92400e" : "#991b1b" }}>
+                            {Number(r.avgInventoryScore).toFixed(1)}
+                          </span>
+                        : <span style={{ color: "#9ca3af" }}>—</span>}
+                    </td>
                     {/* Pendency breakdown group: bucket sub-columns only */}
                     {activeBuckets.map((b, idx) => (
                       <td key={b.key} style={{ ...td, textAlign: "center", background: pendBg, ...(idx === 0 ? { borderLeft: "2px solid #fcd34d" } : {}), ...(idx === activeBuckets.length - 1 ? { borderRight: "2px solid #fcd34d" } : {}) }}>
@@ -1664,6 +1726,8 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
                 {/* Standalone: Pending >24h % */}
                 <td style={{ ...totTd, textAlign: "center", color: "#6b7280", fontSize: 12 }}>{totRate.toFixed(0)}%</td>
                 {/* Avg Score */}
+                <td style={{ ...totTd, textAlign: "center", color: "#9ca3af" }}>—</td>
+                {/* Avg Inv. Score */}
                 <td style={{ ...totTd, textAlign: "center", color: "#9ca3af" }}>—</td>
                 {/* Pendency breakdown group: bucket sub-columns only */}
                 {activeBuckets.map((b, idx) => (
@@ -1739,9 +1803,9 @@ function timeAgo(isoString: string): string {
   const d = Math.floor(diff / 86400); return `${d} day${d > 1 ? "s" : ""} ago`;
 }
 
-const DEFAULT_FILTERS = { search: "", enterpriseId: null, rooftopId: null, rooftopType: null, csm: null, status: null, after24h: null, hasPhotos: null, hasVin: null, reasonBucket: null };
-const DEFAULT_ROOFTOP_FILTERS = { search: "", rooftopType: null, csm: null, enterprise: null, websiteScore: null, imsIntegration: null, publishingStatus: null, reportStatus: null, reportReason: null as string | null, reportDay: null as string | null };
-const DEFAULT_ENTERPRISE_FILTERS = { search: "", csm: null, accountType: null, websiteScore: null, reportStatus: null, reportReason: null as string | null };
+const DEFAULT_FILTERS = { search: "", enterpriseId: null, rooftopId: null, rooftopType: null, csm: null, status: null, after24h: null, hasPhotos: null, hasVin: null, reasonBucket: null, inventoryScore: null };
+const DEFAULT_ROOFTOP_FILTERS = { search: "", rooftopType: null, csm: null, enterprise: null, websiteScore: null, inventoryScore: null, imsIntegration: null, publishingStatus: null, reportStatus: null, reportReason: null as string | null, reportDay: null as string | null };
+const DEFAULT_ENTERPRISE_FILTERS = { search: "", csm: null, accountType: null, websiteScore: null, inventoryScore: null, reportStatus: null, reportReason: null as string | null };
 
 // Merged Report Status filter — "Sent" or any not-sent reason
 const REPORT_FILTER_OPTIONS = ["Sent", "No Recipient", "Not Triggered", "IMS Disabled", "Pending VINs", "Negative TAT", "Low Photo Coverage", "Already Sent", "Timed Out"];
@@ -2189,6 +2253,7 @@ export default function Dashboard() {
     if (filters.imsIntegration)   params.set("imsIntegration",  filters.imsIntegration);
     if (filters.publishingStatus) params.set("publishingStatus", filters.publishingStatus);
     if (filters.websiteScore)     params.set("websiteScore",    filters.websiteScore);
+    if (filters.inventoryScore)   params.set("inventoryScore",  filters.inventoryScore);
     if (filters.reportStatus)     params.set("reportStatus",    filters.reportStatus);
     if (filters.reportReason)     params.set("reportReason",    filters.reportReason);
     if (filters.reportDay)        params.set("reportDay",       filters.reportDay);
@@ -2211,10 +2276,11 @@ export default function Dashboard() {
     if (filters.search)       params.set("search",        filters.search);
     if (filters.csm)          params.set("csm",           filters.csm);
     if (filters.accountType)  params.set("accountType",   filters.accountType);
-    if (filters.websiteScore) params.set("websiteScore",  filters.websiteScore);
-    if (filters.reportStatus) params.set("reportStatus",  filters.reportStatus);
-    if (filters.reportReason) params.set("reportReason",  filters.reportReason);
-    if (filters.reportDay)    params.set("reportDay",     filters.reportDay);
+    if (filters.websiteScore)   params.set("websiteScore",   filters.websiteScore);
+    if (filters.inventoryScore) params.set("inventoryScore", filters.inventoryScore);
+    if (filters.reportStatus)   params.set("reportStatus",   filters.reportStatus);
+    if (filters.reportReason)   params.set("reportReason",   filters.reportReason);
+    if (filters.reportDay)      params.set("reportDay",      filters.reportDay);
     if (sortCol) { params.set("sortBy", sortCol); params.set("sortDir", sortDir); }
     params.set("dateFilter", df);
     fetch(`${API_BASE}/api/enterprises?${params}`)
@@ -2248,6 +2314,7 @@ export default function Dashboard() {
     if (filters.hasPhotos !== null && filters.hasPhotos !== undefined) params.set("hasPhotos", filters.hasPhotos ? "true" : "false");
     if (filters.hasVin !== null && filters.hasVin !== undefined) params.set("hasVin", filters.hasVin ? "true" : "false");
     if (filters.reasonBucket)      params.set("reasonBucket", filters.reasonBucket);
+    if (filters.inventoryScore)    params.set("inventoryScore", filters.inventoryScore);
     if (sortCol) { params.set("sortBy", sortCol); params.set("sortDir", sortDir); }
     params.set("dateFilter", df);
 

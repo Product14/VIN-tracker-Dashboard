@@ -77,7 +77,7 @@ async function syncVins() {
   const statuses = [], after24hs = [], receivedAts = [], processedAts = [];
   const reasonBuckets = [], holdReasons = [], hasPhotosArr = [];
   const outputImageCounts = [], thumbnailUrls = [], vehiclePrices = [], syncedAts = [];
-  const makes = [], models = [], years = [], trims = [], stockNumbers = [];
+  const makes = [], models = [], years = [], trims = [], stockNumbers = [], vinScores = [];
 
   for (const row of deduped) {
     vins.push(row.vinName ?? "");
@@ -99,6 +99,7 @@ async function syncVins() {
     years.push(row.year != null ? String(row.year) : null);
     trims.push(row.trim ?? null);
     stockNumbers.push(row.stockNumber ?? null);
+    vinScores.push(row.vin_score != null ? Number(row.vin_score) : null);
     syncedAts.push(syncedAt);
   }
 
@@ -125,14 +126,14 @@ async function syncVins() {
     INSERT INTO vins
       (dealer_vin_id, vin, enterprise_id, rooftop_id, status, after_24h, received_at, processed_at,
        reason_bucket, hold_reason, has_photos, output_image_count, thumbnail_url, vehicle_price,
-       make, model, year, trim, stock_number, synced_at)
+       make, model, year, trim, stock_number, vin_score, synced_at)
     SELECT
       UNNEST($1::text[]),    UNNEST($2::text[]),     UNNEST($3::text[]),     UNNEST($4::text[]),
       UNNEST($5::text[]),    UNNEST($6::smallint[]), UNNEST($7::text[]),     UNNEST($8::text[]),
       UNNEST($9::text[]),    UNNEST($10::text[]),    UNNEST($11::smallint[]),UNNEST($12::int[]),
       UNNEST($13::text[]),   UNNEST($14::real[]),
       UNNEST($15::text[]),   UNNEST($16::text[]),   UNNEST($17::text[]),    UNNEST($18::text[]),
-      UNNEST($19::text[]),   UNNEST($20::text[])
+      UNNEST($19::text[]),   UNNEST($20::real[]),   UNNEST($21::text[])
   `;
 
   const batchStarts = [];
@@ -152,7 +153,7 @@ async function syncVins() {
           slice(reasonBuckets), slice(holdReasons), slice(hasPhotosArr), slice(outputImageCounts),
           slice(thumbnailUrls), slice(vehiclePrices),
           slice(makes), slice(models), slice(years), slice(trims),
-          slice(stockNumbers), slice(syncedAts),
+          slice(stockNumbers), slice(vinScores), slice(syncedAts),
         ]);
         console.log(`[sync:VIN_DETAILS] batch ${batchNum} done (rows ${i + 1}–${Math.min(i + BATCH_SIZE, deduped.length)})`);
       } finally {
@@ -363,6 +364,7 @@ function toApiRow(r) {
     receivedAt:   r.received_at,
     processedAt:  r.processed_at,
     syncedAt:     r.synced_at,
+    vinScore:     r.vin_score ?? null,
   };
 }
 
@@ -466,6 +468,7 @@ function toRooftopRow(r) {
     websiteListingUrl:        r.website_listing_url ?? null,
     imsIntegrationStatus:     r.ims_integration_status ?? null,
     publishingStatus:         r.publishing_status ?? null,
+    avgInventoryScore:        r.avg_inventory_score ?? null,
     bucketUploadPending:      r.bucket_upload_pending,
     bucketProcessingPending:  r.bucket_processing_pending,
     bucketPublishingPending:  r.bucket_publishing_pending,
@@ -494,6 +497,7 @@ function toEnterpriseRow(r) {
     notIntegratedCount:       r.not_integrated_count ?? 0,
     publishingDisabledCount:  r.publishing_disabled_count ?? 0,
     avgWebsiteScore:          r.avg_website_score ?? null,
+    avgInventoryScore:        r.avg_inventory_score ?? null,
     websiteUrl:               r.website_url ?? null,
     accountType:              r.account_type ?? null,
     bucketUploadPending:      r.bucket_upload_pending,
@@ -526,6 +530,7 @@ function toCsmRow(r) {
     notProcessed:             r.not_processed,
     notProcessedAfter24:      r.not_processed_after_24h,
     avgWebsiteScore:          r.avg_website_score ?? null,
+    avgInventoryScore:        r.avg_inventory_score ?? null,
     missingWebsiteCount:      r.missing_website_count ?? 0,
     integratedCount:          r.integrated_count ?? 0,
     publishingCount:          r.publishing_count ?? 0,
@@ -553,6 +558,7 @@ function toTypeRow(r) {
     notProcessed:             r.not_processed,
     notProcessedAfter24:      r.not_processed_after_24h,
     avgWebsiteScore:          r.avg_website_score ?? null,
+    avgInventoryScore:        r.avg_inventory_score ?? null,
     missingWebsiteCount:      r.missing_website_count ?? 0,
     integratedCount:          r.integrated_count ?? 0,
     publishingCount:          r.publishing_count ?? 0,
@@ -605,6 +611,7 @@ function buildRooftopSource(dateFilter) {
         MAX(rd.website_listing_url)         AS website_listing_url,
         MAX(rd.ims_integration_status)      AS ims_integration_status,
         MAX(rd.publishing_status)           AS publishing_status,
+        ROUND(AVG(v.vin_score)::numeric, 2) AS avg_inventory_score,
         SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Upload Pending'      AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_upload_pending,
         SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Processing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
         SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Publishing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
@@ -669,6 +676,7 @@ function buildEnterpriseSource(dateFilter) {
         COUNT(DISTINCT CASE WHEN rd.ims_integration_status = 'false' THEN v.rooftop_id END)::int AS not_integrated_count,
         COUNT(DISTINCT CASE WHEN rd.publishing_status = 'false' THEN v.rooftop_id END)::int      AS publishing_disabled_count,
         ROUND(AVG(rd.website_score)::numeric, 2) AS avg_website_score,
+        ROUND(AVG(v.vin_score)::numeric, 2)      AS avg_inventory_score,
         MAX(ed.website_url)                   AS website_url,
         MAX(ed.type)                          AS account_type,
         SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Upload Pending'      AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_upload_pending,
@@ -711,6 +719,7 @@ const SORT_MAP = {
   processedAt:  "v.processed_at",
   reasonBucket: "v.reason_bucket",
   holdReason:   "v.hold_reason",
+  vinScore:     "v.vin_score",
 };
 
 function buildVinSort({ sortBy, sortDir } = {}) {
@@ -727,7 +736,7 @@ const VIN_FROM = `
 
 const VIN_SELECT = `
   SELECT v.vin, v.dealer_vin_id, v.enterprise_id, v.rooftop_id,
-         v.status, v.after_24h, v.has_photos, v.received_at, v.processed_at, v.reason_bucket, v.hold_reason, v.synced_at,
+         v.status, v.after_24h, v.has_photos, v.received_at, v.processed_at, v.reason_bucket, v.hold_reason, v.synced_at, v.vin_score,
          rd.team_name AS rooftop, rd.team_type AS rooftop_type,
          ed.name AS enterprise, ed.poc_email AS csm
   ${VIN_FROM}
@@ -761,6 +770,9 @@ function buildVinFilters(queryParams) {
   if (hasVin === "true"  || hasVin === "1") conditions.push("(v.vin IS NOT NULL AND v.vin != '')");
   if (hasVin === "false" || hasVin === "0") conditions.push("(v.vin IS NULL OR v.vin = '')");
   if (reasonBucket) conditions.push(`v.reason_bucket = ${p(reasonBucket)}`);
+  if (queryParams.inventoryScore === "Poor (<6)")      conditions.push("v.vin_score < 6");
+  if (queryParams.inventoryScore === "Average (6–8)") conditions.push("(v.vin_score >= 6 AND v.vin_score < 8)");
+  if (queryParams.inventoryScore === "Good (8+)")      conditions.push("v.vin_score >= 8");
   const dc = getDateCondition(dateFilter, 'v');
   if (dc) conditions.push(dc);
 
@@ -822,6 +834,7 @@ async function computeSummary(dateFilter) {
           v.reason_bucket,
           v.rooftop_id,
           v.enterprise_id,
+          v.vin_score,
           ed.poc_email,
           rd.team_name,
           rd.team_type,
@@ -868,6 +881,7 @@ async function computeSummary(dateFilter) {
           SUM(CASE WHEN status != 'Delivered' THEN 1 ELSE 0 END)::int                                                               AS not_processed,
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int     AS not_processed_after_24h,
           ROUND(AVG(website_score)::numeric, 2)                                                                                     AS avg_website_score,
+          ROUND(AVG(vin_score)::numeric, 2)                                                                                         AS avg_inventory_score,
           COUNT(DISTINCT CASE WHEN (website_listing_url IS NULL OR website_listing_url = '') THEN rooftop_id END)::int              AS missing_website_count,
           COUNT(DISTINCT CASE WHEN ims_integration_status = 'false' THEN rooftop_id END)::int                                      AS integrated_count,
           COUNT(DISTINCT CASE WHEN publishing_status = 'false' THEN rooftop_id END)::int                                           AS publishing_count,
@@ -895,6 +909,7 @@ async function computeSummary(dateFilter) {
           SUM(CASE WHEN status != 'Delivered' THEN 1 ELSE 0 END)::int                                                               AS not_processed,
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int     AS not_processed_after_24h,
           ROUND(AVG(website_score)::numeric, 2)                                                                                     AS avg_website_score,
+          ROUND(AVG(vin_score)::numeric, 2)                                                                                         AS avg_inventory_score,
           COUNT(DISTINCT CASE WHEN (website_listing_url IS NULL OR website_listing_url = '') THEN rooftop_id END)::int              AS missing_website_count,
           COUNT(DISTINCT CASE WHEN ims_integration_status = 'false' THEN rooftop_id END)::int                                      AS integrated_count,
           COUNT(DISTINCT CASE WHEN publishing_status = 'false' THEN rooftop_id END)::int                                           AS publishing_count,
@@ -1169,6 +1184,7 @@ const ROOFTOP_SORT_MAP = {
   bucketSold:              "bucket_sold",
   bucketOthers:            "bucket_others",
   websiteScore:            "website_score",
+  avgInventoryScore:       "avg_inventory_score",
 };
 
 function buildRooftopFilters(queryParams) {
@@ -1191,6 +1207,9 @@ function buildRooftopFilters(queryParams) {
   if (queryParams.websiteScore === "Poor (<6)")     conditions.push("website_score < 6");
   if (queryParams.websiteScore === "Average (6\u20138)") conditions.push("(website_score >= 6 AND website_score < 8)");
   if (queryParams.websiteScore === "Good (8+)")     conditions.push("website_score >= 8");
+  if (queryParams.inventoryScore === "Poor (<6)")      conditions.push("avg_inventory_score < 6");
+  if (queryParams.inventoryScore === "Average (6\u20138)") conditions.push("(avg_inventory_score >= 6 AND avg_inventory_score < 8)");
+  if (queryParams.inventoryScore === "Good (8+)")      conditions.push("avg_inventory_score >= 8");
   // Filter using snapshot table — with reportDay uses that specific day; without uses most recent day.
   // 'not_sent' = NOT IN sent set (includes not_triggered which has no snapshot row).
   if (queryParams.reportStatus) {
@@ -1320,6 +1339,7 @@ const ENTERPRISE_SORT_MAP = {
   bucketSold:              "bucket_sold",
   bucketOthers:            "bucket_others",
   avgWebsiteScore:         "avg_website_score",
+  avgInventoryScore:       "avg_inventory_score",
   reportStatus:            "CASE report_status WHEN 'sent' THEN 1 WHEN 'not_sent' THEN 2 ELSE 3 END",
   reportReason:            "report_reason",
 };
@@ -1338,6 +1358,9 @@ function buildEnterpriseFilters(queryParams) {
   if (queryParams.websiteScore === "Poor (<6)")     conditions.push("avg_website_score < 6");
   if (queryParams.websiteScore === "Average (6\u20138)") conditions.push("(avg_website_score >= 6 AND avg_website_score < 8)");
   if (queryParams.websiteScore === "Good (8+)")     conditions.push("avg_website_score >= 8");
+  if (queryParams.inventoryScore === "Poor (<6)")      conditions.push("avg_inventory_score < 6");
+  if (queryParams.inventoryScore === "Average (6\u20138)") conditions.push("(avg_inventory_score >= 6 AND avg_inventory_score < 8)");
+  if (queryParams.inventoryScore === "Good (8+)")      conditions.push("avg_inventory_score >= 8");
   // When reportDay is set (drill-down from Report Status tab), filter using the snapshot
   // table so counts match exactly. Without reportDay, use live report_status/report_reason.
   if (queryParams.reportStatus && queryParams.reportDay) {
