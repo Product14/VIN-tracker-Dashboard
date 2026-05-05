@@ -2659,19 +2659,6 @@ async function handleProcessReportQueue(req, res) {
     return Number(r.negative_count) > 0;
   }
 
-  async function hasLowPhotoCoverage(field, id, tz, yesterdayStr) {
-    const { rows: [r] } = await query(
-      `SELECT COUNT(*) AS total_active,
-              COUNT(*) FILTER (WHERE COALESCE(has_photos, 0) = 1) AS with_photos
-         FROM vins
-        WHERE ${field} = $1
-          AND (received_at IS NULL OR DATE(received_at::timestamptz AT TIME ZONE $2) <= $3::date)`,
-      [id, tz, yesterdayStr]
-    );
-    const total = Number(r.total_active) || 0;
-    if (total === 0) return false;
-    return Number(r.with_photos) / total * 100 < 75;
-  }
 
   // ── Step 3: Process each row ───────────────────────────────────────────────
   let sentCount = 0, skippedCount = 0, errorCount = 0;
@@ -2743,11 +2730,6 @@ async function handleProcessReportQueue(req, res) {
           if (await hasNegativeTat("rooftop_id", rooftop_id, tz, yesterdayStr)) {
             await query(`UPDATE report_queue SET status='skipped', entity_id=$2, entity_name=$3, error_reason='negative_tat', processed_at=NOW() WHERE id=$1`, [id, rooftop_id, rt.team_name]);
             console.log(`[process-queue] rooftop ${rooftop_id} skipped — negative TAT detected`);
-            skippedCount++; continue;
-          }
-          if (await hasLowPhotoCoverage("rooftop_id", rooftop_id, tz, yesterdayStr)) {
-            await query(`UPDATE report_queue SET status='skipped', entity_id=$2, entity_name=$3, error_reason='low_photo_coverage', processed_at=NOW() WHERE id=$1`, [id, rooftop_id, rt.team_name]);
-            console.log(`[process-queue] rooftop ${rooftop_id} skipped — photo coverage < 75%`);
             skippedCount++; continue;
           }
         }
@@ -2994,7 +2976,6 @@ async function computeReportCoverage() {
         COUNT(*) FILTER (WHERE s.error_reason = 'no_vehicles_90_days')::int                            AS "reasonNoVehicles90Days",
         COUNT(*) FILTER (WHERE s.error_reason = 'pending_vins')::int                                   AS "reasonPendingVins",
         COUNT(*) FILTER (WHERE s.error_reason = 'negative_tat')::int                                   AS "reasonNegativeTat",
-        COUNT(*) FILTER (WHERE s.error_reason = 'low_photo_coverage')::int                             AS "reasonLowPhotoCoverage",
         COUNT(*) FILTER (WHERE s.error_reason = 'already_sent')::int                                   AS "reasonAlreadySent",
         COUNT(*) FILTER (WHERE s.error_reason = 'timed_out')::int                                      AS "reasonTimedOut"
       FROM dates d
