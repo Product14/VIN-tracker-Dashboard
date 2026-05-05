@@ -2536,6 +2536,7 @@ async function writeReportStatusSnapshot(runId) {
       status        = EXCLUDED.status,
       error_reason  = EXCLUDED.error_reason,
       enterprise_id = EXCLUDED.enterprise_id
+    WHERE rooftop_report_status_daily.status != 'sent'
   `, [runId]);
 }
 
