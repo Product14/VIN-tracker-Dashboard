@@ -87,8 +87,7 @@ function tableRow(cells, zebra) {
   const tds = cells.map(c => {
     const color = c.color || (c.muted ? TEXT_MUTED : TEXT_MAIN);
     const fw = c.color ? "font-weight:600;" : "";
-    const wrapStyle = c.wrap ? `max-width:200px; white-space:normal; word-break:break-word;` : `white-space:nowrap;`;
-    return `<td style="padding:9px 12px; font-size:13px; color:${color}; ${fw} text-align:${c.align || "right"}; border-bottom:1px solid ${BORDER_COLOR}; ${wrapStyle}">${c.value}</td>`;
+    return `<td style="padding:9px 12px; font-size:13px; color:${color}; ${fw} text-align:${c.align || "right"}; border-bottom:1px solid ${BORDER_COLOR}; white-space:nowrap;">${c.value}</td>`;
   }).join("");
   return `<tr style="background:${bg};">${tds}</tr>`;
 }
@@ -280,7 +279,7 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl, reportCovData =
 
   const rooftopRows = rooftopData.map((r, i) => tableRow([
     { value: i + 1,                 align: "center", muted: true                           },
-    { value: r.name,                align: "left", wrap: true                              },
+    { value: r.name,                align: "left"                                          },
     { value: csmLabel(r.csm),      align: "left", muted: true                             },
     { value: fmt(r.pendingAfter24), color: r.pendingAfter24 > 0 ? RED : null              },
     ...activeBucketCols.map(col => ({
