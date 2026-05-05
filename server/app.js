@@ -943,7 +943,8 @@ async function computeSummary(dateFilter) {
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND COALESCE(after_24h,0)=1 AND reason_bucket = 'QC Pending'         THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND COALESCE(after_24h,0)=1 AND reason_bucket = 'QC Hold'            THEN 1 ELSE 0 END)::int AS bucket_qc_hold,
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND COALESCE(after_24h,0)=1 AND reason_bucket = 'Sold'               THEN 1 ELSE 0 END)::int AS bucket_sold,
-          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND COALESCE(after_24h,0)=1 AND reason_bucket = 'Others'             THEN 1 ELSE 0 END)::int AS bucket_others
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND COALESCE(after_24h,0)=1 AND reason_bucket = 'Others'             THEN 1 ELSE 0 END)::int AS bucket_others,
+          ROUND(AVG(vin_score)::numeric, 2)                                                                                                                           AS avg_inventory_score
         FROM base
         GROUP BY rooftop_id
         HAVING SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END) > 0
@@ -998,6 +999,7 @@ async function computeSummary(dateFilter) {
       bucketQcHold:            r.bucket_qc_hold ?? 0,
       bucketSold:              r.bucket_sold ?? 0,
       bucketOthers:            r.bucket_others ?? 0,
+      avgInventoryScore:       r.avg_inventory_score ?? null,
     })),
   };
 }
