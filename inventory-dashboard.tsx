@@ -370,7 +370,7 @@ function CopyButton({ value }: { value: string }) {
   );
 }
 
-function SearchableSelect({ value, onChange, options, placeholder = "All" }) {
+function SearchableSelect({ value, onChange, options, placeholder = "All", clearLabel }: any) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const ref = useRef(null);
@@ -452,7 +452,7 @@ function SearchableSelect({ value, onChange, options, placeholder = "All" }) {
               onMouseEnter={e => (e.currentTarget.style.background = "#f3f4f6")}
               onMouseLeave={e => (e.currentTarget.style.background = value ? "#fff" : "#f9fafb")}
             >
-              {placeholder}
+              {clearLabel ?? placeholder}
             </div>
             {filtered.length === 0 && (
               <div style={{ padding: "8px 14px", fontSize: 13, color: "#9ca3af" }}>No results</div>
@@ -766,7 +766,7 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
   const pendencyColSpan = 1 + activeBuckets.length;
   const visibleDates: string[] = reportDatesExpanded ? reportDates : reportDates.slice(0, 1);
   const showDateToggle = reportDates.length > 1;
-  const activeCount = [filters.rooftopType, filters.csm, filters.enterprise, filters.websiteScore, filters.inventoryScore, filters.imsIntegration, filters.publishingStatus, !!(filters.reportStatus || filters.reportReason)].filter(Boolean).length;
+  const activeCount = [filters.rooftopType, filters.csm, filters.enterprise, filters.websiteScore, filters.inventoryScore, filters.imsIntegration, filters.publishingStatus, filters.websiteUrl, !!(filters.reportStatus || filters.reportReason)].filter(Boolean).length;
   const cols = [
     { key: "enterprise",             label: "Enterprise Name" },
     { key: "name",                   label: "Rooftop Name" },
@@ -796,6 +796,7 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
     if (filters.enterprise)       params.set("enterprise",      filters.enterprise);
     if (filters.imsIntegration)   params.set("imsIntegration",  filters.imsIntegration);
     if (filters.publishingStatus) params.set("publishingStatus", filters.publishingStatus);
+    if (filters.websiteUrl)       params.set("websiteUrl",      filters.websiteUrl);
     if (filters.websiteScore)     params.set("websiteScore",    filters.websiteScore);
     if (filters.inventoryScore)   params.set("inventoryScore",  filters.inventoryScore);
     if (filters.reportStatus)     params.set("reportStatus",    filters.reportStatus);
@@ -882,6 +883,13 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
             placeholder="Publishing"
           />
           <SearchableSelect
+            value={filters.websiteUrl}
+            onChange={v => setFilters(f => ({ ...f, websiteUrl: v }))}
+            options={["Present", "Not Present"]}
+            placeholder="Website"
+            clearLabel="All"
+          />
+          <SearchableSelect
             value={filters.reportStatus ? REPORT_FILTER_DISPLAY[filters.reportStatus] : filters.reportReason ? REPORT_FILTER_DISPLAY[filters.reportReason] : null}
             onChange={v => {
               if (!v) { setFilters(f => ({ ...f, reportStatus: null, reportReason: null })); return; }
@@ -907,6 +915,7 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
             {filters.inventoryScore && <Badge label={`Inventory Score: ${filters.inventoryScore}`} color="blue" />}
             {filters.imsIntegration && <Badge label={`IMS: ${filters.imsIntegration}`} color="blue" />}
             {filters.publishingStatus && <Badge label={`Publishing: ${filters.publishingStatus}`} color="blue" />}
+            {filters.websiteUrl && <Badge label={`Website URL: ${filters.websiteUrl}`} color="blue" />}
           </div>
         )}
       </div>
@@ -1804,7 +1813,7 @@ function timeAgo(isoString: string): string {
 }
 
 const DEFAULT_FILTERS = { search: "", enterpriseId: null, rooftopId: null, rooftopType: null, csm: null, status: null, after24h: null, hasPhotos: null, hasVin: null, reasonBucket: null, inventoryScore: null };
-const DEFAULT_ROOFTOP_FILTERS = { search: "", rooftopType: null, csm: null, enterprise: null, websiteScore: null, inventoryScore: null, imsIntegration: null, publishingStatus: null, reportStatus: null, reportReason: null as string | null, reportDay: null as string | null };
+const DEFAULT_ROOFTOP_FILTERS = { search: "", rooftopType: null, csm: null, enterprise: null, websiteScore: null, inventoryScore: null, imsIntegration: null, publishingStatus: null, websiteUrl: null, reportStatus: null, reportReason: null as string | null, reportDay: null as string | null };
 const DEFAULT_ENTERPRISE_FILTERS = { search: "", csm: null, accountType: null, websiteScore: null, inventoryScore: null, reportStatus: null, reportReason: null as string | null };
 
 // Merged Report Status filter — "Sent" or any not-sent reason
@@ -2252,6 +2261,7 @@ export default function Dashboard() {
     if (filters.enterprise)       params.set("enterprise",      filters.enterprise);
     if (filters.imsIntegration)   params.set("imsIntegration",  filters.imsIntegration);
     if (filters.publishingStatus) params.set("publishingStatus", filters.publishingStatus);
+    if (filters.websiteUrl)       params.set("websiteUrl",      filters.websiteUrl);
     if (filters.websiteScore)     params.set("websiteScore",    filters.websiteScore);
     if (filters.inventoryScore)   params.set("inventoryScore",  filters.inventoryScore);
     if (filters.reportStatus)     params.set("reportStatus",    filters.reportStatus);

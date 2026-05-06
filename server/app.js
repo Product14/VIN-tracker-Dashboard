@@ -1206,6 +1206,8 @@ function buildRooftopFilters(queryParams) {
   if (queryParams.imsIntegration === "No")  conditions.push("ims_integration_status != 'true'");
   if (queryParams.publishingStatus === "Yes") conditions.push("publishing_status = 'true'");
   if (queryParams.publishingStatus === "No")  conditions.push("publishing_status != 'true'");
+  if (queryParams.websiteUrl === "Present")     conditions.push("(website_listing_url IS NOT NULL AND website_listing_url != '')");
+  if (queryParams.websiteUrl === "Not Present") conditions.push("(website_listing_url IS NULL OR website_listing_url = '')");
   if (queryParams.websiteScore === "Poor (<6)")     conditions.push("website_score < 6");
   if (queryParams.websiteScore === "Average (6\u20138)") conditions.push("(website_score >= 6 AND website_score < 8)");
   if (queryParams.websiteScore === "Good (8+)")     conditions.push("website_score >= 8");
@@ -2799,15 +2801,20 @@ async function handleProcessReportQueue(req, res) {
             console.log(`[process-queue] enterprise ${enterprise_id} skipped — IMS on, no active inventory`);
             skippedCount++; continue;
           }
+          if (data.invKpis.invPending > 5) {
+            await query(`UPDATE report_queue SET status='skipped', entity_id=$2, entity_name=$3, error_reason='pending_vins', processed_at=NOW() WHERE id=$1`, [id, enterprise_id, ent.name]);
+            console.log(`[process-queue] enterprise ${enterprise_id} skipped — IMS on, inventory pending VINs > 5`);
+            skippedCount++; continue;
+          }
         } else {
           if (data.invKpis.received === 0) {
             await query(`UPDATE report_queue SET status='skipped', entity_id=$2, entity_name=$3, error_reason='no_vehicles_90_days', processed_at=NOW() WHERE id=$1`, [id, enterprise_id, ent.name]);
             console.log(`[process-queue] enterprise ${enterprise_id} skipped — IMS off, no vehicles in last 90 days`);
             skippedCount++; continue;
           }
-          if (data.invKpis.invPending > 1) {
+          if (data.invKpis.invPending > 5) {
             await query(`UPDATE report_queue SET status='skipped', entity_id=$2, entity_name=$3, error_reason='pending_vins', processed_at=NOW() WHERE id=$1`, [id, enterprise_id, ent.name]);
-            console.log(`[process-queue] enterprise ${enterprise_id} skipped — inventory pending VINs > 1`);
+            console.log(`[process-queue] enterprise ${enterprise_id} skipped — inventory pending VINs > 5`);
             skippedCount++; continue;
           }
         }
