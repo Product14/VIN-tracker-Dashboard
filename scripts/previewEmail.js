@@ -75,7 +75,7 @@ const mockSummary = {
   ],
 };
 
-const html = buildEmailHtml(mockSummary, "12:00 PM IST", "https://your-dashboard.vercel.app");
+const html = buildEmailHtml(mockSummary, "12:00 PM IST", process.env.DASHBOARD_URL || "https://vin-tracker-dashboard.vercel.app");
 writeFileSync("preview.html", html);
 console.log("✓ preview.html written");
 execSync("open preview.html");

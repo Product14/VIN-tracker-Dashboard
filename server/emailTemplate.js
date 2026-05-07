@@ -120,7 +120,7 @@ function sectionTitle(title) {
  * @returns {string} full HTML email string
  */
 export function buildEmailHtml(summary, timeLabel, dashboardUrl, reportCovData = [], totalActiveRooftops = 0) {
-  const { totals, byCSM, byType, byBucket, byRooftop, lastSync } = summary;
+  const { totals, byCSM, byType, byBucket, byRooftop, byRooftopLowestInventory, lastSync } = summary;
 
   const now = new Date();
   const dateLabel = now.toLocaleDateString("en-IN", {
@@ -235,8 +235,7 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl, reportCovData =
     <th style="${csmThBase} text-align:right;">Pending &gt;24hr</th>
     <th style="${csmThBase} text-align:right; ${csmDivider}">Total Pending</th>
     <th style="${csmThScore} text-align:right;">Website Score</th>
-    <th style="${csmThScore} text-align:right; ${csmDivider}">Inventory Score</th>
-    <th style="${csmThBase} text-align:right;">Missing Website</th>
+    <th style="${csmThScore} text-align:right;">Inventory Score</th>
   </tr>`;
 
   const csmBodyCell = (value, color, align, extra = "") => {
@@ -244,7 +243,10 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl, reportCovData =
     const fw = color ? "font-weight:600;" : "";
     return `<td style="padding:9px 12px; font-size:13px; color:${c}; ${fw} text-align:${align}; border-bottom:1px solid ${BORDER_COLOR}; white-space:nowrap; ${extra}">${value}</td>`;
   };
-  const sortedByCSM = (byCSM || []).slice().sort((a, b) => (b.notProcessedAfter24 ?? 0) - (a.notProcessedAfter24 ?? 0));
+  // Only show CSMs with Pending >24hr > 0; sort by that count desc.
+  const sortedByCSM = (byCSM || [])
+    .filter(r => (r.notProcessedAfter24 ?? 0) > 0)
+    .sort((a, b) => (b.notProcessedAfter24 ?? 0) - (a.notProcessedAfter24 ?? 0));
   const csmRows = sortedByCSM.map((r, i) => {
     const bg = (i % 2 === 0) ? "#fff" : "#f8fafc";
     return `<tr style="background:${bg};">
@@ -252,8 +254,7 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl, reportCovData =
       ${csmBodyCell(fmt(r.notProcessedAfter24), r.notProcessedAfter24 > 0 ? RED : null, "right")}
       ${csmBodyCell(fmt(r.pendingWithPhotos),   r.pendingWithPhotos > 0 ? AMBER : null, "right", csmDivider)}
       ${csmBodyCell(score(r.avgWebsiteScore),   scoreColor(r.avgWebsiteScore),   "right")}
-      ${csmBodyCell(score(r.avgInventoryScore), scoreColor(r.avgInventoryScore), "right", csmDivider)}
-      ${csmBodyCell(fmt(r.missingWebsiteCount ?? 0), (r.missingWebsiteCount ?? 0) > 0 ? RED : TEXT_MUTED, "right")}
+      ${csmBodyCell(score(r.avgInventoryScore), scoreColor(r.avgInventoryScore), "right")}
     </tr>`;
   }).join("");
 
@@ -309,6 +310,40 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl, reportCovData =
       ${td(fmt(r.pendingAfter24),         r.pendingAfter24 > 0 ? RED : null, "right", rooftopDivider)}
       ${td(score(r.avgWebsiteScore),      scoreColor(r.avgWebsiteScore),     "right")}
       ${td(score(r.avgInventoryScore),    scoreColor(r.avgInventoryScore),   "right")}
+    </tr>`;
+  }).join("");
+
+  // ── Top 20 Rooftops with Lowest Inventory Score ──────────────────────────
+  // Same row shape and icons as the table above, minus the Pending >24h column.
+  const lowInvHeaders = `<tr style="background:${GRAY_BG};">
+    <th style="${thSNo}">#</th>
+    <th style="${thFixed}">Rooftop</th>
+    <th style="${thFixed} ${rooftopDivider}">CSM</th>
+    <th style="${thScore}">Website Score</th>
+    <th style="${thScore}">Inventory Score</th>
+  </tr>`;
+
+  const lowInvRows = (byRooftopLowestInventory || []).map((r, i) => {
+    const bg = (i % 2 === 0) ? "#fff" : "#f8fafc";
+    const consoleHref = r.enterpriseId
+      ? `https://console.spyne.ai/home?enterprise_id=${encodeURIComponent(r.enterpriseId)}${r.rooftopId ? `&team_id=${encodeURIComponent(r.rooftopId)}` : ""}`
+      : null;
+    const consoleLink = consoleHref ? inlineIconLink(consoleHref, "external-link", "Open", "Open in Console") : "";
+    const websiteLink = r.websiteListingUrl ? inlineIconLink(r.websiteListingUrl, "globe", "Web", "Open Website") : "";
+    const rooftopCell = `${r.name}${consoleLink}${websiteLink}`;
+
+    const td = (value, color, align, extra = "") => {
+      const c = color || TEXT_MAIN;
+      const fw = color ? "font-weight:600;" : "";
+      return `<td style="padding:9px 12px; font-size:13px; color:${c}; ${fw} text-align:${align}; border-bottom:1px solid ${BORDER_COLOR}; white-space:nowrap; ${extra}">${value}</td>`;
+    };
+
+    return `<tr style="background:${bg};">
+      ${td(i + 1, TEXT_MUTED, "center")}
+      ${td(rooftopCell, null, "left")}
+      ${td(csmLabel(r.csm), TEXT_MUTED, "left", rooftopDivider)}
+      ${td(score(r.avgWebsiteScore),   scoreColor(r.avgWebsiteScore),   "right")}
+      ${td(score(r.avgInventoryScore), scoreColor(r.avgInventoryScore), "right")}
     </tr>`;
   }).join("");
 
@@ -472,7 +507,7 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl, reportCovData =
                   <table width="100%" cellpadding="0" cellspacing="0" border="0"
                          style="border:1px solid ${BORDER_COLOR}; border-radius:8px; overflow:hidden; border-collapse:separate; border-spacing:0;">
                     ${csmHeaders}
-                    ${csmRows || `<tr><td colspan="6" style="padding:16px; text-align:center; color:${TEXT_MUTED}; font-size:13px;">No data</td></tr>`}
+                    ${csmRows || `<tr><td colspan="5" style="padding:16px; text-align:center; color:${TEXT_MUTED}; font-size:13px;">No CSMs with pending &gt;24hr</td></tr>`}
                   </table>
                 </td></tr>
 
@@ -488,6 +523,16 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl, reportCovData =
                          style="border:1px solid ${BORDER_COLOR}; border-radius:8px; overflow:hidden; border-collapse:separate; border-spacing:0;">
                     ${reportTableHeaders}
                     ${reportTableRows || `<tr><td colspan="${5 + activeReasons.length}" style="padding:16px; text-align:center; color:${TEXT_MUTED}; font-size:13px;">No report data found.</td></tr>`}
+                  </table>
+                </td></tr>
+
+                <!-- Rooftops with Lowest Inventory Score -->
+                ${sectionTitle("Rooftops with Lowest Inventory Score")}
+                <tr><td>
+                  <table width="100%" cellpadding="0" cellspacing="0" border="0"
+                         style="border:1px solid ${BORDER_COLOR}; border-radius:8px; overflow:hidden; border-collapse:separate; border-spacing:0;">
+                    ${lowInvHeaders}
+                    ${lowInvRows || `<tr><td colspan="5" style="padding:16px; text-align:center; color:${TEXT_MUTED}; font-size:13px;">No rooftops with inventory scores</td></tr>`}
                   </table>
                 </td></tr>
 

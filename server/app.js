@@ -950,7 +950,6 @@ async function computeSummary(dateFilter) {
           ROUND(AVG(vin_score)::numeric, 2)                                                                                                                           AS avg_inventory_score
         FROM base
         GROUP BY rooftop_id
-        HAVING SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END) > 0
       )
     SELECT
       (SELECT last_sync   FROM meta)                AS last_sync,
@@ -979,7 +978,9 @@ async function computeSummary(dateFilter) {
           END, b.label)
        FROM by_bucket b)                            AS by_bucket_json,
       (SELECT json_agg(r ORDER BY r.pending_after_24h DESC)
-       FROM (SELECT * FROM by_rooftop ORDER BY pending_after_24h DESC LIMIT 20) r) AS by_rooftop_json
+       FROM (SELECT * FROM by_rooftop WHERE pending_after_24h > 0 ORDER BY pending_after_24h DESC LIMIT 20) r) AS by_rooftop_json,
+      (SELECT json_agg(r ORDER BY r.avg_inventory_score ASC, r.rooftop_name ASC)
+       FROM (SELECT * FROM by_rooftop WHERE avg_inventory_score IS NOT NULL ORDER BY avg_inventory_score ASC, rooftop_name ASC LIMIT 20) r) AS by_rooftop_lowest_inv_json
   `);
   const row = rows[0];
   return {
@@ -989,24 +990,29 @@ async function computeSummary(dateFilter) {
     byCSM:      (row.by_csm_json    ?? []).map(toCsmRow),
     byType:     (row.by_type_json   ?? []).map(toTypeRow),
     byBucket:   (row.by_bucket_json ?? []).map(r => ({ label: r.label, count: r.count })),
-    byRooftop:  (row.by_rooftop_json ?? []).map(r => ({
-      rooftopId:               r.rooftop_id,
-      enterpriseId:            r.enterprise_id ?? null,
-      name:                    r.rooftop_name ?? r.rooftop_id,
-      type:                    r.rooftop_type ?? "—",
-      csm:                     r.csm ?? null,
-      websiteListingUrl:       r.website_listing_url ?? null,
-      pendingAfter24:          r.pending_after_24h ?? 0,
-      bucketUploadPending:     r.bucket_upload_pending ?? 0,
-      bucketProcessingPending: r.bucket_processing_pending ?? 0,
-      bucketPublishingPending: r.bucket_publishing_pending ?? 0,
-      bucketQcPending:         r.bucket_qc_pending ?? 0,
-      bucketQcHold:            r.bucket_qc_hold ?? 0,
-      bucketSold:              r.bucket_sold ?? 0,
-      bucketOthers:            r.bucket_others ?? 0,
-      avgWebsiteScore:         r.avg_website_score ?? null,
-      avgInventoryScore:       r.avg_inventory_score ?? null,
-    })),
+    byRooftop:                (row.by_rooftop_json          ?? []).map(toByRooftopRow),
+    byRooftopLowestInventory: (row.by_rooftop_lowest_inv_json ?? []).map(toByRooftopRow),
+  };
+}
+
+function toByRooftopRow(r) {
+  return {
+    rooftopId:               r.rooftop_id,
+    enterpriseId:            r.enterprise_id ?? null,
+    name:                    r.rooftop_name ?? r.rooftop_id,
+    type:                    r.rooftop_type ?? "—",
+    csm:                     r.csm ?? null,
+    websiteListingUrl:       r.website_listing_url ?? null,
+    pendingAfter24:          r.pending_after_24h ?? 0,
+    bucketUploadPending:     r.bucket_upload_pending ?? 0,
+    bucketProcessingPending: r.bucket_processing_pending ?? 0,
+    bucketPublishingPending: r.bucket_publishing_pending ?? 0,
+    bucketQcPending:         r.bucket_qc_pending ?? 0,
+    bucketQcHold:            r.bucket_qc_hold ?? 0,
+    bucketSold:              r.bucket_sold ?? 0,
+    bucketOthers:            r.bucket_others ?? 0,
+    avgWebsiteScore:         r.avg_website_score ?? null,
+    avgInventoryScore:       r.avg_inventory_score ?? null,
   };
 }
 
