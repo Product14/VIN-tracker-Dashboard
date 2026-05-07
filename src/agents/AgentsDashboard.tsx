@@ -2,66 +2,86 @@ import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } fr
 
 const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
 
-type AgentRow = {
+type AgentType = "Sales Inbound" | "Service Inbound" | "Sales Outbound" | "Service Outbound";
+
+type AgentRowV3 = {
   day: string;
   team_id: string;
-  enterprise: string;
-  call_bucket: string;
-  stage: string;
-  total_calls: number;
-  qualified_calls: number;
-  connected_calls: number;
-  callbacks_or_transfers: number;
-  callback_or_transfer_rate_pct: number;
-  appointments_booked: number;
-  appointment_rate_pct: number;
+  enterprise_id: string;
+  enterprise_name: string;
+  rooftop_name: string;
+  rooftop_stage: string | null;
+  service_type: string;
+  direction: string;
+  agent_type: AgentType;
+
+  total_leads: number | null;
+  touched_leads: number | null;
+  total_leads_with_calls: number | null;
+  total_leads_with_sms: number | null;
+  qualified_leads: number | null;
+  appointments: number | null;
+  appointment_value: number | null;
+  total_calls: number | null;
+  appointment_intent_leads: number | null;
+  eligible_campaign_leads: number | null;
+  leads_targeted: number | null;
+  leads_engaged: number | null;
+  avg_followups_till_appt: number | string | null;
+  coverage: number | null;
+  conversion_rate: number | null;
+  quality_score: number | null;
 };
 
-const BUCKETS = {
-  salesOutbound: "Outbound Sales",
-  serviceOutbound: "Outbound Service",
-  salesInbound: "Inbound Sales",
-  serviceInbound: "Inbound Service",
-} as const;
-const OTHER_BUCKET = "Other";
+const AGENT_TYPES: AgentType[] = ["Sales Inbound", "Service Inbound", "Sales Outbound", "Service Outbound"];
+const AGENT_LABELS: Record<AgentType, string> = {
+  "Sales Inbound": "Sales IB",
+  "Service Inbound": "Service IB",
+  "Sales Outbound": "Sales OB",
+  "Service Outbound": "Service OB",
+};
+const AGENT_COLORS: Record<AgentType, string> = {
+  "Sales Inbound": "#f59e0b",
+  "Service Inbound": "#22c55e",
+  "Sales Outbound": "#6366f1",
+  "Service Outbound": "#0ea5e9",
+};
 
-type DateRange = "ALL" | "TODAY" | "WEEK" | "MTD";
+const num = (v: unknown): number => {
+  if (v == null) return 0;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+};
+const numOrNull = (v: unknown): number | null => {
+  if (v == null || v === "" || v === "NaN") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+};
+
+type DateRange = "ALL" | "TODAY" | "WEEK" | "MTD" | "CUSTOM";
 const DATE_RANGES: { key: DateRange; label: string }[] = [
   { key: "ALL", label: "All" },
   { key: "TODAY", label: "Today" },
   { key: "WEEK", label: "This Week" },
   { key: "MTD", label: "MTD" },
+  { key: "CUSTOM", label: "Custom" },
 ];
 
-const isInbound = (b: string) => b.startsWith("Inbound");
-const isOutbound = (b: string) => b.startsWith("Outbound");
-
-const num = (v: unknown): number => {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : 0;
-};
+type CustomRange = { from: string; to: string }; // ISO yyyy-mm-dd, both inclusive
 
 function fmtDay(iso: string): string {
   const d = new Date(iso);
   if (isNaN(d.getTime())) return iso;
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
-
-function startOfDay(d: Date): Date {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  return x;
-}
-
+function startOfDay(d: Date): Date { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
 function startOfWeekMon(d: Date): Date {
   const x = startOfDay(d);
   const day = x.getDay();
-  const diff = (day === 0 ? -6 : 1 - day);
-  x.setDate(x.getDate() + diff);
+  x.setDate(x.getDate() + (day === 0 ? -6 : 1 - day));
   return x;
 }
-
-function inRange(iso: string, range: DateRange): boolean {
+function inRange(iso: string, range: DateRange, custom: CustomRange): boolean {
   if (range === "ALL") return true;
   const d = new Date(iso);
   if (isNaN(d.getTime())) return false;
@@ -69,72 +89,128 @@ function inRange(iso: string, range: DateRange): boolean {
   if (range === "TODAY") return startOfDay(d).getTime() === today.getTime();
   if (range === "WEEK") {
     const wk = startOfWeekMon(today);
-    const wkEnd = new Date(wk);
-    wkEnd.setDate(wk.getDate() + 7);
-    return d >= wk && d < wkEnd;
+    const end = new Date(wk); end.setDate(wk.getDate() + 7);
+    return d >= wk && d < end;
   }
   if (range === "MTD") {
     const mStart = new Date(today.getFullYear(), today.getMonth(), 1);
     const mEnd = new Date(today.getFullYear(), today.getMonth() + 1, 1);
     return d >= mStart && d < mEnd;
   }
+  if (range === "CUSTOM") {
+    const day = startOfDay(d);
+    if (custom.from) {
+      const f = startOfDay(new Date(custom.from));
+      if (!isNaN(f.getTime()) && day < f) return false;
+    }
+    if (custom.to) {
+      const t = startOfDay(new Date(custom.to));
+      if (!isNaN(t.getTime()) && day > t) return false;
+    }
+    return true;
+  }
   return true;
 }
 
-type DayBucket = {
-  calls: number;
-  connected: number;
+function todayIso(): string {
+  const d = new Date();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${m}-${day}`;
+}
+
+const rooftopLabel = (r: AgentRowV3) =>
+  r.rooftop_name?.trim() || r.enterprise_name?.trim() || r.team_id || "Unknown";
+const enterpriseLabel = (r: AgentRowV3) => r.enterprise_name?.trim() || "";
+
+type Bucket = {
+  totalLeads: number;
+  touched: number;
+  leadsWithCalls: number;
+  leadsWithSms: number;
   qualified: number;
-  cbxfer: number;     // callbacks_or_transfers
   appts: number;
+  apptValue: number;
+  totalCalls: number;
+  intent: number;
+  eligible: number;
+  targeted: number;
+  engaged: number;
+  fupSum: number;     // sum of avg_followups_till_appt × appts
+  fupWeight: number;  // sum of appts where fup is non-null
+  qSum: number;       // quality_score × total_leads
+  qWeight: number;    // total_leads where quality_score is non-null
 };
-const EMPTY_BUCKET: DayBucket = { calls: 0, connected: 0, qualified: 0, cbxfer: 0, appts: 0 };
+const EMPTY: Bucket = {
+  totalLeads: 0, touched: 0, leadsWithCalls: 0, leadsWithSms: 0,
+  qualified: 0, appts: 0, apptValue: 0, totalCalls: 0,
+  intent: 0, eligible: 0, targeted: 0, engaged: 0,
+  fupSum: 0, fupWeight: 0, qSum: 0, qWeight: 0,
+};
 
-function addBucket(a: DayBucket, b: DayBucket): DayBucket {
+function projectRow(r: AgentRowV3): Bucket {
+  const totalLeads = num(r.total_leads);
+  const appts = num(r.appointments);
+  const fup = numOrNull(r.avg_followups_till_appt);
+  const score = numOrNull(r.quality_score);
   return {
-    calls: a.calls + b.calls,
-    connected: a.connected + b.connected,
+    totalLeads,
+    touched: num(r.touched_leads),
+    leadsWithCalls: num(r.total_leads_with_calls),
+    leadsWithSms: num(r.total_leads_with_sms),
+    qualified: num(r.qualified_leads),
+    appts,
+    apptValue: num(r.appointment_value),
+    totalCalls: num(r.total_calls),
+    intent: num(r.appointment_intent_leads),
+    eligible: num(r.eligible_campaign_leads),
+    targeted: num(r.leads_targeted),
+    engaged: num(r.leads_engaged),
+    fupSum: fup != null && appts > 0 ? fup * appts : 0,
+    fupWeight: fup != null && appts > 0 ? appts : 0,
+    qSum: score != null && totalLeads > 0 ? score * totalLeads : 0,
+    qWeight: score != null && totalLeads > 0 ? totalLeads : 0,
+  };
+}
+function add(a: Bucket, b: Bucket): Bucket {
+  return {
+    totalLeads: a.totalLeads + b.totalLeads,
+    touched: a.touched + b.touched,
+    leadsWithCalls: a.leadsWithCalls + b.leadsWithCalls,
+    leadsWithSms: a.leadsWithSms + b.leadsWithSms,
     qualified: a.qualified + b.qualified,
-    cbxfer: a.cbxfer + b.cbxfer,
     appts: a.appts + b.appts,
+    apptValue: a.apptValue + b.apptValue,
+    totalCalls: a.totalCalls + b.totalCalls,
+    intent: a.intent + b.intent,
+    eligible: a.eligible + b.eligible,
+    targeted: a.targeted + b.targeted,
+    engaged: a.engaged + b.engaged,
+    fupSum: a.fupSum + b.fupSum,
+    fupWeight: a.fupWeight + b.fupWeight,
+    qSum: a.qSum + b.qSum,
+    qWeight: a.qWeight + b.qWeight,
   };
 }
 
-function projectRow(r: AgentRow): DayBucket {
-  return {
-    calls: num(r.total_calls),
-    connected: num(r.connected_calls),
-    qualified: num(r.qualified_calls),
-    cbxfer: num(r.callbacks_or_transfers),
-    appts: num(r.appointments_booked),
-  };
-}
-
-// "qualified" is the right quality signal for inbound; "connected" for outbound.
-// Mixed view sums both per-row by bucket type to avoid double-counting.
-function middleValue(b: DayBucket, mode: "connected" | "qualified" | "both"): number {
-  if (mode === "connected") return b.connected;
-  if (mode === "qualified") return b.qualified;
-  return b.connected + b.qualified;
-}
-
-function fmtPct(n: number, denom: number): string {
-  if (!denom) return "—";
-  return `${((n / denom) * 100).toFixed(1)}%`;
-}
+const fmtNum = (n: number) => n.toLocaleString();
+const fmtCurrency = (n: number) => `$${Math.round(n).toLocaleString()}`;
+const fmtRate = (num: number, den: number) =>
+  den > 0 ? `${((num / den) * 100).toFixed(1)}%` : "—";
+const fmtScore = (b: Bucket) =>
+  b.qWeight > 0 ? `${(b.qSum / b.qWeight).toFixed(1)}` : "—";
+const fmtFollowups = (b: Bucket) =>
+  b.fupWeight > 0 ? (b.fupSum / b.fupWeight).toFixed(1) : "—";
 
 function AgentsDashboard() {
-  const [rows, setRows] = useState<AgentRow[]>([]);
+  const [rows, setRows] = useState<AgentRowV3[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [fetchedAt, setFetchedAt] = useState<string | null>(null);
 
-  const [salesOutbound, setSalesOutbound] = useState(true);
-  const [serviceOutbound, setServiceOutbound] = useState(true);
-  const [salesInbound, setSalesInbound] = useState(true);
-  const [serviceInbound, setServiceInbound] = useState(true);
-  const [other, setOther] = useState(true);
+  const [activeAgent, setActiveAgent] = useState<AgentType>("Sales Inbound");
   const [dateRange, setDateRange] = useState<DateRange>("ALL");
+  const [customRange, setCustomRange] = useState<CustomRange>(() => ({ from: "", to: todayIso() }));
   const [stageFilter, setStageFilter] = useState<string>("ALL");
   const [search, setSearch] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -144,153 +220,100 @@ function AgentsDashboard() {
     setError(null);
     const url = `${API_BASE}/api/agents${force ? `?refresh=1&t=${Date.now()}` : ""}`;
     fetch(url, { cache: "no-store" })
-      .then(r => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
-      })
-      .then(j => {
-        setRows(j.rows ?? []);
-        setFetchedAt(j.fetchedAt ?? null);
-      })
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+      .then(j => { setRows(j.rows ?? []); setFetchedAt(j.fetchedAt ?? null); })
       .catch(e => setError(e.message))
       .finally(() => setLoading(false));
   };
+  useEffect(() => { load(false); }, []);
 
-  useEffect(() => {
-    load(false);
-  }, []);
+  // Reset row-expansion state whenever the active agent or filters narrow.
+  useEffect(() => { setExpanded(new Set()); }, [activeAgent, dateRange, customRange, stageFilter, search]);
 
   const stages = useMemo(() => {
     const s = new Set<string>();
-    rows.forEach(r => r.stage && s.add(r.stage));
+    rows.forEach(r => { if (r.rooftop_stage) s.add(r.rooftop_stage); });
     return Array.from(s).sort();
   }, [rows]);
 
-  const presentBuckets = useMemo(() => {
-    const s = new Set<string>();
-    rows.forEach(r => r.call_bucket && s.add(r.call_bucket));
+  const presentAgents = useMemo(() => {
+    const s = new Set<AgentType>();
+    rows.forEach(r => { if (r.agent_type) s.add(r.agent_type); });
     return s;
   }, [rows]);
-  const hasOther = presentBuckets.has(OTHER_BUCKET);
-
-  // Map enterprise → set of team_ids. Used to decide whether to disambiguate
-  // the rooftop label (two teams under one enterprise must not look identical).
-  const enterpriseTeamCount = useMemo(() => {
-    const m = new Map<string, Set<string>>();
-    for (const r of rows) {
-      if (!r.enterprise || !r.team_id) continue;
-      if (!m.has(r.enterprise)) m.set(r.enterprise, new Set());
-      m.get(r.enterprise)!.add(r.team_id);
-    }
-    return m;
-  }, [rows]);
-
-  const labelFor = (enterprise: string, teamId: string): string => {
-    const teams = enterpriseTeamCount.get(enterprise);
-    if (!teams || teams.size <= 1) return enterprise;
-    return `${enterprise} · team ${teamId.slice(0, 8)}`;
-  };
-
-  const anyOutbound = salesOutbound || serviceOutbound;
-  const anyInbound = salesInbound || serviceInbound;
-
-  const middleMode: "connected" | "qualified" | "both" =
-    anyInbound && anyOutbound ? "both" : anyOutbound ? "connected" : "qualified";
-  const middleMetricLabel =
-    middleMode === "both" ? "Qualified / Connected"
-    : middleMode === "connected" ? "Connected"
-    : "Qualified";
-
-  const metricsSeries = useMemo(() => [
-    { key: "calls" as const, label: "Calls", color: "#6366f1" },
-    { key: "qc" as const, label: middleMetricLabel, color: "#0ea5e9" },
-    { key: "appts" as const, label: "Appointments", color: "#22c55e" },
-  ], [middleMetricLabel]);
 
   const filtered = useMemo(() => {
-    const allowed = new Set<string>();
-    if (salesOutbound) allowed.add(BUCKETS.salesOutbound);
-    if (serviceOutbound) allowed.add(BUCKETS.serviceOutbound);
-    if (salesInbound) allowed.add(BUCKETS.salesInbound);
-    if (serviceInbound) allowed.add(BUCKETS.serviceInbound);
-    if (other) allowed.add(OTHER_BUCKET);
     const q = search.trim().toLowerCase();
     return rows.filter(r => {
-      if (!allowed.has(r.call_bucket)) return false;
-      if (!inRange(r.day, dateRange)) return false;
-      if (stageFilter !== "ALL" && r.stage !== stageFilter) return false;
-      if (q && !r.enterprise.toLowerCase().includes(q)) return false;
+      if (r.agent_type !== activeAgent) return false;
+      if (!inRange(r.day, dateRange, customRange)) return false;
+      if (stageFilter !== "ALL" && r.rooftop_stage !== stageFilter) return false;
+      if (q) {
+        const hay = `${rooftopLabel(r)} ${enterpriseLabel(r)}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
       return true;
     });
-  }, [rows, salesOutbound, serviceOutbound, salesInbound, serviceInbound, other, dateRange, stageFilter, search]);
+  }, [rows, activeAgent, dateRange, customRange, stageFilter, search]);
 
-  const days = useMemo(() => {
-    const s = new Set<string>();
-    filtered.forEach(r => r.day && s.add(r.day));
-    return Array.from(s).sort();
-  }, [filtered]);
-
-  // Pivot keyed on team_id (NOT enterprise). When two teams share an enterprise
-  // name they must remain separate rows.
-  type PivotEntry = { enterprise: string; teamId: string; days: Map<string, DayBucket> };
-  const pivot = useMemo(() => {
-    const m = new Map<string, PivotEntry>();
-    for (const r of filtered) {
-      const key = r.team_id || `__noteam__::${r.enterprise}`;
-      let entry = m.get(key);
-      if (!entry) {
-        entry = { enterprise: r.enterprise, teamId: r.team_id, days: new Map() };
-        m.set(key, entry);
-      }
-      const prev = entry.days.get(r.day) ?? EMPTY_BUCKET;
-      entry.days.set(r.day, addBucket(prev, projectRow(r)));
-    }
-    return m;
-  }, [filtered]);
-
-  type RooftopRow = {
-    key: string;
-    label: string;
-    enterprise: string;
-    teamId: string;
-    daily: ({ day: string } & DayBucket)[];
-    total: DayBucket;
-  };
-  const rooftopRows: RooftopRow[] = useMemo(() => {
-    const out: RooftopRow[] = [];
-    for (const [key, entry] of pivot.entries()) {
-      const daily = days
-        .filter(d => entry.days.has(d))
-        .map(d => ({ day: d, ...(entry.days.get(d) as DayBucket) }));
-      const total = daily.reduce<DayBucket>((acc, x) => addBucket(acc, x), { ...EMPTY_BUCKET });
-      out.push({
-        key,
-        label: labelFor(entry.enterprise, entry.teamId),
-        enterprise: entry.enterprise,
-        teamId: entry.teamId,
-        daily,
-        total,
-      });
-    }
-    out.sort((a, b) => b.total.calls - a.total.calls);
-    return out;
-  }, [pivot, days, enterpriseTeamCount]);
-
-  const daily = useMemo(() => {
-    const byDay = new Map<string, DayBucket>();
-    for (const r of filtered) {
-      const prev = byDay.get(r.day) ?? EMPTY_BUCKET;
-      byDay.set(r.day, addBucket(prev, projectRow(r)));
-    }
-    return days.map(d => byDay.get(d) ?? { ...EMPTY_BUCKET });
-  }, [filtered, days]);
-
-  const totals = useMemo<DayBucket>(
-    () => daily.reduce<DayBucket>((acc, x) => addBucket(acc, x), { ...EMPTY_BUCKET }),
-    [daily]
+  const days = useMemo(
+    () => Array.from(new Set(filtered.map(r => r.day))).sort(),
+    [filtered]
   );
 
-  const totalsMid = middleValue(totals, middleMode);
+  type RooftopAgg = {
+    key: string;
+    rooftop: string;
+    enterprise: string;
+    stage: string | null;
+    daily: ({ day: string } & Bucket)[];
+    total: Bucket;
+  };
+  const rooftopRows: RooftopAgg[] = useMemo(() => {
+    const m = new Map<string, RooftopAgg>();
+    const stageMap = new Map<string, { day: string; stage: string | null }>();
+    for (const r of filtered) {
+      const key = r.team_id || `${r.enterprise_name ?? ""}::${r.rooftop_name ?? ""}`;
+      let entry = m.get(key);
+      if (!entry) {
+        entry = {
+          key, rooftop: rooftopLabel(r), enterprise: enterpriseLabel(r),
+          stage: r.rooftop_stage, daily: [], total: { ...EMPTY },
+        };
+        m.set(key, entry);
+      }
+      const prev = stageMap.get(key);
+      if (!prev || r.day > prev.day) stageMap.set(key, { day: r.day, stage: r.rooftop_stage });
+      const proj = projectRow(r);
+      entry.total = add(entry.total, proj);
+      entry.daily.push({ day: r.day, ...proj });
+    }
+    for (const [key, entry] of m) entry.stage = stageMap.get(key)?.stage ?? entry.stage;
+    for (const e of m.values()) e.daily.sort((a, b) => a.day.localeCompare(b.day));
+    return Array.from(m.values()).sort((a, b) => b.total.totalLeads - a.total.totalLeads);
+  }, [filtered]);
+
+  const daily = useMemo(() => {
+    const byDay = new Map<string, Bucket>();
+    for (const r of filtered) {
+      const prev = byDay.get(r.day) ?? EMPTY;
+      byDay.set(r.day, add(prev, projectRow(r)));
+    }
+    return days.map(d => byDay.get(d) ?? { ...EMPTY });
+  }, [filtered, days]);
+
+  const totals = useMemo(() => daily.reduce(add, { ...EMPTY }), [daily]);
+
+  const { liveRooftops, churnedRooftops } = useMemo(() => {
+    let live = 0, churned = 0;
+    for (const rt of rooftopRows) {
+      if (rt.stage === "Live") live++;
+      else if (rt.stage === "Churned") churned++;
+    }
+    return { liveRooftops: live, churnedRooftops: churned };
+  }, [rooftopRows]);
+
+  const showingPlaceholder = loading && rows.length === 0;
 
   const toggleExpand = (key: string) => {
     setExpanded(prev => {
@@ -302,34 +325,25 @@ function AgentsDashboard() {
   const expandAll = () => setExpanded(new Set(rooftopRows.map(r => r.key)));
   const collapseAll = () => setExpanded(new Set());
 
-  const showingPlaceholder = loading && rows.length === 0;
-
   return (
     <div style={{ fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif", padding: "20px 32px", background: "#f9fafb", minHeight: "100vh" }}>
       <style>{`
-        @keyframes agentShimmer {
-          0%   { background-position: 200% 0; }
-          100% { background-position: -200% 0; }
-        }
-        .agent-shimmer {
-          background: linear-gradient(90deg, #eef0f3 25%, #e2e5ea 50%, #eef0f3 75%);
-          background-size: 200% 100%;
-          animation: agentShimmer 1.3s ease-in-out infinite;
-          border-radius: 6px;
-          color: transparent !important;
-        }
+        @keyframes agentShimmer { 0%{background-position:200% 0} 100%{background-position:-200% 0} }
+        .agent-shimmer { background:linear-gradient(90deg,#eef0f3 25%,#e2e5ea 50%,#eef0f3 75%); background-size:200% 100%; animation:agentShimmer 1.3s ease-in-out infinite; border-radius:6px; color:transparent !important; }
         .agent-refreshing { animation: agentSpin 1s linear infinite; }
         @keyframes agentSpin { to { transform: rotate(360deg); } }
       `}</style>
 
-      {/* Header */}
       <div style={{ marginBottom: 20, display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
         <div>
           <h1 style={{ fontSize: 22, fontWeight: 800, color: "#111827", margin: 0 }}>
-            Agents — Day on Day by Rooftop
+            Agents — Per-Agent Campaign Metrics
           </h1>
-          <p style={{ fontSize: 13, color: "#6b7280", margin: "4px 0 0", maxWidth: 720 }}>
-            Agent call activity per rooftop (one row per team — enterprises with multiple teams are kept separate). Source: Metabase public card — Refresh bypasses the server cache.
+          <p style={{ fontSize: 13, color: "#6b7280", margin: "4px 0 0", maxWidth: 800 }}>
+            One tab per agent (Sales/Service × Inbound/Outbound). Each tab shows the metrics
+            specific to that agent's funnel — for inbound, lead-creation-day attribution; for
+            outbound, campaign-day attribution. Live and Churned rooftop counts use the most
+            recent day's <code>rooftop_stage</code> per <code>team_id</code> within the active filters.
           </p>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10, paddingTop: 4 }}>
@@ -353,51 +367,92 @@ function AgentsDashboard() {
         </div>
       )}
 
+      {/* Agent tabs */}
+      <div style={{ display: "flex", gap: 4, marginBottom: 12, borderBottom: "1px solid #e5e7eb" }}>
+        {AGENT_TYPES.map(t => {
+          const active = t === activeAgent;
+          const hasData = presentAgents.has(t) || rows.length === 0;
+          return (
+            <button
+              key={t}
+              onClick={() => setActiveAgent(t)}
+              disabled={!loading && rows.length > 0 && !hasData}
+              title={!hasData ? `No ${t} rows in current data` : undefined}
+              style={{
+                padding: "10px 16px", border: "none", background: "transparent",
+                borderBottom: `2px solid ${active ? AGENT_COLORS[t] : "transparent"}`,
+                color: active ? AGENT_COLORS[t] : hasData ? "#374151" : "#d1d5db",
+                fontSize: 13, fontWeight: active ? 700 : 600,
+                cursor: hasData ? "pointer" : "not-allowed",
+                marginBottom: -1,
+                transition: "color 0.15s, border-color 0.15s",
+              }}
+            >
+              <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: AGENT_COLORS[t], marginRight: 8, verticalAlign: "middle" }} />
+              {AGENT_LABELS[t]}
+            </button>
+          );
+        })}
+      </div>
+
       {/* Filters */}
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 18, background: "#fff", padding: 12, borderRadius: 10, border: "1px solid #e5e7eb" }}>
-        <span style={{ fontSize: 11, color: "#6b7280", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.4 }}>Agents:</span>
-        <Chip label="Sales Outbound" active={salesOutbound} onToggle={() => setSalesOutbound(x => !x)} activeColor="#6366f1" />
-        <Chip label="Service Outbound" active={serviceOutbound} onToggle={() => setServiceOutbound(x => !x)} activeColor="#0ea5e9" />
-        <Chip label="Sales Inbound" active={salesInbound} onToggle={() => setSalesInbound(x => !x)} activeColor="#f59e0b" />
-        <Chip label="Service Inbound" active={serviceInbound} onToggle={() => setServiceInbound(x => !x)} activeColor="#22c55e" />
-        {hasOther && (
-          <Chip label="Other" active={other} onToggle={() => setOther(x => !x)} activeColor="#9ca3af" />
-        )}
-        <div style={{ width: 1, height: 24, background: "#e5e7eb", margin: "0 4px" }} />
         <SegmentedControl options={DATE_RANGES} value={dateRange} onChange={setDateRange} />
+        {dateRange === "CUSTOM" && (
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <label style={{ fontSize: 12, color: "#6b7280", fontWeight: 600 }}>From</label>
+            <input type="date" value={customRange.from}
+              max={customRange.to || undefined}
+              onChange={e => setCustomRange(r => ({ ...r, from: e.target.value }))}
+              style={{ padding: "5px 8px", borderRadius: 8, border: "1px solid #d1d5db", fontSize: 13, background: "#fff" }} />
+            <label style={{ fontSize: 12, color: "#6b7280", fontWeight: 600 }}>To</label>
+            <input type="date" value={customRange.to}
+              min={customRange.from || undefined}
+              onChange={e => setCustomRange(r => ({ ...r, to: e.target.value }))}
+              style={{ padding: "5px 8px", borderRadius: 8, border: "1px solid #d1d5db", fontSize: 13, background: "#fff" }} />
+            {(customRange.from || customRange.to) && (
+              <button onClick={() => setCustomRange({ from: "", to: "" })}
+                title="Clear custom range"
+                style={{ padding: "4px 8px", fontSize: 11, fontWeight: 600, color: "#6b7280", background: "transparent", border: "1px solid #e5e7eb", borderRadius: 6, cursor: "pointer" }}>
+                Clear
+              </button>
+            )}
+          </div>
+        )}
         <div style={{ width: 1, height: 24, background: "#e5e7eb", margin: "0 4px" }} />
         <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
           <label style={{ fontSize: 12, color: "#6b7280", fontWeight: 600 }}>Stage</label>
           <select value={stageFilter} onChange={e => setStageFilter(e.target.value)}
             style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid #d1d5db", fontSize: 13, background: "#fff" }}>
-            <option value="ALL">All</option>
-            {stages.map(s => <option key={s} value={s}>{s}</option>)}
+            <option value="ALL">All stages</option>
+            {stages.map(s => <option key={s} value={s}>{s || "(blank)"}</option>)}
           </select>
         </div>
-        <input type="text" value={search} onChange={e => setSearch(e.target.value)} placeholder="Search rooftop…"
-          style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid #d1d5db", fontSize: 13, minWidth: 180 }} />
+        <input type="text" value={search} onChange={e => setSearch(e.target.value)} placeholder="Search rooftop or enterprise…"
+          style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid #d1d5db", fontSize: 13, minWidth: 220 }} />
         <div style={{ marginLeft: "auto", fontSize: 12, color: "#6b7280" }}>
-          {rooftopRows.length} team{rooftopRows.length === 1 ? "" : "s"} · {days.length} day{days.length === 1 ? "" : "s"}
+          {rooftopRows.length} rooftop{rooftopRows.length === 1 ? "" : "s"} · {days.length} day{days.length === 1 ? "" : "s"}
         </div>
       </div>
 
-      {/* KPIs */}
-      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 18 }}>
-        <KpiCard label="Total Calls" scope="All Teams" value={totals.calls} color="#6366f1" loading={showingPlaceholder} />
-        <KpiCard label={middleMetricLabel} scope="All Teams" value={totalsMid} color="#0ea5e9" loading={showingPlaceholder}
-          sub={totals.calls > 0 ? `${((totalsMid / totals.calls) * 100).toFixed(1)}% of calls` : undefined} />
-        <KpiCard label="Callbacks / Transfers" scope="All Teams" value={totals.cbxfer} color="#f97316" loading={showingPlaceholder}
-          sub={totals.calls > 0 ? `${((totals.cbxfer / totals.calls) * 100).toFixed(1)}% of calls` : undefined} />
-        <KpiCard label="Appointments" scope="All Teams" value={totals.appts} color="#22c55e" loading={showingPlaceholder}
-          sub={totals.calls > 0 ? `${((totals.appts / totals.calls) * 100).toFixed(1)}% of calls` : undefined} />
-        <KpiCard label="Teams" scope="Distinct team_id" value={rooftopRows.length} color="#f59e0b" loading={showingPlaceholder} />
-      </div>
+      {/* KPIs — agent-specific */}
+      <KpiStrip
+        agent={activeAgent}
+        totals={totals}
+        liveRooftops={liveRooftops}
+        churnedRooftops={churnedRooftops}
+        loading={showingPlaceholder}
+      />
 
       {/* Chart */}
       <div style={{ background: "#fff", borderRadius: 12, border: "1px solid #e5e7eb", padding: 16, marginBottom: 20, position: "relative" }}>
         <div style={{ marginBottom: 10 }}>
-          <div style={{ fontSize: 15, fontWeight: 700, color: "#111827" }}>Day-on-day — Calls, {middleMetricLabel}, Appointments</div>
-          <div style={{ fontSize: 12, color: "#6b7280" }}>Aggregated across teams matching your filters. Hover the chart for day-level details.</div>
+          <div style={{ fontSize: 15, fontWeight: 700, color: "#111827" }}>
+            Day-on-day — {chartTitleFor(activeAgent)}
+          </div>
+          <div style={{ fontSize: 12, color: "#6b7280" }}>
+            Aggregated across rooftops matching your filters. Hover for day-level details.
+          </div>
         </div>
         {showingPlaceholder ? (
           <div className="agent-shimmer" style={{ height: 320 }} />
@@ -406,25 +461,16 @@ function AgentsDashboard() {
             No data — widen your filters or pick a different date range.
           </div>
         ) : (
-          <LineChart
-            days={days}
-            series={metricsSeries.map(m => ({
-              name: m.label,
-              color: m.color,
-              values: daily.map(d =>
-                m.key === "calls" ? d.calls
-                : m.key === "qc" ? middleValue(d, middleMode)
-                : d.appts
-              ),
-            }))}
-          />
+          <LineChart days={days} series={chartSeriesFor(activeAgent, daily)} />
         )}
       </div>
 
-      {/* Expandable table */}
+      {/* Rooftop table */}
       <div style={{ background: "#fff", borderRadius: 12, border: "1px solid #e5e7eb", overflow: "hidden" }}>
         <div style={{ padding: "12px 16px", borderBottom: "1px solid #e5e7eb", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-          <div style={{ fontSize: 14, fontWeight: 700, color: "#111827" }}>Total calls per team per day</div>
+          <div style={{ fontSize: 14, fontWeight: 700, color: "#111827" }}>
+            Rooftop breakdown — {AGENT_LABELS[activeAgent]} · expand for daily detail
+          </div>
           <div style={{ display: "flex", gap: 6 }}>
             <button onClick={expandAll}
               style={{ padding: "4px 10px", borderRadius: 6, border: "1px solid #d1d5db", background: "#fff", fontSize: 11, fontWeight: 600, cursor: "pointer", color: "#374151" }}>
@@ -436,129 +482,284 @@ function AgentsDashboard() {
             </button>
           </div>
         </div>
-        <div style={{ overflowX: "auto", maxHeight: 620 }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-            <thead style={{ position: "sticky", top: 0, background: "#f9fafb", zIndex: 1 }}>
-              <tr>
-                <th style={{ ...thStyle, width: 30 }} />
-                <th style={{ ...thStyle, textAlign: "left", minWidth: 260 }}>Rooftop / Day</th>
-                <th style={{ ...thStyle, textAlign: "right", minWidth: 80 }}>Calls</th>
-                <th style={{ ...thStyle, textAlign: "right", minWidth: 130 }}>{middleMetricLabel}</th>
-                <th style={{ ...thStyle, textAlign: "right", minWidth: 140 }}>Callbacks / Xfer</th>
-                <th style={{ ...thStyle, textAlign: "right", minWidth: 130 }}>Appointments</th>
-              </tr>
-            </thead>
-            <tbody>
-              {showingPlaceholder && Array.from({ length: 8 }).map((_, i) => (
-                <tr key={`sh-${i}`} style={{ borderTop: "1px solid #f3f4f6" }}>
-                  {Array.from({ length: 6 }).map((__, j) => (
-                    <td key={j} style={{ padding: "10px 12px" }}>
-                      <div className="agent-shimmer" style={{ height: 14, width: j === 1 ? "60%" : "50%" }}>&nbsp;</div>
-                    </td>
-                  ))}
-                </tr>
-              ))}
-              {!showingPlaceholder && rooftopRows.length === 0 && (
-                <tr>
-                  <td colSpan={6} style={{ padding: 24, textAlign: "center", color: "#9ca3af", fontSize: 13 }}>
-                    No teams match filters
-                  </td>
-                </tr>
-              )}
-              {!showingPlaceholder && rooftopRows.map(row => {
-                const isOpen = expanded.has(row.key);
-                const mid = middleValue(row.total, middleMode);
-                return (
-                  <Fragment key={row.key}>
-                    <tr
-                      onClick={() => toggleExpand(row.key)}
-                      style={{ borderTop: "1px solid #f3f4f6", background: isOpen ? "#eef2ff" : "#fff", cursor: "pointer" }}>
-                      <td style={{ ...tdStyle, textAlign: "center", color: "#6b7280", fontWeight: 700, userSelect: "none" }}>
-                        <span style={{ display: "inline-block", width: 16, transform: isOpen ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 0.15s" }}>▶</span>
-                      </td>
-                      <td style={{ ...tdStyle, fontWeight: 700, color: "#111827" }}
-                          title={row.teamId ? `team_id: ${row.teamId}` : undefined}>
-                        {row.label}
-                        <span style={{ marginLeft: 8, fontSize: 11, color: "#6b7280", fontWeight: 500 }}>
-                          ({row.daily.length} day{row.daily.length === 1 ? "" : "s"})
-                        </span>
-                      </td>
-                      <td style={{ ...tdStyle, textAlign: "right", fontWeight: 700, color: "#4f46e5" }}>{row.total.calls.toLocaleString()}</td>
-                      <td style={{ ...tdStyle, textAlign: "right", fontWeight: 600, color: "#0369a1" }}>
-                        {mid.toLocaleString()}
-                        <span style={{ marginLeft: 6, color: "#9ca3af", fontWeight: 500, fontSize: 11 }}>{fmtPct(mid, row.total.calls)}</span>
-                      </td>
-                      <td style={{ ...tdStyle, textAlign: "right", fontWeight: 600, color: "#c2410c" }}>
-                        {row.total.cbxfer.toLocaleString()}
-                        <span style={{ marginLeft: 6, color: "#9ca3af", fontWeight: 500, fontSize: 11 }}>{fmtPct(row.total.cbxfer, row.total.calls)}</span>
-                      </td>
-                      <td style={{ ...tdStyle, textAlign: "right", fontWeight: 600, color: "#15803d" }}>
-                        {row.total.appts.toLocaleString()}
-                        <span style={{ marginLeft: 6, color: "#9ca3af", fontWeight: 500, fontSize: 11 }}>{fmtPct(row.total.appts, row.total.calls)}</span>
-                      </td>
-                    </tr>
-                    {isOpen && row.daily.map(d => {
-                      const dMid = middleValue(d, middleMode);
-                      return (
-                        <tr key={`${row.key}::${d.day}`} style={{ borderTop: "1px solid #f3f4f6", background: "#fafbff" }}>
-                          <td style={dayCellStyle} />
-                          <td style={{ ...dayCellStyle, paddingLeft: 36, color: "#6b7280" }}>{fmtDay(d.day)}</td>
-                          <td style={{ ...dayCellStyle, textAlign: "right", color: d.calls > 0 ? "#374151" : "#d1d5db" }}>
-                            {d.calls > 0 ? d.calls.toLocaleString() : "—"}
-                          </td>
-                          <td style={{ ...dayCellStyle, textAlign: "right", color: dMid > 0 ? "#374151" : "#d1d5db" }}>
-                            {dMid > 0 ? dMid.toLocaleString() : "—"}
-                            {dMid > 0 && (
-                              <span style={{ marginLeft: 6, color: "#9ca3af", fontSize: 11 }}>{fmtPct(dMid, d.calls)}</span>
-                            )}
-                          </td>
-                          <td style={{ ...dayCellStyle, textAlign: "right", color: d.cbxfer > 0 ? "#374151" : "#d1d5db" }}>
-                            {d.cbxfer > 0 ? d.cbxfer.toLocaleString() : "—"}
-                            {d.cbxfer > 0 && (
-                              <span style={{ marginLeft: 6, color: "#9ca3af", fontSize: 11 }}>{fmtPct(d.cbxfer, d.calls)}</span>
-                            )}
-                          </td>
-                          <td style={{ ...dayCellStyle, textAlign: "right", color: d.appts > 0 ? "#374151" : "#d1d5db" }}>
-                            {d.appts > 0 ? d.appts.toLocaleString() : "—"}
-                            {d.appts > 0 && (
-                              <span style={{ marginLeft: 6, color: "#9ca3af", fontSize: 11 }}>{fmtPct(d.appts, d.calls)}</span>
-                            )}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </Fragment>
-                );
-              })}
-            </tbody>
-          </table>
+        <div style={{ overflowX: "auto", maxHeight: 640 }}>
+          <RooftopTable
+            agent={activeAgent}
+            rows={rooftopRows}
+            expanded={expanded}
+            onToggle={toggleExpand}
+            loading={showingPlaceholder}
+          />
         </div>
       </div>
     </div>
   );
 }
 
-function Chip({ label, active, onToggle, activeColor }: { label: string; active: boolean; onToggle: () => void; activeColor: string }) {
+// ─── Per-agent KPI strip ─────────────────────────────────────────────────────
+
+function KpiStrip({ agent, totals, liveRooftops, churnedRooftops, loading }: {
+  agent: AgentType;
+  totals: Bucket;
+  liveRooftops: number;
+  churnedRooftops: number;
+  loading: boolean;
+}) {
+  const cards: { label: string; value: string | number; color: string; sub?: string }[] = [
+    { label: "Live Rooftops", value: liveRooftops, color: "#16a34a" },
+    { label: "Churned Rooftops", value: churnedRooftops, color: "#dc2626" },
+  ];
+
+  const channelMix = (b: Bucket) => `${fmtNum(b.leadsWithCalls)} via calls · ${fmtNum(b.leadsWithSms)} via SMS`;
+
+  if (agent === "Sales Inbound") {
+    cards.push(
+      { label: "Unique Leads", value: fmtNum(totals.totalLeads), color: "#6366f1" },
+      { label: "Touched Leads", value: fmtNum(totals.touched), color: "#0ea5e9", sub: channelMix(totals) },
+      { label: "Qualified Leads", value: fmtNum(totals.qualified), color: "#0369a1", sub: fmtRate(totals.qualified, totals.touched) + " of touched" },
+      { label: "Coverage", value: fmtRate(totals.touched, totals.totalLeads), color: "#8b5cf6", sub: "touched / unique" },
+      { label: "Appointments", value: fmtNum(totals.appts), color: "#22c55e" },
+      { label: "Conversion Rate", value: fmtRate(totals.appts, totals.touched), color: "#15803d", sub: "appts / touched" },
+      { label: "Appointment Value", value: fmtCurrency(totals.apptValue), color: "#ea580c" },
+      { label: "Quality Score", value: fmtScore(totals), color: "#db2777", sub: "lead-weighted" },
+    );
+  } else if (agent === "Service Inbound") {
+    cards.push(
+      { label: "Unique Leads Touched", value: fmtNum(totals.touched), color: "#0ea5e9", sub: channelMix(totals) },
+      { label: "Total Calls", value: fmtNum(totals.totalCalls), color: "#6366f1", sub: totals.leadsWithCalls > 0 ? `${fmtNum(totals.leadsWithCalls)} unique leads` : undefined },
+      { label: "Qualified Leads", value: fmtNum(totals.qualified), color: "#0369a1", sub: fmtRate(totals.qualified, totals.touched) + " of touched" },
+      { label: "Appt Intent Leads", value: fmtNum(totals.intent), color: "#8b5cf6" },
+      { label: "Appointments", value: fmtNum(totals.appts), color: "#22c55e", sub: fmtRate(totals.appts, totals.touched) + " of touched" },
+      { label: "Appointment Value", value: fmtCurrency(totals.apptValue), color: "#ea580c" },
+      { label: "Quality Score", value: fmtScore(totals), color: "#db2777", sub: "lead-weighted" },
+    );
+  } else {
+    // Sales OB & Service OB share the same metric set; Sales/Service differs only in the lead-source label.
+    const leadsLabel = agent === "Sales Outbound" ? "Total Leads in CRM" : "Total Leads in DMS";
+    cards.push(
+      { label: leadsLabel, value: fmtNum(totals.totalLeads), color: "#6366f1" },
+      { label: "Eligible Campaign Leads", value: fmtNum(totals.eligible), color: "#0ea5e9", sub: fmtRate(totals.eligible, totals.totalLeads) + " of total" },
+      { label: "Leads Targeted", value: fmtNum(totals.targeted), color: "#0369a1", sub: fmtRate(totals.targeted, totals.eligible) + " of eligible" },
+      { label: "Leads Touched", value: fmtNum(totals.touched), color: "#8b5cf6", sub: channelMix(totals) },
+      { label: "Leads Engaged", value: fmtNum(totals.engaged), color: "#a21caf", sub: fmtRate(totals.engaged, totals.touched) + " of touched" },
+      { label: "Qualified Leads", value: fmtNum(totals.qualified), color: "#0d9488", sub: fmtRate(totals.qualified, totals.engaged) + " of engaged" },
+      { label: "Appointments", value: fmtNum(totals.appts), color: "#22c55e", sub: fmtRate(totals.appts, totals.qualified) + " of qualified" },
+      { label: "Appointment Value", value: fmtCurrency(totals.apptValue), color: "#ea580c" },
+      { label: "Followups till Appt", value: fmtFollowups(totals), color: "#9333ea", sub: "SMS + Calls per appt" },
+      { label: "Quality Score", value: fmtScore(totals), color: "#db2777", sub: "lead-weighted" },
+    );
+  }
+
   return (
-    <button onClick={onToggle}
-      style={{
-        display: "inline-flex", alignItems: "center", gap: 6,
-        padding: "6px 12px", borderRadius: 999,
-        border: `1px solid ${active ? activeColor : "#d1d5db"}`,
-        background: active ? activeColor : "#fff",
-        color: active ? "#fff" : "#6b7280",
-        fontSize: 12, fontWeight: 600, cursor: "pointer", transition: "all 0.15s",
-      }}>
-      <span style={{ width: 8, height: 8, borderRadius: "50%", background: active ? "#fff" : "#d1d5db" }} />
-      {label}
-    </button>
+    <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 18 }}>
+      {cards.map(c => (
+        <KpiCard key={c.label} label={c.label} value={c.value} color={c.color} loading={loading} sub={c.sub} />
+      ))}
+    </div>
+  );
+}
+
+// ─── Per-agent chart series ──────────────────────────────────────────────────
+
+function chartTitleFor(agent: AgentType): string {
+  if (agent === "Sales Inbound") return "Unique Leads, Touched, Appointments";
+  if (agent === "Service Inbound") return "Total Calls, Qualified, Appointments";
+  return "Eligible, Engaged, Appointments";
+}
+function chartSeriesFor(agent: AgentType, daily: Bucket[]):
+  { name: string; color: string; values: number[] }[] {
+  if (agent === "Sales Inbound") {
+    return [
+      { name: "Unique Leads", color: "#6366f1", values: daily.map(d => d.totalLeads) },
+      { name: "Touched", color: "#0ea5e9", values: daily.map(d => d.touched) },
+      { name: "Appointments", color: "#22c55e", values: daily.map(d => d.appts) },
+    ];
+  }
+  if (agent === "Service Inbound") {
+    return [
+      { name: "Total Calls", color: "#6366f1", values: daily.map(d => d.totalCalls) },
+      { name: "Qualified", color: "#0369a1", values: daily.map(d => d.qualified) },
+      { name: "Appointments", color: "#22c55e", values: daily.map(d => d.appts) },
+    ];
+  }
+  return [
+    { name: "Eligible", color: "#0ea5e9", values: daily.map(d => d.eligible) },
+    { name: "Engaged", color: "#a21caf", values: daily.map(d => d.engaged) },
+    { name: "Appointments", color: "#22c55e", values: daily.map(d => d.appts) },
+  ];
+}
+
+// ─── Per-agent rooftop table ─────────────────────────────────────────────────
+
+type RooftopRowData = {
+  key: string; rooftop: string; enterprise: string; stage: string | null;
+  daily: ({ day: string } & Bucket)[]; total: Bucket;
+};
+
+function RooftopTable({ agent, rows, expanded, onToggle, loading }: {
+  agent: AgentType;
+  rows: RooftopRowData[];
+  expanded: Set<string>;
+  onToggle: (k: string) => void;
+  loading: boolean;
+}) {
+  const cols = columnsFor(agent);
+  const totalCols = cols.length + 2; // arrow + rooftop label + metrics
+
+  return (
+    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+      <thead style={{ position: "sticky", top: 0, background: "#f9fafb", zIndex: 1 }}>
+        <tr>
+          <th style={{ ...thStyle, width: 30 }} />
+          <th style={{ ...thStyle, textAlign: "left", minWidth: 240 }}>Rooftop / Day</th>
+          {cols.map(c => (
+            <th key={c.label} style={{ ...thStyle, textAlign: "right", minWidth: c.minWidth ?? 100 }}>
+              {c.label}
+            </th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {loading && Array.from({ length: 8 }).map((_, i) => (
+          <tr key={`sh-${i}`} style={{ borderTop: "1px solid #f3f4f6" }}>
+            {Array.from({ length: totalCols }).map((__, j) => (
+              <td key={j} style={{ padding: "10px 12px" }}>
+                <div className="agent-shimmer" style={{ height: 14, width: j === 1 ? "60%" : "50%" }}>&nbsp;</div>
+              </td>
+            ))}
+          </tr>
+        ))}
+        {!loading && rows.length === 0 && (
+          <tr>
+            <td colSpan={totalCols} style={{ padding: 24, textAlign: "center", color: "#9ca3af", fontSize: 13 }}>
+              No rooftops match filters
+            </td>
+          </tr>
+        )}
+        {!loading && rows.map(row => {
+          const isOpen = expanded.has(row.key);
+          return (
+            <Fragment key={row.key}>
+              <tr
+                onClick={() => onToggle(row.key)}
+                style={{ borderTop: "1px solid #f3f4f6", background: isOpen ? "#eef2ff" : "#fff", cursor: "pointer" }}>
+                <td style={{ ...tdStyle, textAlign: "center", color: "#6b7280", fontWeight: 700, userSelect: "none" }}>
+                  <span style={{ display: "inline-block", width: 16, transform: isOpen ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 0.15s" }}>▶</span>
+                </td>
+                <td style={{ ...tdStyle, whiteSpace: "normal" }} title={`team_id: ${row.key}`}>
+                  <div style={{ fontWeight: 700, color: "#111827" }}>
+                    {row.rooftop}
+                    <StagePill stage={row.stage} />
+                    <span style={{ marginLeft: 8, fontSize: 11, color: "#6b7280", fontWeight: 500 }}>
+                      ({row.daily.length} day{row.daily.length === 1 ? "" : "s"})
+                    </span>
+                  </div>
+                  {row.enterprise && row.enterprise !== row.rooftop && (
+                    <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 2 }}>{row.enterprise}</div>
+                  )}
+                </td>
+                {cols.map(c => (
+                  <td key={c.label} style={{ ...tdStyle, textAlign: "right", color: c.emphasize ? "#0369a1" : "#374151", fontWeight: c.emphasize ? 600 : 400 }}>
+                    {c.render(row.total)}
+                  </td>
+                ))}
+              </tr>
+              {isOpen && row.daily.map(d => (
+                <tr key={`${row.key}::${d.day}`} style={{ borderTop: "1px solid #f3f4f6", background: "#fafbff" }}>
+                  <td style={dayCellStyle} />
+                  <td style={{ ...dayCellStyle, paddingLeft: 36, color: "#6b7280" }}>{fmtDay(d.day)}</td>
+                  {cols.map(c => (
+                    <td key={c.label} style={{ ...dayCellStyle, textAlign: "right", color: "#4b5563" }}>
+                      {c.render(d)}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </Fragment>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
+type Col = { label: string; render: (b: Bucket) => string; minWidth?: number; emphasize?: boolean };
+
+// Compact "calls / sms" leads cell.
+const fmtChannelMix = (b: Bucket): string =>
+  b.leadsWithCalls === 0 && b.leadsWithSms === 0
+    ? "—"
+    : `${fmtNum(b.leadsWithCalls)} / ${fmtNum(b.leadsWithSms)}`;
+
+function columnsFor(agent: AgentType): Col[] {
+  if (agent === "Sales Inbound") {
+    return [
+      { label: "Unique Leads", render: b => fmtNum(b.totalLeads), emphasize: true },
+      { label: "Touched", render: b => fmtNum(b.touched) },
+      { label: "Calls / SMS", render: fmtChannelMix, minWidth: 100 },
+      { label: "Qualified", render: b => fmtNum(b.qualified) },
+      { label: "Coverage", render: b => fmtRate(b.touched, b.totalLeads), minWidth: 90 },
+      { label: "Appts", render: b => fmtNum(b.appts), emphasize: true },
+      { label: "Conv. Rate", render: b => fmtRate(b.appts, b.touched), minWidth: 90 },
+      { label: "Appt $", render: b => fmtCurrency(b.apptValue), minWidth: 90 },
+      { label: "Quality", render: b => fmtScore(b), minWidth: 80 },
+    ];
+  }
+  if (agent === "Service Inbound") {
+    return [
+      { label: "Touched", render: b => fmtNum(b.touched), emphasize: true },
+      { label: "Calls / SMS", render: fmtChannelMix, minWidth: 100 },
+      { label: "Total Calls", render: b => fmtNum(b.totalCalls) },
+      { label: "Qualified", render: b => fmtNum(b.qualified) },
+      { label: "Intent", render: b => fmtNum(b.intent) },
+      { label: "Appts", render: b => fmtNum(b.appts), emphasize: true },
+      { label: "Appt $", render: b => fmtCurrency(b.apptValue), minWidth: 90 },
+      { label: "Quality", render: b => fmtScore(b), minWidth: 80 },
+    ];
+  }
+  // Sales OB & Service OB share columns
+  const leadsLabel = agent === "Sales Outbound" ? "CRM Leads" : "DMS Leads";
+  return [
+    { label: leadsLabel, render: b => fmtNum(b.totalLeads), emphasize: true },
+    { label: "Eligible", render: b => fmtNum(b.eligible) },
+    { label: "Targeted", render: b => fmtNum(b.targeted) },
+    { label: "Touched", render: b => fmtNum(b.touched) },
+    { label: "Calls / SMS", render: fmtChannelMix, minWidth: 100 },
+    { label: "Engaged", render: b => fmtNum(b.engaged) },
+    { label: "Qualified", render: b => fmtNum(b.qualified) },
+    { label: "Appts", render: b => fmtNum(b.appts), emphasize: true },
+    { label: "Appt $", render: b => fmtCurrency(b.apptValue), minWidth: 90 },
+    { label: "Followups", render: b => fmtFollowups(b), minWidth: 90 },
+    { label: "Quality", render: b => fmtScore(b), minWidth: 80 },
+  ];
+}
+
+// ─── Small pieces ────────────────────────────────────────────────────────────
+
+function StagePill({ stage }: { stage: string | null }) {
+  if (!stage) return null;
+  const colorMap: Record<string, { bg: string; fg: string }> = {
+    "Live": { bg: "#dcfce7", fg: "#166534" },
+    "Churned": { bg: "#fee2e2", fg: "#991b1b" },
+    "Onboarding": { bg: "#dbeafe", fg: "#1e40af" },
+    "New": { bg: "#fef3c7", fg: "#92400e" },
+    "Contracted": { bg: "#e0e7ff", fg: "#3730a3" },
+    "Contract-Initiated": { bg: "#ede9fe", fg: "#5b21b6" },
+  };
+  const c = colorMap[stage] ?? { bg: "#f3f4f6", fg: "#374151" };
+  return (
+    <span style={{
+      marginLeft: 8, padding: "2px 7px", borderRadius: 999, fontSize: 10, fontWeight: 700,
+      background: c.bg, color: c.fg, textTransform: "uppercase", letterSpacing: 0.4,
+      verticalAlign: "middle",
+    }}>
+      {stage}
+    </span>
   );
 }
 
 function SegmentedControl<T extends string>({ options, value, onChange }: {
-  options: { key: T; label: string }[];
-  value: T;
-  onChange: (v: T) => void;
+  options: { key: T; label: string }[]; value: T; onChange: (v: T) => void;
 }) {
   return (
     <div style={{ display: "inline-flex", border: "1px solid #d1d5db", borderRadius: 8, overflow: "hidden", background: "#fff" }}>
@@ -586,30 +787,27 @@ const thStyle: CSSProperties = {
   padding: "10px 12px", fontSize: 11, fontWeight: 700, color: "#6b7280",
   textTransform: "uppercase", letterSpacing: 0.4, borderBottom: "1px solid #e5e7eb", whiteSpace: "nowrap",
 };
-const tdStyle: CSSProperties = {
-  padding: "8px 12px", fontSize: 13, color: "#374151", whiteSpace: "nowrap",
-};
-const dayCellStyle: CSSProperties = {
-  padding: "3px 12px", fontSize: 12, color: "#4b5563", whiteSpace: "nowrap", lineHeight: 1.3,
-};
+const tdStyle: CSSProperties = { padding: "8px 12px", fontSize: 13, color: "#374151", whiteSpace: "nowrap" };
+const dayCellStyle: CSSProperties = { padding: "3px 12px", fontSize: 12, color: "#4b5563", whiteSpace: "nowrap", lineHeight: 1.3 };
 
-function KpiCard({ label, scope, value, color, loading, sub }: { label: string; scope: string; value: number; color: string; loading: boolean; sub?: string }) {
+function KpiCard({ label, value, color, loading, sub }: {
+  label: string; value: string | number; color: string; loading: boolean; sub?: string;
+}) {
   return (
-    <div style={{ background: "#fff", borderRadius: 12, padding: "16px 20px", boxShadow: "0 1px 3px rgba(0,0,0,0.05)", border: "1px solid #e5e7eb", flex: 1, minWidth: 180 }}>
-      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, marginBottom: 4 }}>
-        <div style={{ fontSize: 12, color: "#374151", fontWeight: 600 }}>{label}</div>
-        <div style={{ fontSize: 10, color: "#9ca3af", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 }}>{scope}</div>
-      </div>
+    <div style={{ background: "#fff", borderRadius: 12, padding: "14px 18px", boxShadow: "0 1px 3px rgba(0,0,0,0.05)", border: "1px solid #e5e7eb", flex: "1 1 180px", minWidth: 170 }}>
+      <div style={{ fontSize: 12, color: "#374151", fontWeight: 600, marginBottom: 4 }}>{label}</div>
       {loading ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 4 }}>
-          <div className="agent-shimmer" style={{ height: 28, width: "55%" }}>&nbsp;</div>
+          <div className="agent-shimmer" style={{ height: 26, width: "55%" }}>&nbsp;</div>
           {sub !== undefined && <div className="agent-shimmer" style={{ height: 12, width: "40%" }}>&nbsp;</div>}
         </div>
       ) : (
-        <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
-          <div style={{ fontSize: 26, fontWeight: 700, color }}>{value.toLocaleString()}</div>
-          {sub && <div style={{ fontSize: 12, color: "#9ca3af", fontWeight: 500 }}>({sub})</div>}
-        </div>
+        <>
+          <div style={{ fontSize: 24, fontWeight: 700, color }}>
+            {typeof value === "number" ? value.toLocaleString() : value}
+          </div>
+          {sub && <div style={{ fontSize: 11, color: "#9ca3af", fontWeight: 500, marginTop: 2 }}>{sub}</div>}
+        </>
       )}
     </div>
   );
@@ -624,10 +822,8 @@ function LineChart({ days, series }: { days: string[]; series: { name: string; c
   const allMax = Math.max(1, ...series.flatMap(s => s.values));
   const niceMax = niceCeil(allMax);
 
-  const xFor = (i: number) => {
-    if (days.length <= 1) return padL + plotW / 2;
-    return padL + (i * plotW) / (days.length - 1);
-  };
+  const xFor = (i: number) =>
+    days.length <= 1 ? padL + plotW / 2 : padL + (i * plotW) / (days.length - 1);
   const yFor = (v: number) => padT + plotH - (v / niceMax) * plotH;
 
   const yTicks = 5;
@@ -690,16 +886,14 @@ function LineChart({ days, series }: { days: string[]; series: { name: string; c
       </svg>
 
       {hoverIdx !== null && (
-        <div
-          style={{
-            position: "absolute", top: 16,
-            left: tooltipPlaceLeft ? undefined : `calc(${tooltipX}% + 12px)`,
-            right: tooltipPlaceLeft ? `calc(${100 - tooltipX}% + 12px)` : undefined,
-            background: "#111827", color: "#fff", padding: "8px 12px", borderRadius: 8,
-            fontSize: 12, boxShadow: "0 4px 16px rgba(0,0,0,0.18)",
-            pointerEvents: "none", minWidth: 180, zIndex: 10,
-          }}
-        >
+        <div style={{
+          position: "absolute", top: 16,
+          left: tooltipPlaceLeft ? undefined : `calc(${tooltipX}% + 12px)`,
+          right: tooltipPlaceLeft ? `calc(${100 - tooltipX}% + 12px)` : undefined,
+          background: "#111827", color: "#fff", padding: "8px 12px", borderRadius: 8,
+          fontSize: 12, boxShadow: "0 4px 16px rgba(0,0,0,0.18)",
+          pointerEvents: "none", minWidth: 180, zIndex: 10,
+        }}>
           <div style={{ fontSize: 11, color: "#9ca3af", marginBottom: 6, fontWeight: 600 }}>
             {fmtDay(days[hoverIdx])}
           </div>
