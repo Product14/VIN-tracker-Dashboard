@@ -213,9 +213,11 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
   // ── Published VINs table (max 5 rows) ──────────────────────────────────────
   const thStyle = `padding:9px 10px;border-bottom:2px solid #E5E7EB;text-align:left;font-size:9px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#9CA3AF;line-height:1.4;white-space:nowrap;`;
 
+  const processedTop5 = processedVins.slice(0, 5);
+  const processedUseTat = processedTop5.length > 0 && processedTop5.every(v => v.ttd_hrs == null || Number(v.ttd_hrs) <= 8);
   const processedRows = processedVins.length === 0
     ? `<tr><td colspan="4" style="padding:24px 0;text-align:center;font-size:12px;color:#9CA3AF;line-height:1.4;">No vehicles received.</td></tr>`
-    : processedVins.slice(0, 5).map(v => {
+    : processedTop5.map(v => {
         const thumb = v.thumbnail_url
           ? `<img src="${v.thumbnail_url}" alt="" width="80" style="display:block;width:80px;height:auto;border:0;">`
           : `<div style="width:80px;height:56px;background:#F3F4F6;font-size:0;line-height:0;">&nbsp;</div>`;
@@ -238,7 +240,9 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
           <td style="padding:10px 0 10px 10px;border-bottom:1px solid #F3F4F6;vertical-align:middle;text-align:right;white-space:nowrap;">
             <div style="font-size:10px;color:#9CA3AF;line-height:1.6;">Received&nbsp;&nbsp;${formatDt(v.received_at, timezone)}</div>
             <div style="font-size:10px;color:#9CA3AF;line-height:1.6;">Published&nbsp;&nbsp;${formatDt(v.processed_at, timezone)}</div>
-            <div style="font-size:11px;font-weight:700;color:#059669;line-height:1.6;margin-top:1px;">TAT&nbsp;&nbsp;${formatTat(v.ttd_hrs)}</div>
+            ${processedUseTat
+              ? `<div style="font-size:11px;font-weight:700;color:#059669;line-height:1.6;margin-top:1px;">TAT&nbsp;&nbsp;${formatTat(v.ttd_hrs)}</div>`
+              : `<div style="font-size:11px;font-weight:700;color:#059669;line-height:1.6;margin-top:1px;">Published</div>`}
           </td>
           <td style="padding:10px 0 10px 10px;border-bottom:1px solid #F3F4F6;vertical-align:middle;text-align:center;white-space:nowrap;">
             ${vUrl ? `<a href="${vUrl}" style="display:inline-block;padding:4px 8px;color:#2563EB;font-size:10px;font-weight:600;text-decoration:none;font-family:Arial,Helvetica,sans-serif;letter-spacing:0.01em;">View &rarr;</a>` : ""}
@@ -287,6 +291,7 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
          </div>`;
 
   // ── Recent Vehicles (IMS off, quiet day only) ────────────────────────────
+  const recentUseTat = recentVins.length > 0 && recentVins.every(v => v.ttd_hrs == null || Number(v.ttd_hrs) <= 8);
   const recentRows = recentVins.length === 0
     ? `<tr><td colspan="4" style="padding:24px 0;text-align:center;font-size:12px;color:#9CA3AF;line-height:1.4;">No vehicles published in the last 90 days.</td></tr>`
     : recentVins.map(v => {
@@ -311,7 +316,9 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
           <td style="padding:10px 0 10px 10px;border-bottom:1px solid #F3F4F6;vertical-align:middle;text-align:right;white-space:nowrap;">
             <div style="font-size:10px;color:#9CA3AF;line-height:1.6;">Received&nbsp;&nbsp;${formatDt(v.received_at, timezone)}</div>
             <div style="font-size:10px;color:#9CA3AF;line-height:1.6;">Published&nbsp;&nbsp;${formatDt(v.processed_at, timezone)}</div>
-            <div style="font-size:11px;font-weight:700;color:#059669;line-height:1.6;margin-top:1px;">TAT&nbsp;&nbsp;${formatTat(v.ttd_hrs)}</div>
+            ${recentUseTat
+              ? `<div style="font-size:11px;font-weight:700;color:#059669;line-height:1.6;margin-top:1px;">TAT&nbsp;&nbsp;${formatTat(v.ttd_hrs)}</div>`
+              : `<div style="font-size:11px;font-weight:700;color:#059669;line-height:1.6;margin-top:1px;">Published</div>`}
           </td>
           <td style="padding:10px 0 10px 10px;border-bottom:1px solid #F3F4F6;vertical-align:middle;text-align:center;white-space:nowrap;">
             ${vUrl ? `<a href="${vUrl}" style="display:inline-block;padding:4px 8px;color:#2563EB;font-size:10px;font-weight:600;text-decoration:none;font-family:Arial,Helvetica,sans-serif;letter-spacing:0.01em;">View &rarr;</a>` : ""}
@@ -383,7 +390,7 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
         <!-- ══ INTRO ════════════════════════════════════════════════════════ -->
         <tr>
           <td style="padding:28px 28px 24px;">
-            <div style="font-size:19px;font-weight:700;color:#111827;line-height:1.3;margin-bottom:8px;">Hi ${rooftopName},</div>
+            <div style="font-size:19px;font-weight:700;color:#111827;line-height:1.3;margin-bottom:8px;">${rooftopName}</div>
             <div style="font-size:13px;color:#6B7280;line-height:1.7;">${quietDay
               ? `No new vehicles were received on <strong style="color:#111827;">${dateLabel}</strong>. Here&rsquo;s a snapshot of your current inventory.`
               : `Here&rsquo;s your Studio AI delivery summary for <strong style="color:#111827;">${dateLabel}</strong>. We published <strong style="color:#111827;">${n(vinsDelivered)}&thinsp;vehicle${vinsDelivered !== 1 ? "s" : ""}</strong> &mdash; here&rsquo;s the full breakdown.`
@@ -723,6 +730,7 @@ export function buildGroupReportHtml(data, dateLabel) {
   let recentVinsSection = "";
   if (processedVins && processedVins.length > 0) {
     const receivedMore = Math.max(0, (processedVinsTotal || 0) - processedVins.length);
+    const groupRecentUseTat = processedVins.every(v => v.ttd_hrs == null || Number(v.ttd_hrs) <= 8);
     const recentRows = processedVins.map(v => {
       const vehicleName = [clean(v.year), clean(v.make), clean(v.model)].filter(Boolean).join(" ") || null;
       const trimLine    = clean(v.trim);
@@ -743,7 +751,9 @@ export function buildGroupReportHtml(data, dateLabel) {
         <td style="padding:10px 0 10px 10px;border-bottom:1px solid #F3F4F6;vertical-align:middle;text-align:right;white-space:nowrap;">
           <div style="font-size:10px;color:#9CA3AF;line-height:1.6;">Received&nbsp;&nbsp;${formatDt(v.received_at)}</div>
           <div style="font-size:10px;color:#9CA3AF;line-height:1.6;">Published&nbsp;&nbsp;${formatDt(v.processed_at)}</div>
-          <div style="font-size:11px;font-weight:700;color:#059669;line-height:1.6;margin-top:1px;">TAT&nbsp;&nbsp;${formatTat(v.ttd_hrs)}</div>
+          ${groupRecentUseTat
+            ? `<div style="font-size:11px;font-weight:700;color:#059669;line-height:1.6;margin-top:1px;">TAT&nbsp;&nbsp;${formatTat(v.ttd_hrs)}</div>`
+            : `<div style="font-size:11px;font-weight:700;color:#059669;line-height:1.6;margin-top:1px;">Published</div>`}
         </td>
         <td style="padding:10px 0 10px 10px;border-bottom:1px solid #F3F4F6;vertical-align:middle;text-align:center;white-space:nowrap;">
           ${vUrl ? `<a href="${vUrl}" style="display:inline-block;padding:4px 8px;color:#2563EB;font-size:10px;font-weight:600;text-decoration:none;font-family:Arial,Helvetica,sans-serif;letter-spacing:0.01em;">View &rarr;</a>` : ""}
@@ -780,6 +790,7 @@ export function buildGroupReportHtml(data, dateLabel) {
   // ── Recent published VINs section (quiet days only) ──────────────────────
   let recentPublishedSection = "";
   if (quietDay && recentPublishedVins && recentPublishedVins.length > 0) {
+    const groupQuietUseTat = recentPublishedVins.every(v => v.ttd_hrs == null || Number(v.ttd_hrs) <= 8);
     const recentPubRows = recentPublishedVins.map(v => {
       const vehicleName = [clean(v.year), clean(v.make), clean(v.model)].filter(Boolean).join(" ") || null;
       const trimLine    = clean(v.trim);
@@ -800,7 +811,9 @@ export function buildGroupReportHtml(data, dateLabel) {
         <td style="padding:10px 0 10px 10px;border-bottom:1px solid #F3F4F6;vertical-align:middle;text-align:right;white-space:nowrap;">
           <div style="font-size:10px;color:#9CA3AF;line-height:1.6;">Received&nbsp;&nbsp;${formatDt(v.received_at)}</div>
           <div style="font-size:10px;color:#9CA3AF;line-height:1.6;">Published&nbsp;&nbsp;${formatDt(v.processed_at)}</div>
-          <div style="font-size:11px;font-weight:700;color:#059669;line-height:1.6;margin-top:1px;">TAT&nbsp;&nbsp;${formatTat(v.ttd_hrs)}</div>
+          ${groupQuietUseTat
+            ? `<div style="font-size:11px;font-weight:700;color:#059669;line-height:1.6;margin-top:1px;">TAT&nbsp;&nbsp;${formatTat(v.ttd_hrs)}</div>`
+            : `<div style="font-size:11px;font-weight:700;color:#059669;line-height:1.6;margin-top:1px;">Published</div>`}
         </td>
         <td style="padding:10px 0 10px 10px;border-bottom:1px solid #F3F4F6;vertical-align:middle;text-align:center;white-space:nowrap;">
           ${vUrl ? `<a href="${vUrl}" style="display:inline-block;padding:4px 8px;color:#2563EB;font-size:10px;font-weight:600;text-decoration:none;font-family:Arial,Helvetica,sans-serif;letter-spacing:0.01em;">View &rarr;</a>` : ""}
@@ -911,7 +924,7 @@ export function buildGroupReportHtml(data, dateLabel) {
         <!-- ══ INTRO ════════════════════════════════════════════════════════════ -->
         <tr>
           <td style="padding:28px 28px 24px;">
-            <div style="font-size:19px;font-weight:700;color:#111827;line-height:1.3;margin-bottom:8px;">Hi ${enterpriseName},</div>
+            <div style="font-size:19px;font-weight:700;color:#111827;line-height:1.3;margin-bottom:8px;">${enterpriseName}</div>
             <div style="font-size:13px;color:#6B7280;line-height:1.7;">${quietDay
               ? `No new vehicles were received on <strong style="color:#111827;">${dateLabel}</strong>. Here&rsquo;s a snapshot of your current inventory.`
               : `Here&rsquo;s your Studio AI group delivery summary for <strong style="color:#111827;">${dateLabel}</strong>. We received <strong style="color:#111827;">${n(newVins)}&thinsp;vehicle${newVins !== 1 ? "s" : ""}</strong> across <strong style="color:#111827;">${topProcessed.length}&thinsp;rooftop${topProcessed.length !== 1 ? "s" : ""}</strong> yesterday.`
