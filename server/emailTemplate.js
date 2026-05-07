@@ -31,11 +31,6 @@ function fmt(n) {
   return Number(n).toLocaleString("en-IN");
 }
 
-function pct(num, denom) {
-  if (!denom) return "—";
-  return ((num / denom) * 100).toFixed(1) + "%";
-}
-
 function score(val) {
   if (val == null) return "—";
   return Number(val).toFixed(1);
@@ -74,13 +69,6 @@ function kpiCard(label, value, color, width) {
     </td>`;
 }
 
-
-function tableHeader(cols) {
-  const cells = cols.map(c =>
-    `<th style="padding:9px 12px; text-align:${c.align || "right"}; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; color:${TEXT_MUTED}; white-space:nowrap; border-bottom:2px solid ${BORDER_COLOR};">${c.label}</th>`
-  ).join("");
-  return `<tr style="background:${GRAY_BG};">${cells}</tr>`;
-}
 
 function tableRow(cells, zebra) {
   const bg = zebra ? "#fff" : "#f8fafc";
@@ -198,96 +186,131 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl, reportCovData =
       ${kpiCard("Pending VINs",     totals.pendingWithPhotos,   AMBER,        "25%")}
     </tr>`;
 
-  // Shared column headers for both tables — trimmed to the 3 key metrics
-  const sharedHeaders = (firstColLabel) => tableHeader([
-    { label: firstColLabel,        align: "left" },
-    { label: "Pending >24hr"                     },
-    { label: "Total Pending"                     },
-    { label: "Pending >24hr %"                   },
-    { label: "Website Score"                     },
-    { label: "Inventory Score"                   },
-  ]);
-
-  const sharedRow = (firstCol, r, zebra) => tableRow([
-    { value: firstCol,                                        align: "left"                                                         },
-    { value: fmt(r.notProcessedAfter24),                      color: r.notProcessedAfter24 > 0 ? RED : null                         },
-    { value: fmt(r.pendingWithPhotos),                        color: r.pendingWithPhotos > 0 ? AMBER : null                         },
-    { value: pct(r.notProcessedAfter24, r.notProcessed),      color: r.notProcessedAfter24 > 0 ? RED : null                        },
-    { value: score(r.avgWebsiteScore),                        color: scoreColor(r.avgWebsiteScore)                                  },
-    { value: score(r.avgInventoryScore),                      color: scoreColor(r.avgInventoryScore)                                },
-  ], zebra);
+  // Lavender highlight for Website Score + Inventory Score header cells —
+  // visually groups the two score columns the same way the (now-removed)
+  // amber "Pending Reasons" group used to highlight bucket columns.
+  const LAVENDER_BG    = "#f5f3ff";
+  const LAVENDER_TEXT  = "#6d28d9";
 
   // ── By Rooftop Type table ─────────────────────────────────────────────────
-  const typeHeaders = sharedHeaders("Type");
-  const typeRows = (byType || []).map((r, i) =>
-    sharedRow(r.label || "—", r, i % 2 === 0)
-  ).join("");
+  // Dedicated header/row builders: 5 columns (no "Pending >24hr %") with a
+  // 2px vertical divider between the pending group and the score group.
+  const typeDivider = `border-right:2px solid ${BORDER_COLOR};`;
+  const typeThBase = `padding:9px 12px; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; color:${TEXT_MUTED}; white-space:nowrap; border-bottom:2px solid ${BORDER_COLOR};`;
+  const typeThScore = `padding:9px 12px; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; color:${LAVENDER_TEXT}; white-space:nowrap; border-bottom:2px solid ${BORDER_COLOR}; background:${LAVENDER_BG};`;
+  const typeHeaders = `<tr style="background:${GRAY_BG};">
+    <th style="${typeThBase} text-align:left;">Type</th>
+    <th style="${typeThBase} text-align:right;">Pending &gt;24hr</th>
+    <th style="${typeThBase} text-align:right; ${typeDivider}">Total Pending</th>
+    <th style="${typeThScore} text-align:right;">Website Score</th>
+    <th style="${typeThScore} text-align:right;">Inventory Score</th>
+  </tr>`;
+
+  const typeBodyCell = (value, color, align, extra = "") => {
+    const c = color || TEXT_MAIN;
+    const fw = color ? "font-weight:600;" : "";
+    return `<td style="padding:9px 12px; font-size:13px; color:${c}; ${fw} text-align:${align}; border-bottom:1px solid ${BORDER_COLOR}; white-space:nowrap; ${extra}">${value}</td>`;
+  };
+  const typeRows = (byType || []).map((r, i) => {
+    const bg = (i % 2 === 0) ? "#fff" : "#f8fafc";
+    const label = r.label || "—";
+    return `<tr style="background:${bg};">
+      ${typeBodyCell(label, null, "left")}
+      ${typeBodyCell(fmt(r.notProcessedAfter24), r.notProcessedAfter24 > 0 ? RED : null, "right")}
+      ${typeBodyCell(fmt(r.pendingWithPhotos),   r.pendingWithPhotos > 0 ? AMBER : null, "right", typeDivider)}
+      ${typeBodyCell(score(r.avgWebsiteScore),   scoreColor(r.avgWebsiteScore), "right")}
+      ${typeBodyCell(score(r.avgInventoryScore), scoreColor(r.avgInventoryScore), "right")}
+    </tr>`;
+  }).join("");
 
   // ── By CSM table ──────────────────────────────────────────────────────────
-  const csmHeaders = sharedHeaders("CSM");
+  // Same shape as the "By Rooftop Type" table: 5 columns (no "Pending >24hr %"),
+  // a 2px divider between the pending group and the score group, lavender wash
+  // on the two score header cells.
+  const csmDivider = `border-right:2px solid ${BORDER_COLOR};`;
+  const csmThBase  = `padding:9px 12px; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; color:${TEXT_MUTED}; white-space:nowrap; border-bottom:2px solid ${BORDER_COLOR};`;
+  const csmThScore = `padding:9px 12px; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; color:${LAVENDER_TEXT}; white-space:nowrap; border-bottom:2px solid ${BORDER_COLOR}; background:${LAVENDER_BG};`;
+  const csmHeaders = `<tr style="background:${GRAY_BG};">
+    <th style="${csmThBase} text-align:left;">CSM</th>
+    <th style="${csmThBase} text-align:right;">Pending &gt;24hr</th>
+    <th style="${csmThBase} text-align:right; ${csmDivider}">Total Pending</th>
+    <th style="${csmThScore} text-align:right;">Website Score</th>
+    <th style="${csmThScore} text-align:right; ${csmDivider}">Inventory Score</th>
+    <th style="${csmThBase} text-align:right;">Missing Website</th>
+  </tr>`;
+
+  const csmBodyCell = (value, color, align, extra = "") => {
+    const c = color || TEXT_MAIN;
+    const fw = color ? "font-weight:600;" : "";
+    return `<td style="padding:9px 12px; font-size:13px; color:${c}; ${fw} text-align:${align}; border-bottom:1px solid ${BORDER_COLOR}; white-space:nowrap; ${extra}">${value}</td>`;
+  };
   const sortedByCSM = (byCSM || []).slice().sort((a, b) => (b.notProcessedAfter24 ?? 0) - (a.notProcessedAfter24 ?? 0));
-  const csmRows = sortedByCSM.map((r, i) =>
-    sharedRow(csmLabel(r.name), r, i % 2 === 0)
-  ).join("");
+  const csmRows = sortedByCSM.map((r, i) => {
+    const bg = (i % 2 === 0) ? "#fff" : "#f8fafc";
+    return `<tr style="background:${bg};">
+      ${csmBodyCell(csmLabel(r.name), null, "left")}
+      ${csmBodyCell(fmt(r.notProcessedAfter24), r.notProcessedAfter24 > 0 ? RED : null, "right")}
+      ${csmBodyCell(fmt(r.pendingWithPhotos),   r.pendingWithPhotos > 0 ? AMBER : null, "right", csmDivider)}
+      ${csmBodyCell(score(r.avgWebsiteScore),   scoreColor(r.avgWebsiteScore),   "right")}
+      ${csmBodyCell(score(r.avgInventoryScore), scoreColor(r.avgInventoryScore), "right", csmDivider)}
+      ${csmBodyCell(fmt(r.missingWebsiteCount ?? 0), (r.missingWebsiteCount ?? 0) > 0 ? RED : TEXT_MUTED, "right")}
+    </tr>`;
+  }).join("");
 
   // ── By Rooftop table (pending >24hr, sorted desc, max 20, >0 only) ───────
-  // Only show a bucket column when at least one rooftop has a non-zero value for it.
+  // Columns: # | Rooftop (with inline Console + Website icons) | CSM | Pending >24h | Website Score | Inventory Score
   const rooftopData = byRooftop || [];
-  const activeBucketCols = [
-    { key: "bucketUploadPending",     label: "Upload",     color: "#2563eb"  },
-    { key: "bucketProcessingPending", label: "Processing", color: AMBER      },
-    { key: "bucketPublishingPending", label: "Publishing", color: "#7c3aed"  },
-    { key: "bucketQcPending",         label: "QC Pending", color: "#0891b2"  },
-    { key: "bucketQcHold",           label: "QC Hold",    color: RED        },
-    { key: "bucketSold",             label: "Sold",       color: GREEN      },
-    { key: "bucketOthers",           label: "Others",     color: TEXT_MUTED },
-  ].filter(col => rooftopData.some(r => r[col.key] > 0))
-   .sort((a, b) => rooftopData.reduce((s, r) => s + (r[b.key] ?? 0), 0) - rooftopData.reduce((s, r) => s + (r[a.key] ?? 0), 0));
 
-  // Two-row grouped header: Rooftop/Type/CSM/Pending>24h are standalone rowspan=2
-  // columns; the amber group only covers the reason bucket sub-columns.
-  const thFixed   = `padding:9px 12px; text-align:left; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; color:${TEXT_MUTED}; white-space:nowrap; border-bottom:2px solid ${BORDER_COLOR}; background:${GRAY_BG}; vertical-align:bottom;`;
-  const thCount   = `padding:9px 12px; text-align:right; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; color:${TEXT_MUTED}; white-space:nowrap; border-bottom:2px solid ${BORDER_COLOR}; background:${GRAY_BG}; vertical-align:bottom;`;
-  const thGroup   = `padding:9px 12px; text-align:center; font-size:11px; font-weight:700; letter-spacing:0.04em; color:#92400e; background:#fffbeb; border-left:2px solid #fcd34d; border-right:2px solid #fcd34d; border-bottom:1px solid #fde68a; white-space:nowrap;`;
-  const thSub     = (first, last) => `padding:7px 12px; text-align:right; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; color:#92400e; background:#fffbeb; border-bottom:2px solid #fde68a; white-space:nowrap;${first ? " border-left:2px solid #fcd34d;" : ""}${last ? " border-right:2px solid #fcd34d;" : ""}`;
+  const thFixed = `padding:9px 12px; text-align:left; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; color:${TEXT_MUTED}; white-space:nowrap; border-bottom:2px solid ${BORDER_COLOR}; background:${GRAY_BG}; vertical-align:bottom;`;
+  const thCount = `padding:9px 12px; text-align:right; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; color:${TEXT_MUTED}; white-space:nowrap; border-bottom:2px solid ${BORDER_COLOR}; background:${GRAY_BG}; vertical-align:bottom;`;
+  const thSNo   = `padding:9px 8px; text-align:center; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; color:${TEXT_MUTED}; white-space:nowrap; border-bottom:2px solid ${BORDER_COLOR}; background:${GRAY_BG}; vertical-align:bottom; width:32px;`;
 
-  const thSNo = `padding:9px 8px; text-align:center; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; color:${TEXT_MUTED}; white-space:nowrap; border-bottom:2px solid ${BORDER_COLOR}; background:${GRAY_BG}; vertical-align:bottom; width:32px;`;
+  const rooftopDivider = `border-right:2px solid ${BORDER_COLOR};`;
+  const thScore = `padding:9px 12px; text-align:right; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; color:${LAVENDER_TEXT}; white-space:nowrap; border-bottom:2px solid ${BORDER_COLOR}; background:${LAVENDER_BG}; vertical-align:bottom;`;
+  const rooftopHeaders = `<tr style="background:${GRAY_BG};">
+    <th style="${thSNo}">#</th>
+    <th style="${thFixed}">Rooftop</th>
+    <th style="${thFixed} ${rooftopDivider}">CSM</th>
+    <th style="${thCount} ${rooftopDivider}">Pending &gt;24h</th>
+    <th style="${thScore}">Website Score</th>
+    <th style="${thScore}">Inventory Score</th>
+  </tr>`;
 
-  const rooftopHeaders = activeBucketCols.length === 0
-    // No active buckets — single header row, no grouping needed
-    ? `<tr style="background:${GRAY_BG};">
-        <th style="${thSNo}">#</th>
-        <th style="${thFixed}">Rooftop</th>
-        <th style="${thFixed}">CSM</th>
-        <th style="${thCount}">Pending &gt;24h</th>
-        <th style="${thCount}">Inventory Score</th>
-      </tr>`
-    // Active buckets — two-row header with amber group over bucket columns only
-    : `<tr style="background:${GRAY_BG};">
-        <th rowspan="2" style="${thSNo}">#</th>
-        <th rowspan="2" style="${thFixed}">Rooftop</th>
-        <th rowspan="2" style="${thFixed}">CSM</th>
-        <th rowspan="2" style="${thCount}">Pending &gt;24h</th>
-        <th colspan="${activeBucketCols.length}" style="${thGroup}">Pending Reasons</th>
-        <th rowspan="2" style="${thCount}">Inventory Score</th>
-      </tr>
-      <tr>
-        ${activeBucketCols.map((col, idx) =>
-          `<th style="${thSub(idx === 0, idx === activeBucketCols.length - 1)}">${col.label}</th>`
-        ).join("")}
-      </tr>`;
+  // Hosted PNG icons rendered via <img> — universal across Gmail / Apple Mail /
+  // Outlook (desktop + web) / mobile, unlike inline SVG (stripped) or emoji
+  // (platform-styled). PNGs live in public/icons and are served at the same
+  // origin as the dashboard.
+  const iconOrigin = (dashboardUrl || "").replace(/\/$/, "");
+  const iconImg = (kind, alt) => iconOrigin
+    ? `<img src="${iconOrigin}/icons/${kind}.png" width="12" height="12" alt="${alt}" style="display:inline-block; vertical-align:middle; border:0; outline:none;">`
+    : (kind === "external-link" ? "&#x2197;" : "&#x1F310;");
+  const inlineIconLink = (href, kind, alt, title) =>
+    `<a href="${href}" target="_blank" rel="noreferrer" title="${title}" style="display:inline-block; margin-left:6px; padding:2px 4px; line-height:1; border-radius:4px; text-decoration:none; vertical-align:middle;">${iconImg(kind, alt)}</a>`;
 
-  const rooftopRows = rooftopData.map((r, i) => tableRow([
-    { value: i + 1,                 align: "center", muted: true                           },
-    { value: r.name,                align: "left"                                          },
-    { value: csmLabel(r.csm),      align: "left", muted: true                             },
-    { value: fmt(r.pendingAfter24), color: r.pendingAfter24 > 0 ? RED : null              },
-    ...activeBucketCols.map(col => ({
-      value: fmt(r[col.key]),
-      color: r[col.key] > 0 ? col.color : null,
-    })),
-    { value: score(r.avgInventoryScore),            color: scoreColor(r.avgInventoryScore)  },
-  ], i % 2 === 0)).join("");
+  const rooftopRows = rooftopData.map((r, i) => {
+    const bg = (i % 2 === 0) ? "#fff" : "#f8fafc";
+    const consoleHref = r.enterpriseId
+      ? `https://console.spyne.ai/home?enterprise_id=${encodeURIComponent(r.enterpriseId)}${r.rooftopId ? `&team_id=${encodeURIComponent(r.rooftopId)}` : ""}`
+      : null;
+    const consoleLink = consoleHref ? inlineIconLink(consoleHref, "external-link", "Open", "Open in Console") : "";
+    const websiteLink = r.websiteListingUrl ? inlineIconLink(r.websiteListingUrl, "globe", "Web", "Open Website") : "";
+    const rooftopCell = `${r.name}${consoleLink}${websiteLink}`;
+
+    const td = (value, color, align, extra = "") => {
+      const c = color || TEXT_MAIN;
+      const fw = color ? "font-weight:600;" : "";
+      return `<td style="padding:9px 12px; font-size:13px; color:${c}; ${fw} text-align:${align}; border-bottom:1px solid ${BORDER_COLOR}; white-space:nowrap; ${extra}">${value}</td>`;
+    };
+
+    return `<tr style="background:${bg};">
+      ${td(i + 1, TEXT_MUTED, "center")}
+      ${td(rooftopCell, null, "left")}
+      ${td(csmLabel(r.csm), TEXT_MUTED, "left", rooftopDivider)}
+      ${td(fmt(r.pendingAfter24),         r.pendingAfter24 > 0 ? RED : null, "right", rooftopDivider)}
+      ${td(score(r.avgWebsiteScore),      scoreColor(r.avgWebsiteScore),     "right")}
+      ${td(score(r.avgInventoryScore),    scoreColor(r.avgInventoryScore),   "right")}
+    </tr>`;
+  }).join("");
 
   // ── Report Status section ─────────────────────────────────────────────────
   const activeReasons = REPORT_REASONS.filter(r => reportCovData.some(row => (row[r.key] ?? 0) > 0));
@@ -429,7 +452,7 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl, reportCovData =
                   <table width="100%" cellpadding="0" cellspacing="0" border="0"
                          style="border:1px solid ${BORDER_COLOR}; border-radius:8px; overflow:hidden; border-collapse:separate; border-spacing:0;">
                     ${typeHeaders}
-                    ${typeRows || `<tr><td colspan="6" style="padding:16px; text-align:center; color:${TEXT_MUTED}; font-size:13px;">No data</td></tr>`}
+                    ${typeRows || `<tr><td colspan="5" style="padding:16px; text-align:center; color:${TEXT_MUTED}; font-size:13px;">No data</td></tr>`}
                   </table>
                 </td></tr>
 
@@ -439,7 +462,7 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl, reportCovData =
                   <table width="100%" cellpadding="0" cellspacing="0" border="0"
                          style="border:1px solid ${BORDER_COLOR}; border-radius:8px; overflow:hidden; border-collapse:separate; border-spacing:0;">
                     ${rooftopHeaders}
-                    ${rooftopRows || `<tr><td colspan="${5 + activeBucketCols.length}" style="padding:16px; text-align:center; color:${TEXT_MUTED}; font-size:13px;">No rooftops with pending >24hr</td></tr>`}
+                    ${rooftopRows || `<tr><td colspan="6" style="padding:16px; text-align:center; color:${TEXT_MUTED}; font-size:13px;">No rooftops with pending >24hr</td></tr>`}
                   </table>
                 </td></tr>
 

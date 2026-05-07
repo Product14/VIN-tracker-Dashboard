@@ -933,9 +933,11 @@ async function computeSummary(dateFilter) {
       by_rooftop AS (
         SELECT
           rooftop_id,
+          MAX(enterprise_id)                                                                                                                                AS enterprise_id,
           MAX(team_name)                                                                                                                                    AS rooftop_name,
           MAX(team_type)                                                                                                                                    AS rooftop_type,
           MAX(poc_email)                                                                                                                                    AS csm,
+          MAX(website_listing_url)                                                                                                                          AS website_listing_url,
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int                            AS pending_after_24h,
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND COALESCE(after_24h,0)=1 AND reason_bucket = 'Upload Pending'      THEN 1 ELSE 0 END)::int AS bucket_upload_pending,
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND COALESCE(after_24h,0)=1 AND reason_bucket = 'Processing Pending' THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
@@ -944,6 +946,7 @@ async function computeSummary(dateFilter) {
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND COALESCE(after_24h,0)=1 AND reason_bucket = 'QC Hold'            THEN 1 ELSE 0 END)::int AS bucket_qc_hold,
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND COALESCE(after_24h,0)=1 AND reason_bucket = 'Sold'               THEN 1 ELSE 0 END)::int AS bucket_sold,
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND COALESCE(after_24h,0)=1 AND reason_bucket = 'Others'             THEN 1 ELSE 0 END)::int AS bucket_others,
+          ROUND(AVG(website_score)::numeric, 2)                                                                                                                       AS avg_website_score,
           ROUND(AVG(vin_score)::numeric, 2)                                                                                                                           AS avg_inventory_score
         FROM base
         GROUP BY rooftop_id
@@ -988,9 +991,11 @@ async function computeSummary(dateFilter) {
     byBucket:   (row.by_bucket_json ?? []).map(r => ({ label: r.label, count: r.count })),
     byRooftop:  (row.by_rooftop_json ?? []).map(r => ({
       rooftopId:               r.rooftop_id,
+      enterpriseId:            r.enterprise_id ?? null,
       name:                    r.rooftop_name ?? r.rooftop_id,
       type:                    r.rooftop_type ?? "—",
       csm:                     r.csm ?? null,
+      websiteListingUrl:       r.website_listing_url ?? null,
       pendingAfter24:          r.pending_after_24h ?? 0,
       bucketUploadPending:     r.bucket_upload_pending ?? 0,
       bucketProcessingPending: r.bucket_processing_pending ?? 0,
@@ -999,6 +1004,7 @@ async function computeSummary(dateFilter) {
       bucketQcHold:            r.bucket_qc_hold ?? 0,
       bucketSold:              r.bucket_sold ?? 0,
       bucketOthers:            r.bucket_others ?? 0,
+      avgWebsiteScore:         r.avg_website_score ?? null,
       avgInventoryScore:       r.avg_inventory_score ?? null,
     })),
   };
