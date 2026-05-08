@@ -950,6 +950,13 @@ async function computeSummary(dateFilter) {
           ROUND(AVG(vin_score)::numeric, 2)                                                                                                                           AS avg_inventory_score
         FROM base
         GROUP BY rooftop_id
+      ),
+      score_buckets AS (
+        SELECT
+          SUM(CASE WHEN avg_inventory_score IS NULL OR avg_inventory_score < 6 THEN 1 ELSE 0 END)::int AS poor,
+          SUM(CASE WHEN avg_inventory_score >= 6 AND avg_inventory_score < 8 THEN 1 ELSE 0 END)::int AS average,
+          SUM(CASE WHEN avg_inventory_score >= 8 THEN 1 ELSE 0 END)::int AS good
+        FROM by_rooftop
       )
     SELECT
       (SELECT last_sync   FROM meta)                AS last_sync,
@@ -980,7 +987,8 @@ async function computeSummary(dateFilter) {
       (SELECT json_agg(r ORDER BY r.pending_after_24h DESC)
        FROM (SELECT * FROM by_rooftop WHERE pending_after_24h > 0 ORDER BY pending_after_24h DESC LIMIT 20) r) AS by_rooftop_json,
       (SELECT json_agg(r ORDER BY r.avg_inventory_score ASC, r.rooftop_name ASC)
-       FROM (SELECT * FROM by_rooftop WHERE avg_inventory_score IS NOT NULL ORDER BY avg_inventory_score ASC, rooftop_name ASC LIMIT 20) r) AS by_rooftop_lowest_inv_json
+       FROM (SELECT * FROM by_rooftop WHERE avg_inventory_score IS NOT NULL ORDER BY avg_inventory_score ASC, rooftop_name ASC LIMIT 20) r) AS by_rooftop_lowest_inv_json,
+      (SELECT row_to_json(s) FROM score_buckets s) AS score_buckets_json
   `);
   const row = rows[0];
   return {
@@ -992,6 +1000,7 @@ async function computeSummary(dateFilter) {
     byBucket:   (row.by_bucket_json ?? []).map(r => ({ label: r.label, count: r.count })),
     byRooftop:                (row.by_rooftop_json          ?? []).map(toByRooftopRow),
     byRooftopLowestInventory: (row.by_rooftop_lowest_inv_json ?? []).map(toByRooftopRow),
+    scoreBuckets:             row.score_buckets_json ?? { poor: 0, average: 0, good: 0 },
   };
 }
 

@@ -62,9 +62,9 @@ function kpiCard(label, value, color, width) {
   const w = width || "20%";
   return `
     <td style="width:${w}; padding:6px;" valign="top">
-      <div style="background:#fff; border:1px solid ${BORDER_COLOR}; border-radius:8px; padding:18px 14px; ${borderTop}">
-        <div style="font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:${TEXT_MUTED}; margin-bottom:6px;">${label}</div>
-        <div style="font-size:26px; font-weight:700; color:${TEXT_MAIN}; line-height:1;">${fmt(value)}</div>
+      <div style="background:#fff; border:1px solid ${BORDER_COLOR}; border-radius:8px; padding:10px 14px; ${borderTop}">
+        <div style="font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:${TEXT_MUTED}; margin-bottom:3px;">${label}</div>
+        <div style="font-size:24px; font-weight:700; color:${TEXT_MAIN}; line-height:1;">${fmt(value)}</div>
       </div>
     </td>`;
 }
@@ -84,10 +84,14 @@ function tableRow(cells, zebra) {
 function reportKpiCard(label, value, sub, color) {
   return `
     <td style="width:25%; padding:4px;" valign="top">
-      <div style="background:#fff; border:1px solid ${BORDER_COLOR}; border-radius:8px; padding:14px 12px; border-top:3px solid ${color};">
-        <div style="font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:${TEXT_MUTED}; margin-bottom:4px;">${label}</div>
-        <div style="font-size:22px; font-weight:700; color:${color}; line-height:1;">${value}</div>
-        <div style="font-size:11px; color:${TEXT_MUTED}; margin-top:3px; min-height:16px;">${sub || ""}</div>
+      <div style="background:#fff; border:1px solid ${BORDER_COLOR}; border-radius:8px; padding:8px 12px; border-top:3px solid ${color};">
+        <div style="font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:${TEXT_MUTED}; margin-bottom:2px;">${label}</div>
+        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+          <tr>
+            <td align="left" valign="bottom" style="font-size:20px; font-weight:700; color:${color}; line-height:1;">${value}</td>
+            ${sub ? `<td align="right" valign="bottom" style="font-size:11px; color:${TEXT_MUTED}; line-height:1;">${sub}</td>` : ""}
+          </tr>
+        </table>
       </div>
     </td>`;
 }
@@ -105,7 +109,7 @@ function fmtReportDay(d) {
 function sectionTitle(title) {
   return `
     <tr>
-      <td style="padding:28px 0 12px;">
+      <td style="padding:14px 0 6px;">
         <div style="font-size:14px; font-weight:700; color:${TEXT_MAIN}; text-transform:uppercase; letter-spacing:0.06em; border-left:3px solid ${ACCENT_COLOR}; padding-left:10px;">${title}</div>
       </td>
     </tr>`;
@@ -120,7 +124,7 @@ function sectionTitle(title) {
  * @returns {string} full HTML email string
  */
 export function buildEmailHtml(summary, timeLabel, dashboardUrl, reportCovData = [], totalActiveRooftops = 0) {
-  const { totals, byCSM, byType, byBucket, byRooftop, byRooftopLowestInventory, lastSync } = summary;
+  const { totals, byCSM, byType, byBucket, byRooftop, byRooftopLowestInventory, scoreBuckets, lastSync } = summary;
 
   const now = new Date();
   const dateLabel = now.toLocaleDateString("en-IN", {
@@ -177,6 +181,9 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl, reportCovData =
       </td>
     </tr>`;
 
+  // Inventory-score bucket counts (computed in SQL over all rooftops; null → lowest bucket)
+  const scoreBucketCounts = scoreBuckets || { poor: 0, average: 0, good: 0 };
+
   // Single row — all 4 cards at 25% width
   const kpiRow = `
     <tr>
@@ -184,6 +191,13 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl, reportCovData =
       ${kpiCard("With Photos",      totals.withPhotos,          "#0891b2",    "25%")}
       ${kpiCard("VIN Delivered",    totals.deliveredWithPhotos, GREEN,        "25%")}
       ${kpiCard("Pending VINs",     totals.pendingWithPhotos,   AMBER,        "25%")}
+    </tr>`;
+
+  const scoreBucketRow = `
+    <tr>
+      ${kpiCard("Rooftops · Inv Score <6",  scoreBucketCounts.poor,    RED,   "33.33%")}
+      ${kpiCard("Rooftops · Inv Score 6–8", scoreBucketCounts.average, AMBER, "33.34%")}
+      ${kpiCard("Rooftops · Inv Score 8+",  scoreBucketCounts.good,    GREEN, "33.33%")}
     </tr>`;
 
   // Lavender highlight for Website Score + Inventory Score header cells —
@@ -358,7 +372,7 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl, reportCovData =
   const reportKpiRow = `
     <tr>
       ${reportKpiCard("Active Rooftops", fmt(totalActiveRooftops), null,                              "#6366f1")}
-      ${reportKpiCard("Attempted",       fmt(ystAttempted),        `of ${fmt(totalActiveRooftops)}`,  "#0891b2")}
+      ${reportKpiCard("Attempted",       fmt(ystAttempted),        null,                              "#0891b2")}
       ${reportKpiCard("Sent",            fmt(ystSent),             `${ystSentPct}% of total`,         GREEN    )}
       ${reportKpiCard("No Recipients",   fmt(ystNoRecipient),      null,                              RED      )}
     </tr>`;
@@ -471,6 +485,13 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl, reportCovData =
                     ${kpiRow}
                   </table>
                 </td></tr>
+
+                <!-- Score bucket row -->
+                <tr><td style="padding-bottom:6px;">
+                  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                    ${scoreBucketRow}
+                  </table>
+                </td></tr>
                 </td></tr>
 
                 <!-- Report Status KPIs -->
@@ -516,16 +537,6 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl, reportCovData =
                   <div style="border-top:2px solid ${BORDER_COLOR};"></div>
                 </td></tr>
 
-                <!-- Report Status 7-day table -->
-                ${sectionTitle("Last 7 Days")}
-                <tr><td>
-                  <table width="100%" cellpadding="0" cellspacing="0" border="0"
-                         style="border:1px solid ${BORDER_COLOR}; border-radius:8px; overflow:hidden; border-collapse:separate; border-spacing:0;">
-                    ${reportTableHeaders}
-                    ${reportTableRows || `<tr><td colspan="${5 + activeReasons.length}" style="padding:16px; text-align:center; color:${TEXT_MUTED}; font-size:13px;">No report data found.</td></tr>`}
-                  </table>
-                </td></tr>
-
                 <!-- Rooftops with Lowest Inventory Score -->
                 ${sectionTitle("Rooftops with Lowest Inventory Score")}
                 <tr><td>
@@ -533,6 +544,16 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl, reportCovData =
                          style="border:1px solid ${BORDER_COLOR}; border-radius:8px; overflow:hidden; border-collapse:separate; border-spacing:0;">
                     ${lowInvHeaders}
                     ${lowInvRows || `<tr><td colspan="5" style="padding:16px; text-align:center; color:${TEXT_MUTED}; font-size:13px;">No rooftops with inventory scores</td></tr>`}
+                  </table>
+                </td></tr>
+
+                <!-- Report Status 7-day table -->
+                ${sectionTitle("Last 7 Days")}
+                <tr><td>
+                  <table width="100%" cellpadding="0" cellspacing="0" border="0"
+                         style="border:1px solid ${BORDER_COLOR}; border-radius:8px; overflow:hidden; border-collapse:separate; border-spacing:0;">
+                    ${reportTableHeaders}
+                    ${reportTableRows || `<tr><td colspan="${5 + activeReasons.length}" style="padding:16px; text-align:center; color:${TEXT_MUTED}; font-size:13px;">No report data found.</td></tr>`}
                   </table>
                 </td></tr>
 
