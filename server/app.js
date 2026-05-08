@@ -28,6 +28,23 @@ const cleanAfter24 = (v) => {
   return v ? 1 : 0;
 };
 
+// Pendency >12h predicate — VIN counts as pending past the 12h SLA when it's
+// either still unprocessed and was received >12h ago, or it was processed but
+// took ≥12h end-to-end. `alias` is the table alias prefix (`'v'` for `vins v`,
+// `''` for unaliased CTE projections that already select received_at /
+// processed_at). Mirrors the formula in server/db.js's PENDENCY_PREDICATE.
+function pendencyPredicate12h(alias = 'v') {
+  const a = alias ? `${alias}.` : '';
+  return `(
+    ((${a}processed_at IS NULL OR ${a}processed_at = '')
+       AND ${a}received_at IS NOT NULL AND ${a}received_at <> ''
+       AND ${a}received_at::timestamptz + INTERVAL '12 hours' <= NOW())
+    OR (${a}processed_at IS NOT NULL AND ${a}processed_at <> ''
+        AND ${a}received_at IS NOT NULL AND ${a}received_at <> ''
+        AND ${a}processed_at::timestamptz >= ${a}received_at::timestamptz + INTERVAL '12 hours')
+  )`;
+}
+
 // Fetch from Metabase with optional per-attempt timeout and exponential back-off retry.
 // timeoutMs = 0 means no timeout (used for fast endpoints like Rooftops/Enterprises).
 async function fetchFromMetabase(url, label, retries = 3, timeoutMs = 0) {
@@ -763,22 +780,11 @@ function buildVinFilters(queryParams) {
   if (csm)          conditions.push(`ed.poc_email = ${p(csm)}`);
   if (status)       conditions.push(`v.status = ${p(status)}`);
   if (enterprise)   conditions.push(`ed.name = ${p(enterprise)}`);
-  // Pendency >12h drill-down filter — must mirror the predicate used by the
-  // v_by_rooftop / v_by_enterprise materialized views (see PENDENCY_PREDICATE
-  // in server/db.js). Query param key `after24h` retained for backwards compat.
-  const PENDENCY_PREDICATE_12H = `(
-    (
-      (v.processed_at IS NULL OR v.processed_at = '')
-      AND v.received_at IS NOT NULL AND v.received_at <> ''
-      AND v.received_at::timestamptz + INTERVAL '12 hours' <= NOW()
-    ) OR (
-      v.processed_at IS NOT NULL AND v.processed_at <> ''
-      AND v.received_at IS NOT NULL AND v.received_at <> ''
-      AND v.processed_at::timestamptz >= v.received_at::timestamptz + INTERVAL '12 hours'
-    )
-  )`;
-  if (after24h === "true"  || after24h === "1") conditions.push(PENDENCY_PREDICATE_12H);
-  if (after24h === "false" || after24h === "0") conditions.push(`NOT ${PENDENCY_PREDICATE_12H}`);
+  // Pendency >12h drill-down filter. Query param key `after24h` retained for
+  // backwards compat — semantic now means ">12h" via pendencyPredicate12h.
+  const predicate = pendencyPredicate12h('v');
+  if (after24h === "true"  || after24h === "1") conditions.push(predicate);
+  if (after24h === "false" || after24h === "0") conditions.push(`NOT ${predicate}`);
   if (hasPhotos === "true"  || hasPhotos === "1") conditions.push("COALESCE(v.has_photos, 0) = 1");
   if (hasPhotos === "false" || hasPhotos === "0") conditions.push("COALESCE(v.has_photos, 0) = 0");
   if (hasVin === "true"  || hasVin === "1") conditions.push("(v.vin IS NOT NULL AND v.vin != '')");
@@ -844,7 +850,8 @@ async function computeSummary(dateFilter) {
         SELECT
           v.status,
           v.has_photos,
-          v.after_24h,
+          v.received_at,
+          v.processed_at,
           v.reason_bucket,
           v.rooftop_id,
           v.enterprise_id,
@@ -869,16 +876,16 @@ async function computeSummary(dateFilter) {
           SUM(CASE WHEN status = 'Delivered' AND COALESCE(has_photos,0)=1 THEN 1 ELSE 0 END)::int                              AS delivered_with_photos,
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 THEN 1 ELSE 0 END)::int                             AS pending_with_photos,
           SUM(CASE WHEN status = 'Delivered' THEN 1 ELSE 0 END)::int                                                            AS processed,
-          SUM(CASE WHEN status = 'Delivered' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int                               AS processed_after_24h,
+          SUM(CASE WHEN status = 'Delivered' AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int                               AS processed_after_24h,
           SUM(CASE WHEN status != 'Delivered' THEN 1 ELSE 0 END)::int                                                           AS not_processed,
-          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS not_processed_after_24h,
-          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Upload Pending'      AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_upload_pending,
-          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Processing Pending' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
-          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Publishing Pending' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
-          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'QC Pending'         AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
-          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'QC Hold'            AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_hold,
-          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Sold'               AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_sold,
-          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Others'             AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_others
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int AS not_processed_after_24h,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Upload Pending'      AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int AS bucket_upload_pending,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Processing Pending' AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Publishing Pending' AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'QC Pending'         AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'QC Hold'            AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int AS bucket_qc_hold,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Sold'               AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int AS bucket_sold,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Others'             AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int AS bucket_others
         FROM base
       ),
       by_csm AS (
@@ -891,21 +898,21 @@ async function computeSummary(dateFilter) {
           SUM(CASE WHEN status = 'Delivered' AND COALESCE(has_photos,0)=1 THEN 1 ELSE 0 END)::int                                  AS delivered_with_photos,
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 THEN 1 ELSE 0 END)::int                                 AS pending_with_photos,
           SUM(CASE WHEN status = 'Delivered' THEN 1 ELSE 0 END)::int                                                                AS processed,
-          SUM(CASE WHEN status = 'Delivered' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int                                   AS processed_after_24h,
+          SUM(CASE WHEN status = 'Delivered' AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int                                   AS processed_after_24h,
           SUM(CASE WHEN status != 'Delivered' THEN 1 ELSE 0 END)::int                                                               AS not_processed,
-          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int     AS not_processed_after_24h,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int     AS not_processed_after_24h,
           ROUND(AVG(website_score)::numeric, 2)                                                                                     AS avg_website_score,
           ROUND(AVG(vin_score)::numeric, 2)                                                                                         AS avg_inventory_score,
           COUNT(DISTINCT CASE WHEN (website_listing_url IS NULL OR website_listing_url = '') THEN rooftop_id END)::int              AS missing_website_count,
           COUNT(DISTINCT CASE WHEN ims_integration_status = 'false' THEN rooftop_id END)::int                                      AS integrated_count,
           COUNT(DISTINCT CASE WHEN publishing_status = 'false' THEN rooftop_id END)::int                                           AS publishing_count,
-          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Upload Pending'      AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_upload_pending,
-          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Processing Pending' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
-          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Publishing Pending' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
-          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'QC Pending'         AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
-          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'QC Hold'            AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_hold,
-          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Sold'               AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_sold,
-          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Others'             AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_others
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Upload Pending'      AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int AS bucket_upload_pending,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Processing Pending' AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Publishing Pending' AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'QC Pending'         AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'QC Hold'            AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int AS bucket_qc_hold,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Sold'               AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int AS bucket_sold,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Others'             AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int AS bucket_others
         FROM base
         GROUP BY poc_email
       ),
@@ -919,28 +926,28 @@ async function computeSummary(dateFilter) {
           SUM(CASE WHEN status = 'Delivered' AND COALESCE(has_photos,0)=1 THEN 1 ELSE 0 END)::int                                  AS delivered_with_photos,
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 THEN 1 ELSE 0 END)::int                                 AS pending_with_photos,
           SUM(CASE WHEN status = 'Delivered' THEN 1 ELSE 0 END)::int                                                                AS processed,
-          SUM(CASE WHEN status = 'Delivered' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int                                   AS processed_after_24h,
+          SUM(CASE WHEN status = 'Delivered' AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int                                   AS processed_after_24h,
           SUM(CASE WHEN status != 'Delivered' THEN 1 ELSE 0 END)::int                                                               AS not_processed,
-          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int     AS not_processed_after_24h,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int     AS not_processed_after_24h,
           ROUND(AVG(website_score)::numeric, 2)                                                                                     AS avg_website_score,
           ROUND(AVG(vin_score)::numeric, 2)                                                                                         AS avg_inventory_score,
           COUNT(DISTINCT CASE WHEN (website_listing_url IS NULL OR website_listing_url = '') THEN rooftop_id END)::int              AS missing_website_count,
           COUNT(DISTINCT CASE WHEN ims_integration_status = 'false' THEN rooftop_id END)::int                                      AS integrated_count,
           COUNT(DISTINCT CASE WHEN publishing_status = 'false' THEN rooftop_id END)::int                                           AS publishing_count,
-          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Upload Pending'      AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_upload_pending,
-          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Processing Pending' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
-          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Publishing Pending' AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
-          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'QC Pending'         AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
-          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'QC Hold'            AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_hold,
-          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Sold'               AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_sold,
-          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Others'             AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_others
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Upload Pending'      AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int AS bucket_upload_pending,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Processing Pending' AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Publishing Pending' AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'QC Pending'         AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'QC Hold'            AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int AS bucket_qc_hold,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Sold'               AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int AS bucket_sold,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Others'             AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int AS bucket_others
         FROM base
         GROUP BY team_type
       ),
       by_bucket AS (
         SELECT reason_bucket AS label, COUNT(*)::int AS count
         FROM base
-        WHERE status != 'Delivered' AND COALESCE(has_photos,0)=1 AND COALESCE(after_24h,0)=1
+        WHERE status != 'Delivered' AND COALESCE(has_photos,0)=1 AND ${pendencyPredicate12h('')}
           AND reason_bucket IS NOT NULL AND reason_bucket != ''
         GROUP BY reason_bucket
       ),
@@ -952,14 +959,14 @@ async function computeSummary(dateFilter) {
           MAX(team_type)                                                                                                                                    AS rooftop_type,
           MAX(poc_email)                                                                                                                                    AS csm,
           MAX(website_listing_url)                                                                                                                          AS website_listing_url,
-          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND COALESCE(after_24h,0)=1 THEN 1 ELSE 0 END)::int                            AS pending_after_24h,
-          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND COALESCE(after_24h,0)=1 AND reason_bucket = 'Upload Pending'      THEN 1 ELSE 0 END)::int AS bucket_upload_pending,
-          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND COALESCE(after_24h,0)=1 AND reason_bucket = 'Processing Pending' THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
-          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND COALESCE(after_24h,0)=1 AND reason_bucket = 'Publishing Pending' THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
-          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND COALESCE(after_24h,0)=1 AND reason_bucket = 'QC Pending'         THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
-          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND COALESCE(after_24h,0)=1 AND reason_bucket = 'QC Hold'            THEN 1 ELSE 0 END)::int AS bucket_qc_hold,
-          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND COALESCE(after_24h,0)=1 AND reason_bucket = 'Sold'               THEN 1 ELSE 0 END)::int AS bucket_sold,
-          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND COALESCE(after_24h,0)=1 AND reason_bucket = 'Others'             THEN 1 ELSE 0 END)::int AS bucket_others,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int                            AS pending_after_24h,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND ${pendencyPredicate12h('')} AND reason_bucket = 'Upload Pending'      THEN 1 ELSE 0 END)::int AS bucket_upload_pending,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND ${pendencyPredicate12h('')} AND reason_bucket = 'Processing Pending' THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND ${pendencyPredicate12h('')} AND reason_bucket = 'Publishing Pending' THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND ${pendencyPredicate12h('')} AND reason_bucket = 'QC Pending'         THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND ${pendencyPredicate12h('')} AND reason_bucket = 'QC Hold'            THEN 1 ELSE 0 END)::int AS bucket_qc_hold,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND ${pendencyPredicate12h('')} AND reason_bucket = 'Sold'               THEN 1 ELSE 0 END)::int AS bucket_sold,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND ${pendencyPredicate12h('')} AND reason_bucket = 'Others'             THEN 1 ELSE 0 END)::int AS bucket_others,
           ROUND(AVG(website_score)::numeric, 2)                                                                                                                       AS avg_website_score,
           ROUND(AVG(vin_score)::numeric, 2)                                                                                                                           AS avg_inventory_score
         FROM base
