@@ -2800,7 +2800,7 @@ async function handleProcessReportQueue(req, res) {
         }
         const html    = buildRooftopReportHtml(data, dateLabel, tz);
         const to      = testMode ? testTo : (Array.isArray(row.to_emails) && row.to_emails.length > 0 ? row.to_emails : email.split(",").map(s => s.trim()).filter(Boolean));
-        const cc      = testMode ? testCc : (rt.poc_email || undefined);
+        const cc      = testMode ? testCc : undefined;
         const subject = `${testMode ? "[TEST] " : ""}Studio AI Daily Report — ${rt.team_name || rooftop_id} — ${dateLabel}`;
         await sendDailyReport(html, { to, ...(cc && { cc }), subject });
 
@@ -2862,7 +2862,7 @@ async function handleProcessReportQueue(req, res) {
         }
         const html    = buildGroupReportHtml(data, dateLabel);
         const to      = testMode ? testTo : (Array.isArray(row.to_emails) && row.to_emails.length > 0 ? row.to_emails : email.split(",").map(s => s.trim()).filter(Boolean));
-        const cc      = testMode ? testCc : (ent.poc_email || undefined);
+        const cc      = testMode ? testCc : undefined;
         const subject = `${testMode ? "[TEST] " : ""}Studio AI Group Report — ${ent.name || enterprise_id} — ${dateLabel}`;
         await sendDailyReport(html, { to, ...(cc && { cc }), subject });
 
