@@ -46,12 +46,15 @@ const SAMPLE_DATA = [
 ];
 
 const NOW = new Date("2026-04-07T12:00:00");
-const H24 = 24 * 60 * 60 * 1000;
+// Pendency threshold. Identifier names like `after24h`, `notProcessedAfter24`
+// were originally tied to a 24h Metabase flag; the threshold is now 12h,
+// computed from receivedAt/processedAt — names retained for backwards
+// compatibility with API contract / sort keys.
+const H12 = 12 * 60 * 60 * 1000;
 
-function isAfter24h(item) {
-  if ("after24h" in item && item.after24h !== null && item.after24h !== undefined) return Boolean(item.after24h);
-  if (item.status === "Delivered") return (new Date(item.processedAt).getTime() - new Date(item.receivedAt).getTime()) > H24;
-  return (NOW.getTime() - new Date(item.receivedAt).getTime()) > H24;
+function isAfter12h(item) {
+  if (item.status === "Delivered") return (new Date(item.processedAt).getTime() - new Date(item.receivedAt).getTime()) >= H12;
+  return (NOW.getTime() - new Date(item.receivedAt).getTime()) >= H12;
 }
 
 function applyRawFilters(data, filters) {
@@ -60,8 +63,8 @@ function applyRawFilters(data, filters) {
     if (filters.rooftopType && d.rooftopType !== filters.rooftopType) return false;
     if (filters.csm && d.csm !== filters.csm) return false;
     if (filters.status && d.status !== filters.status) return false;
-    if (filters.after24h === true && !isAfter24h(d)) return false;
-    if (filters.after24h === false && isAfter24h(d)) return false;
+    if (filters.after24h === true && !isAfter12h(d)) return false;
+    if (filters.after24h === false && isAfter12h(d)) return false;
     if (filters.search) {
       const s = filters.search.toLowerCase();
       if (!d.vin.toLowerCase().includes(s) && !d.rooftop.toLowerCase().includes(s) && !d.csm.toLowerCase().includes(s)) return false;
@@ -530,10 +533,10 @@ function FilterBar({ filters, setFilters, rooftopOptions = [], typeOptions = [],
           placeholder="All Statuses"
         />
         <SearchableSelect
-          value={filters.after24h === null ? null : filters.after24h ? "After 24h" : "Within 24h"}
-          onChange={v => setFilters(f => ({ ...f, after24h: v === null ? null : v === "After 24h" }))}
-          options={["After 24h", "Within 24h"]}
-          placeholder="24h: Any"
+          value={filters.after24h === null ? null : filters.after24h ? "After 12h" : "Within 12h"}
+          onChange={v => setFilters(f => ({ ...f, after24h: v === null ? null : v === "After 12h" }))}
+          options={["After 12h", "Within 12h"]}
+          placeholder="12h: Any"
         />
         <SearchableSelect
           value={filters.hasPhotos === null || filters.hasPhotos === undefined ? null : filters.hasPhotos ? "Has Photos" : "No Photos"}
@@ -573,7 +576,7 @@ function FilterBar({ filters, setFilters, rooftopOptions = [], typeOptions = [],
           {filters.rooftopType && <Badge label={`Type: ${filters.rooftopType}`} color="blue" />}
           {filters.csm && <Badge label={`CSM: ${filters.csm}`} color="blue" />}
           {filters.status && <Badge label={`Status: ${filters.status}`} color={filters.status === "Delivered" ? "green" : "red"} />}
-          {filters.after24h !== null && <Badge label={filters.after24h ? "After 24h" : "Within 24h"} color="amber" />}
+          {filters.after24h !== null && <Badge label={filters.after24h ? "After 12h" : "Within 12h"} color="amber" />}
           {filters.hasPhotos !== null && filters.hasPhotos !== undefined && <Badge label={filters.hasPhotos ? "Has Photos" : "No Photos"} color="blue" />}
           {filters.hasVin !== null && filters.hasVin !== undefined && <Badge label={filters.hasVin ? "Has VIN" : "No VIN"} color="blue" />}
           {filters.reasonBucket && <Badge label={`Bucket: ${filters.reasonBucket}`} color="amber" />}
@@ -619,7 +622,7 @@ function RawTab({ data, loading, filters, setFilters, total, page, pageCount, on
     { key: "dealerVinId", label: "Dealer VIN ID", numeric: true },
     { key: "hasPhotos",   label: "Has Photos",    numeric: true },
     { key: "status",      label: "Status" },
-    { key: "after24h",    label: "After 24h?", numeric: true },
+    { key: "after24h",    label: "After 12h?", numeric: true },
     { key: "receivedAt",  label: "Received" },
     { key: "processedAt",  label: "Delivered" },
     { key: "reasonBucket", label: "Reason Bucket" },
@@ -646,8 +649,8 @@ function RawTab({ data, loading, filters, setFilters, total, page, pageCount, on
       const res = await fetch(`${API_BASE}/api/vins/export?${params}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const { data } = await res.json();
-      const headers = ["Enterprise ID", "Enterprise Name", "Team ID", "Rooftop Name", "Type", "CSM", "VIN", "Dealer VIN ID", "Has Photos", "Status", "After 24h?", "Received", "Delivered", "Reason Bucket", "Hold Reason", "VIN Score"];
-      const rows = data.map(d => [d.enterpriseId, d.enterprise, d.rooftopId, d.rooftop, d.rooftopType, d.csm, d.vin, d.dealerVinId ?? "", d.hasPhotos ? "Yes" : "No", d.status, isAfter24h(d) ? "Yes" : "No", d.receivedAt ? new Date(d.receivedAt).toLocaleString() : "", d.processedAt ? new Date(d.processedAt).toLocaleString() : "", d.reasonBucket || "", d.holdReason || "", d.vinScore != null ? Number(d.vinScore).toFixed(1) : ""]);
+      const headers = ["Enterprise ID", "Enterprise Name", "Team ID", "Rooftop Name", "Type", "CSM", "VIN", "Dealer VIN ID", "Has Photos", "Status", "After 12h?", "Received", "Delivered", "Reason Bucket", "Hold Reason", "VIN Score"];
+      const rows = data.map(d => [d.enterpriseId, d.enterprise, d.rooftopId, d.rooftop, d.rooftopType, d.csm, d.vin, d.dealerVinId ?? "", d.hasPhotos ? "Yes" : "No", d.status, isAfter12h(d) ? "Yes" : "No", d.receivedAt ? new Date(d.receivedAt).toLocaleString() : "", d.processedAt ? new Date(d.processedAt).toLocaleString() : "", d.reasonBucket || "", d.holdReason || "", d.vinScore != null ? Number(d.vinScore).toFixed(1) : ""]);
       downloadCSV("vin-data.csv", headers, rows);
     } catch (err) {
       console.error("Export failed:", err);
@@ -712,7 +715,7 @@ function RawTab({ data, loading, filters, setFilters, total, page, pageCount, on
                 </td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6", textAlign: "center" }}>{d.hasPhotos ? <Badge label="Yes" color="green" /> : <Badge label="No" color="gray" />}</td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}><Badge label={d.status} color={d.status === "Delivered" ? "green" : "red"} /></td>
-                <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6", textAlign: "center" }}>{isAfter24h(d) ? <Badge label="Yes" color="amber" /> : <Badge label="No" color="green" />}</td>
+                <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6", textAlign: "center" }}>{isAfter12h(d) ? <Badge label="Yes" color="amber" /> : <Badge label="No" color="green" />}</td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6", whiteSpace: "nowrap", fontSize: 12 }}>{new Date(d.receivedAt).toLocaleString()}</td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6", whiteSpace: "nowrap", fontSize: 12 }}>{d.processedAt ? new Date(d.processedAt).toLocaleString() : "—"}</td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}>{d.reasonBucket ? <Badge label={d.reasonBucket} color="amber" /> : <span style={{ color: "#9ca3af" }}>—</span>}</td>
@@ -778,7 +781,7 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
     { key: "withPhotos",             label: "With Photos",      numeric: true },
     { key: "deliveredWithPhotos",    label: "Delivered",        numeric: true },
     { key: "pendingWithPhotos",      label: "Pending",          numeric: true },
-    { key: "notProcessedAfter24",    label: "Pending VINs >24h",   numeric: true },
+    { key: "notProcessedAfter24",    label: "Pending VINs >12h",   numeric: true },
     ...activeBuckets.map(b => ({ key: b.key, label: b.label, numeric: true })),
     { key: "imsIntegrationStatus",   label: "IMS Integration",  numeric: true, noSort: true },
     { key: "publishingStatus",       label: "Publishing",       numeric: true, noSort: true },
@@ -806,9 +809,9 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
       const res = await fetch(`${API_BASE}/api/rooftops/export?${params}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const { data } = await res.json();
-      const headers = ["Enterprise ID", "Enterprise Name", "Team ID", "Rooftop Name", "Type", "CSM", "IMS Integration", "Publishing", "Total Inventory", "With Photos", "Delivered", "Pending", "Pending VINs >24h", "Pending VINs >24h %", "Website Score", "Inventory Score", ...activeBuckets.map(b => b.label), ...reportDates.map((d: string) => fmtReportDayLabel(d))];
+      const headers = ["Enterprise ID", "Enterprise Name", "Team ID", "Rooftop Name", "Type", "CSM", "IMS Integration", "Publishing", "Total Inventory", "With Photos", "Delivered", "Pending", "Pending VINs >12h", "Pending VINs >12h %", "Website Score", "Inventory Score", ...activeBuckets.map(b => b.label), ...reportDates.map((d: string) => fmtReportDayLabel(d))];
       const csvRows = data.map(r => {
-        const rate = r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0);
+        const rate = (r.pendingWithPhotos ?? 0) === 0 ? 0 : ((r.notProcessedAfter24 / r.pendingWithPhotos) * 100).toFixed(0);
         const reportCols = reportDates.map((d: string) => {
           const entry = (r.reportHistory ?? []).find((h: any) => h.date === d);
           if (!entry) return "—";
@@ -934,10 +937,10 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
                   {c.label} {sortCol === c.key ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
                 </th>
               ))}
-              <th rowSpan={2} onClick={() => handleSort("websiteScore")} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "pointer", userSelect: "none", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
+              <th rowSpan={2} onClick={() => handleSort("websiteScore")} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#6d28d9", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "pointer", userSelect: "none", background: "#f5f3ff", position: "sticky", top: 0, zIndex: 2 }}>
                 Website Score {sortCol === "websiteScore" ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
               </th>
-              <th rowSpan={2} onClick={() => handleSort("avgInventoryScore")} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "pointer", userSelect: "none", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
+              <th rowSpan={2} onClick={() => handleSort("avgInventoryScore")} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#6d28d9", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "pointer", userSelect: "none", background: "#f5f3ff", position: "sticky", top: 0, zIndex: 2 }}>
                 Inventory Score {sortCol === "avgInventoryScore" ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
               </th>
               {[
@@ -952,7 +955,7 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
               ))}
               {/* Pendency group header */}
               <th colSpan={pendencyColSpan} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#92400e", background: "#fffbeb", position: "sticky", top: 0, zIndex: 2, borderLeft: "2px solid #fcd34d", borderRight: "2px solid #fcd34d", boxShadow: "inset 0 -1px 0 #fde68a", whiteSpace: "nowrap" }}>
-                Pendency &gt;24h
+                Pendency &gt;12h
               </th>
               {[
                 { key: "imsIntegrationStatus", label: "IMS Integration" },
@@ -993,7 +996,7 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
               <tr><td colSpan={cols.length + 1 + visibleDates.length + (showDateToggle ? 1 : 0)} style={{ padding: 40, textAlign: "center", color: "#9ca3af", fontSize: 14 }}>No records match the current filters.</td></tr>
             )}
             {rows.map((r, i) => {
-              const rate = r.total === 0 ? 0 : (r.notProcessedAfter24 / r.total) * 100;
+              const rate = (r.pendingWithPhotos ?? 0) === 0 ? 0 : (r.notProcessedAfter24 / r.pendingWithPhotos) * 100;
               return (
                 <tr key={r.rooftopId || r.name} style={{ background: i % 2 === 0 ? "#fff" : "#f9fafb" }}>
                   <td style={{ ...tdStyle, textAlign: "center", color: "#9ca3af", fontSize: 12 }}>{(page - 1) * 50 + i + 1}</td>
@@ -1020,7 +1023,7 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
                           </span>}
                     </div>
                   </td>
-                  <td style={tdStyle}><Badge label={r.type} color={r.type === "Franchise" ? "blue" : "gray"} /></td>
+                  <td style={tdStyle}>{r.type ? <Badge label={r.type} color="blue" /> : <span style={{ color: "#9ca3af" }}>—</span>}</td>
                   <td style={tdStyle}><Truncated value={fmtCsm(r.csm)} maxWidth={130} /></td>
                   <td style={{ ...tdStyle, textAlign: "center" }}>
                     {r.websiteScore !== null && r.websiteScore !== undefined
@@ -1126,7 +1129,7 @@ function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = f
     { key: "withPhotos",          label: "With Photos",         numeric: true },
     { key: "deliveredWithPhotos", label: "Delivered",           numeric: true },
     { key: "pendingWithPhotos",   label: "Pending",             numeric: true },
-    { key: "notProcessedAfter24", label: "Pending VINs >24h",   numeric: true },
+    { key: "notProcessedAfter24", label: "Pending VINs >12h",   numeric: true },
     ...activeBuckets.map(b => ({ key: b.key, label: b.label, numeric: true })),
     { key: "avgWebsiteScore",     label: "Avg Website Score",   numeric: true },
     { key: "avgInventoryScore",   label: "Avg Inventory Score", numeric: true },
@@ -1156,10 +1159,10 @@ function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = f
       const res = await fetch(`${API_BASE}/api/enterprises/export?${params}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const { data } = await res.json();
-      const headers = ["Enterprise ID", "Enterprise Name", "Account Type", "CSM", "Rooftops", ...(showNotIntegrated ? ["Not Integrated"] : []), ...(showPublishingDisabled ? ["Publishing Disabled"] : []), "Total Inventory", "With Photos", "Delivered", "Pending", "Pending VINs >24h", "Pending VINs >24h %", "Avg Website Score", "Avg Inventory Score", ...activeBuckets.map(b => b.label), "Report Status"];
+      const headers = ["Enterprise ID", "Enterprise Name", "Account Type", "CSM", "Rooftops", ...(showNotIntegrated ? ["Not Integrated"] : []), ...(showPublishingDisabled ? ["Publishing Disabled"] : []), "Total Inventory", "With Photos", "Delivered", "Pending", "Pending VINs >12h", "Pending VINs >12h %", "Avg Website Score", "Avg Inventory Score", ...activeBuckets.map(b => b.label), "Report Status"];
       const csvRows = data.map((r: any) => {
         const reportStatusLabel = r.reportStatus === "sent" ? "Sent" : (fmtSkipReason(r.reportReason) ?? "Not Sent");
-        return [r.id, r.name, r.accountType ?? "", r.csm ?? "", r.rooftopCount ?? 0, ...(showNotIntegrated ? [r.notIntegratedCount ?? 0] : []), ...(showPublishingDisabled ? [r.publishingDisabledCount ?? 0] : []), r.total, r.withPhotos ?? 0, r.deliveredWithPhotos ?? 0, r.pendingWithPhotos ?? 0, r.notProcessedAfter24, r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0), r.avgWebsiteScore !== null && r.avgWebsiteScore !== undefined ? Number(r.avgWebsiteScore).toFixed(1) : "", r.avgInventoryScore != null ? Number(r.avgInventoryScore).toFixed(1) : "", ...activeBuckets.map(b => r[b.key] ?? 0), reportStatusLabel];
+        return [r.id, r.name, r.accountType ?? "", r.csm ?? "", r.rooftopCount ?? 0, ...(showNotIntegrated ? [r.notIntegratedCount ?? 0] : []), ...(showPublishingDisabled ? [r.publishingDisabledCount ?? 0] : []), r.total, r.withPhotos ?? 0, r.deliveredWithPhotos ?? 0, r.pendingWithPhotos ?? 0, r.notProcessedAfter24, (r.pendingWithPhotos ?? 0) === 0 ? 0 : ((r.notProcessedAfter24 / r.pendingWithPhotos) * 100).toFixed(0), r.avgWebsiteScore !== null && r.avgWebsiteScore !== undefined ? Number(r.avgWebsiteScore).toFixed(1) : "", r.avgInventoryScore != null ? Number(r.avgInventoryScore).toFixed(1) : "", ...activeBuckets.map(b => r[b.key] ?? 0), reportStatusLabel];
       });
       downloadCSV("enterprise-view.csv", headers, csvRows);
     } catch (err) {
@@ -1250,10 +1253,10 @@ function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = f
                   {c.label} {sortCol === c.key ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
                 </th>
               ))}
-              <th rowSpan={2} onClick={() => handleSort("avgWebsiteScore")} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "pointer", userSelect: "none", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
+              <th rowSpan={2} onClick={() => handleSort("avgWebsiteScore")} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#6d28d9", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "pointer", userSelect: "none", background: "#f5f3ff", position: "sticky", top: 0, zIndex: 2 }}>
                 Avg Website Score {sortCol === "avgWebsiteScore" ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
               </th>
-              <th rowSpan={2} onClick={() => handleSort("avgInventoryScore")} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "pointer", userSelect: "none", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
+              <th rowSpan={2} onClick={() => handleSort("avgInventoryScore")} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#6d28d9", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "pointer", userSelect: "none", background: "#f5f3ff", position: "sticky", top: 0, zIndex: 2 }}>
                 Avg Inventory Score {sortCol === "avgInventoryScore" ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
               </th>
               <th rowSpan={2} onClick={() => handleSort("csm")} style={{ padding: "10px 14px", textAlign: "left", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "normal", cursor: "pointer", userSelect: "none", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
@@ -1271,7 +1274,7 @@ function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = f
               ))}
               {/* Pendency group header */}
               <th colSpan={pendencyColSpan} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#92400e", background: "#fffbeb", position: "sticky", top: 0, zIndex: 2, borderLeft: "2px solid #fcd34d", borderRight: "2px solid #fcd34d", boxShadow: "inset 0 -1px 0 #fde68a", whiteSpace: "nowrap" }}>
-                Pendency &gt;24h
+                Pendency &gt;12h
               </th>
               {[
                 { key: "rooftopCount", label: "Rooftops" },
@@ -1304,7 +1307,7 @@ function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = f
               <tr><td colSpan={cols.length + 1} style={{ padding: 40, textAlign: "center", color: "#9ca3af", fontSize: 14 }}>No records match the current filters.</td></tr>
             )}
             {rows.map((r, i) => {
-              const rate = r.total === 0 ? 0 : (r.notProcessedAfter24 / r.total) * 100;
+              const rate = (r.pendingWithPhotos ?? 0) === 0 ? 0 : (r.notProcessedAfter24 / r.pendingWithPhotos) * 100;
               return (
                 <tr key={r.id} style={{ background: i % 2 === 0 ? "#fff" : "#f9fafb" }}>
                   <td style={{ ...tdStyle, textAlign: "center", color: "#9ca3af", fontSize: 12 }}>{(page - 1) * 50 + i + 1}</td>
@@ -1428,12 +1431,12 @@ function CSMTab({ csms, onDrillDown }) {
   const activeCount = [imsFilter, pubFilter].filter(Boolean).length;
 
   const handleDownload = () => {
-    const headers = ["CSM Name", "Not Integrated Rooftops", "Publishing Disabled Rooftops", "Total Inventory", "VIN Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h", "Pending VINs >24h %", ...activeBuckets.map(b => b.label)];
-    const rows = filtered.map(r => [r.name, r.integratedCount ?? 0, r.publishingCount ?? 0, r.total, r.processed, r.processedAfter24, r.notProcessed, r.notProcessedAfter24, r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0), ...activeBuckets.map(b => r[b.key] ?? 0)]);
+    const headers = ["CSM Name", "Not Integrated Rooftops", "Publishing Disabled Rooftops", "Total Inventory", "VIN Delivered", "Delivered VINs >12h", "Pending VINs", "Pending VINs >12h", "Pending VINs >12h %", ...activeBuckets.map(b => b.label)];
+    const rows = filtered.map(r => [r.name, r.integratedCount ?? 0, r.publishingCount ?? 0, r.total, r.processed, r.processedAfter24, r.notProcessed, r.notProcessedAfter24, (r.pendingWithPhotos ?? 0) === 0 ? 0 : ((r.notProcessedAfter24 / r.pendingWithPhotos) * 100).toFixed(0), ...activeBuckets.map(b => r[b.key] ?? 0)]);
     downloadCSV("csm-view.csv", headers, rows);
   };
 
-  const baseHeaders = ["CSM Name", "Not Integrated", "Publishing Disabled", "Total Inventory", "VIN Delivered", "Delivered VINs >24h", "Pending VINs", "Pending VINs >24h", "Pending VINs >24h %"];
+  const baseHeaders = ["CSM Name", "Not Integrated", "Publishing Disabled", "Total Inventory", "VIN Delivered", "Delivered VINs >12h", "Pending VINs", "Pending VINs >12h", "Pending VINs >12h %"];
   const allHeaders = [...baseHeaders, ...activeBuckets.map(b => b.label)];
 
   return (
@@ -1468,7 +1471,7 @@ function CSMTab({ csms, onDrillDown }) {
         </thead>
         <tbody>
           {filtered.map((r, i) => {
-            const rate = r.total === 0 ? 0 : (r.notProcessedAfter24 / r.total) * 100;
+            const rate = (r.pendingWithPhotos ?? 0) === 0 ? 0 : (r.notProcessedAfter24 / r.pendingWithPhotos) * 100;
             return (
               <tr key={r.name} style={{ background: i % 2 === 0 ? "#fff" : "#f9fafb" }}>
                 <td style={{ ...tdStyle, fontWeight: 600 }}><Truncated value={fmtCsm(r.name)} maxWidth={160} /></td>
@@ -1564,7 +1567,7 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
     BUCKETS.forEach(b => { obj[b.key] = (t[b.key] ?? 0) + (r[b.key] ?? 0); });
     return obj;
   }, { total: 0, enterpriseCount: 0, withPhotos: 0, deliveredWithPhotos: 0, pendingWithPhotos: 0, processed: 0, processedAfter24: 0, notProcessed: 0, notProcessedAfter24: 0, rooftopCount: 0, integratedCount: 0, publishingCount: 0, missingWebsiteCount: 0 } as any);
-  const totRate = totRow.total === 0 ? 0 : (totRow.notProcessedAfter24 / totRow.total) * 100;
+  const totRate = (totRow.pendingWithPhotos ?? 0) === 0 ? 0 : (totRow.notProcessedAfter24 / totRow.pendingWithPhotos) * 100;
   const nameCol = filterKey === "rooftopType" ? "Rooftop Type" : "CSM";
   const td = { padding: "8px 10px", borderBottom: "1px solid #f3f4f6" };
   const totTd = { padding: "8px 10px", background: "#f9fafb", fontWeight: 700, borderTop: "2px solid #e5e7eb" };
@@ -1581,8 +1584,8 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
           {title}
         </h3>
         <DownloadButton onClick={() => {
-          const headers = [nameCol, "Enterprises", "Rooftops", "Inventory", "With Photos", "Delivered", "Pending", "Pending VINs >24h", "Pending VINs >24h %", "Avg Website Score", "Avg Inventory Score", ...activeBuckets.map(b => b.label), ...(showPublishing ? ["Publishing Disabled"] : []), "Missing Website", ...(showIntegrated ? ["Not Integrated"] : [])];
-          const csvRows = sorted.map(r => [r.label, r.enterpriseCount ?? 0, r.rooftopCount, r.total, r.withPhotos ?? 0, r.deliveredWithPhotos ?? 0, r.pendingWithPhotos ?? 0, r.notProcessedAfter24, r.total === 0 ? 0 : ((r.notProcessedAfter24 / r.total) * 100).toFixed(0), r.avgWebsiteScore !== null && r.avgWebsiteScore !== undefined ? Number(r.avgWebsiteScore).toFixed(1) : "", r.avgInventoryScore != null ? Number(r.avgInventoryScore).toFixed(1) : "", ...activeBuckets.map(b => r[b.key] ?? 0), ...(showPublishing ? [r.publishingCount ?? 0] : []), r.missingWebsiteCount ?? 0, ...(showIntegrated ? [r.integratedCount ?? 0] : [])]);
+          const headers = [nameCol, "Enterprises", "Rooftops", "Inventory", "With Photos", "Delivered", "Pending", "Pending VINs >12h", "Pending VINs >12h %", "Avg Website Score", "Avg Inventory Score", ...activeBuckets.map(b => b.label), ...(showPublishing ? ["Publishing Disabled"] : []), "Missing Website", ...(showIntegrated ? ["Not Integrated"] : [])];
+          const csvRows = sorted.map(r => [r.label, r.enterpriseCount ?? 0, r.rooftopCount, r.total, r.withPhotos ?? 0, r.deliveredWithPhotos ?? 0, r.pendingWithPhotos ?? 0, r.notProcessedAfter24, (r.pendingWithPhotos ?? 0) === 0 ? 0 : ((r.notProcessedAfter24 / r.pendingWithPhotos) * 100).toFixed(0), r.avgWebsiteScore !== null && r.avgWebsiteScore !== undefined ? Number(r.avgWebsiteScore).toFixed(1) : "", r.avgInventoryScore != null ? Number(r.avgInventoryScore).toFixed(1) : "", ...activeBuckets.map(b => r[b.key] ?? 0), ...(showPublishing ? [r.publishingCount ?? 0] : []), r.missingWebsiteCount ?? 0, ...(showIntegrated ? [r.integratedCount ?? 0] : [])]);
           downloadCSV(`overview-${filterKey}.csv`, headers, csvRows);
         }} />
       </div>
@@ -1594,19 +1597,19 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
               <tr ref={row1Ref} style={{ background: "#f9fafb" }}>
                 <th rowSpan={2} style={{ ...thBase, textAlign: "center", width: 36 }}>#</th>
                 <th rowSpan={2} style={{ ...thBase, textAlign: "left", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("label")}>{nameCol}{si("label")}</th>
-                <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("notProcessedAfter24")}>Pending &gt;24h{si("notProcessedAfter24")}</th>
+                <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("notProcessedAfter24")}>Pending &gt;12h{si("notProcessedAfter24")}</th>
                 <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("enterpriseCount")}>Enterprises{si("enterpriseCount")}</th>
                 <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("rooftopCount")}>Rooftops{si("rooftopCount")}</th>
                 <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("total")}>Inventory{si("total")}</th>
                 <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("withPhotos")}>With Photos{si("withPhotos")}</th>
                 <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("deliveredWithPhotos")}>Delivered{si("deliveredWithPhotos")}</th>
                 <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("pendingWithPhotos")}>Pending{si("pendingWithPhotos")}</th>
-                <th rowSpan={2} style={{ ...thBase, textAlign: "center" }}>Pending &gt;24h %</th>
+                <th rowSpan={2} style={{ ...thBase, textAlign: "center" }}>Pending &gt;12h %</th>
                 <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("avgWebsiteScore")}>Avg Website Score{si("avgWebsiteScore")}</th>
                 <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("avgInventoryScore")}>Avg Inventory Score{si("avgInventoryScore")}</th>
                 {activeBuckets.length > 0 && (
                   <th colSpan={pendencyColSpan} style={{ ...thBase, textAlign: "center", background: "#fffbeb", color: "#92400e", boxShadow: "inset 0 -1px 0 #fde68a", borderLeft: "2px solid #fcd34d", borderRight: "2px solid #fcd34d" }}>
-                    Pending &gt;24h Breakdown
+                    Pending &gt;12h Breakdown
                   </th>
                 )}
                 {showPublishing && <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("publishingCount")}>Pub. Disabled{si("publishingCount")}</th>}
@@ -1636,7 +1639,7 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
             </thead>
             <tbody className={loading && rows.length > 0 ? "tbody-loading" : ""}>
               {sorted.map((r, i) => {
-                const rate = r.total === 0 ? 0 : (r.notProcessedAfter24 / r.total) * 100;
+                const rate = (r.pendingWithPhotos ?? 0) === 0 ? 0 : (r.notProcessedAfter24 / r.pendingWithPhotos) * 100;
                 const base = { [filterKey]: r.label };
                 const rowBg = i % 2 === 0 ? "#fff" : "#f9fafb";
                 const pendBg = rowBg;
@@ -1650,7 +1653,7 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
                         {filterKey === "csm" ? fmtCsm(r.label) : r.label}
                       </span>
                     </td>
-                    {/* Standalone: Pending >24h count */}
+                    {/* Standalone: Pending >12h count */}
                     <td style={{ ...td, textAlign: "center" }}>
                       {r.notProcessedAfter24 > 0
                         ? <span onClick={() => onDrillDown({ ...base, status: "Not Delivered", after24h: true, hasPhotos: true })} style={{ cursor: "pointer" }}><Badge label={r.notProcessedAfter24} color="red" /></span>
@@ -1662,7 +1665,7 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
                     <td style={{ ...td, textAlign: "center" }}><ClickableNum value={r.withPhotos ?? 0} color="#0ea5e9" onClick={() => onDrillDown({ ...base, hasPhotos: true })} /></td>
                     <td style={{ ...td, textAlign: "center" }}><ClickableNum value={r.deliveredWithPhotos ?? 0} color="#166534" onClick={() => onDrillDown({ ...base, status: "Delivered", hasPhotos: true })} /></td>
                     <td style={{ ...td, textAlign: "center" }}><ClickableNum value={r.pendingWithPhotos ?? 0} color="#991b1b" onClick={() => onDrillDown({ ...base, status: "Not Delivered", hasPhotos: true })} /></td>
-                    {/* Standalone: Pending >24h % */}
+                    {/* Standalone: Pending >12h % */}
                     <td style={{ ...td, textAlign: "center", color: "#6b7280", fontSize: 12 }}>{rate.toFixed(0)}%</td>
                     {/* Avg Website Score */}
                     <td style={{ ...td, textAlign: "center" }}>
@@ -1715,7 +1718,7 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
               <tr>
                 <td style={{ ...totTd }} />
                 <td style={{ ...totTd }}>Total</td>
-                {/* Standalone: Pending >24h total count */}
+                {/* Standalone: Pending >12h total count */}
                 <td style={{ ...totTd, textAlign: "center" }}>
                   {totRow.notProcessedAfter24 > 0
                     ? <span onClick={() => onDrillDown({ status: "Not Delivered", after24h: true, hasPhotos: true })} style={{ cursor: "pointer" }}><Badge label={totRow.notProcessedAfter24} color="red" /></span>
@@ -1727,7 +1730,7 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
                 <td style={{ ...totTd, textAlign: "center" }}><ClickableNum value={totRow.withPhotos ?? 0} color="#0ea5e9" onClick={() => onDrillDown({ hasPhotos: true })} /></td>
                 <td style={{ ...totTd, textAlign: "center" }}><ClickableNum value={totRow.deliveredWithPhotos ?? 0} color="#166534" onClick={() => onDrillDown({ status: "Delivered", hasPhotos: true })} /></td>
                 <td style={{ ...totTd, textAlign: "center" }}><ClickableNum value={totRow.pendingWithPhotos ?? 0} color="#991b1b" onClick={() => onDrillDown({ status: "Not Delivered", hasPhotos: true })} /></td>
-                {/* Standalone: Pending >24h % */}
+                {/* Standalone: Pending >12h % */}
                 <td style={{ ...totTd, textAlign: "center", color: "#6b7280", fontSize: 12 }}>{totRate.toFixed(0)}%</td>
                 {/* Avg Website Score */}
                 <td style={{ ...totTd, textAlign: "center", color: "#9ca3af" }}>—</td>
@@ -1756,13 +1759,13 @@ function OverviewTab({ totals, byType, byCSM, byBucket = [], onDrillDown, onRoof
   return (
     <div>
       <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 28 }}>
-        {/* Row 1: Pending >24h card with pills directly below */}
+        {/* Row 1: Pending >12h card with pills directly below */}
         <div style={{ display: "inline-flex", flexDirection: "column", gap: 8, background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 12, padding: "10px 16px" }}>
           <div onClick={!loading ? () => onDrillDown({ status: "Not Delivered", after24h: true, hasPhotos: true }) : undefined}
             style={{ display: "inline-flex", alignItems: "center", gap: 10, background: "#fff", borderRadius: 10, padding: "10px 16px", border: "1px solid #e5e7eb", boxShadow: "0 1px 3px rgba(0,0,0,0.08)", cursor: loading ? "default" : "pointer", transition: "all 0.15s" }}
             onMouseEnter={e => { if (!loading) { e.currentTarget.style.boxShadow = "0 4px 12px rgba(0,0,0,0.12)"; e.currentTarget.style.transform = "translateY(-2px)"; } }}
             onMouseLeave={e => { if (!loading) { e.currentTarget.style.boxShadow = "0 1px 3px rgba(0,0,0,0.08)"; e.currentTarget.style.transform = "translateY(0)"; } }}>
-            <div style={{ fontSize: 15, fontWeight: 600, color: "#374151" }}>Pending VINs &gt;24h</div>
+            <div style={{ fontSize: 15, fontWeight: 600, color: "#374151" }}>Pending VINs &gt;12h</div>
             {loading
               ? <div className="shimmer-cell" style={{ height: 28, width: 50, borderRadius: 6 }} />
               : <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
@@ -1775,7 +1778,7 @@ function OverviewTab({ totals, byType, byCSM, byBucket = [], onDrillDown, onRoof
             <div style={{ display: "flex", gap: 5, flexWrap: "nowrap", alignItems: "center", opacity: loading ? 0.45 : 1, transition: "opacity 0.2s" }}>
               <span style={{ fontSize: 11, fontWeight: 600, color: "#9ca3af", textTransform: "uppercase" as const, letterSpacing: 0.5, whiteSpace: "nowrap", marginRight: 2 }}>By reason:</span>
               {activeBuckets.map((b: { label: string; count: number }) => (
-                <span key={b.label} onClick={loading ? undefined : () => onDrillDown({ status: "Not Delivered", after24h: true, reasonBucket: b.label })}
+                <span key={b.label} onClick={loading ? undefined : () => onDrillDown({ status: "Not Delivered", after24h: true, hasPhotos: true, reasonBucket: b.label })}
                   style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 8px", borderRadius: 999, fontSize: 11, fontWeight: 600, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", cursor: loading ? "default" : "pointer", transition: "all 0.15s", whiteSpace: "nowrap" }}
                   onMouseEnter={e => { if (!loading) { e.currentTarget.style.background = "#fee2e2"; e.currentTarget.style.borderColor = "#fca5a5"; } }}
                   onMouseLeave={e => { if (!loading) { e.currentTarget.style.background = "#fef2f2"; e.currentTarget.style.borderColor = "#fecaca"; } }}>

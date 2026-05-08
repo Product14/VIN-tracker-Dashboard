@@ -359,7 +359,7 @@ function toApiRow(r) {
     status:       r.status,
     reasonBucket: r.reason_bucket || null,
     holdReason:   r.hold_reason || null,
-    after24h:     r.after_24h !== null ? Boolean(r.after_24h) : null,
+    after24h:     r.after_24h !== null ? Boolean(r.after_24h) : null, // legacy — Metabase 24h flag, no longer authoritative; client uses receivedAt/processedAt with H12.
     hasPhotos:    r.has_photos !== null ? Boolean(r.has_photos) : false,
     receivedAt:   r.received_at,
     processedAt:  r.processed_at,
@@ -763,8 +763,22 @@ function buildVinFilters(queryParams) {
   if (csm)          conditions.push(`ed.poc_email = ${p(csm)}`);
   if (status)       conditions.push(`v.status = ${p(status)}`);
   if (enterprise)   conditions.push(`ed.name = ${p(enterprise)}`);
-  if (after24h === "true"  || after24h === "1") conditions.push("COALESCE(v.after_24h, 0) = 1");
-  if (after24h === "false" || after24h === "0") conditions.push("COALESCE(v.after_24h, 0) = 0");
+  // Pendency >12h drill-down filter — must mirror the predicate used by the
+  // v_by_rooftop / v_by_enterprise materialized views (see PENDENCY_PREDICATE
+  // in server/db.js). Query param key `after24h` retained for backwards compat.
+  const PENDENCY_PREDICATE_12H = `(
+    (
+      (v.processed_at IS NULL OR v.processed_at = '')
+      AND v.received_at IS NOT NULL AND v.received_at <> ''
+      AND v.received_at::timestamptz + INTERVAL '12 hours' <= NOW()
+    ) OR (
+      v.processed_at IS NOT NULL AND v.processed_at <> ''
+      AND v.received_at IS NOT NULL AND v.received_at <> ''
+      AND v.processed_at::timestamptz >= v.received_at::timestamptz + INTERVAL '12 hours'
+    )
+  )`;
+  if (after24h === "true"  || after24h === "1") conditions.push(PENDENCY_PREDICATE_12H);
+  if (after24h === "false" || after24h === "0") conditions.push(`NOT ${PENDENCY_PREDICATE_12H}`);
   if (hasPhotos === "true"  || hasPhotos === "1") conditions.push("COALESCE(v.has_photos, 0) = 1");
   if (hasPhotos === "false" || hasPhotos === "0") conditions.push("COALESCE(v.has_photos, 0) = 0");
   if (hasVin === "true"  || hasVin === "1") conditions.push("(v.vin IS NOT NULL AND v.vin != '')");

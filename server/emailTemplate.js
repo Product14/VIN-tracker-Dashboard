@@ -167,7 +167,7 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl, reportCovData =
               <table width="100%" cellpadding="0" cellspacing="0" border="0">
                 <tr>
                   <td valign="middle" style="white-space:nowrap; padding-right:24px; border-right:1px solid #fde68a; width:1%;">
-                    <div style="font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:#92400e; margin-bottom:4px;">Pending VINs &gt; 24hr</div>
+                    <div style="font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:#92400e; margin-bottom:4px;">Pending VINs &gt; 12hr</div>
                     <div style="font-size:32px; font-weight:700; color:${RED}; line-height:1;">${fmt(totals.notProcessedAfter24)}</div>
                   </td>
                   <td valign="middle" style="padding-left:20px;">
@@ -207,7 +207,7 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl, reportCovData =
   const LAVENDER_TEXT  = "#6d28d9";
 
   // ── By Rooftop Type table ─────────────────────────────────────────────────
-  // Dedicated header/row builders: 5 columns (no "Pending >24hr %") with a
+  // Dedicated header/row builders: 5 columns (no "Pending >12hr %") with a
   // 2px vertical divider between the pending group and the score group.
   const typeDivider = `border-right:2px solid ${BORDER_COLOR};`;
   const typeThBase = `padding:9px 12px; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; color:${TEXT_MUTED}; white-space:nowrap; border-bottom:2px solid ${BORDER_COLOR};`;
