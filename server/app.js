@@ -93,7 +93,7 @@ async function syncVins() {
   const vins = [], dealerVinIds = [], enterpriseIds = [], rooftopIds = [];
   const statuses = [], after24hs = [], receivedAts = [], processedAts = [];
   const reasonBuckets = [], holdReasons = [], hasPhotosArr = [];
-  const outputImageCounts = [], thumbnailUrls = [], vehiclePrices = [], syncedAts = [];
+  const outputImageCounts = [], thumbnailUrls = [], vdpUrls = [], vehiclePrices = [], syncedAts = [];
   const makes = [], models = [], years = [], trims = [], stockNumbers = [], vinScores = [];
 
   for (const row of deduped) {
@@ -110,6 +110,7 @@ async function syncVins() {
     hasPhotosArr.push(cleanAfter24(row.has_photos ?? null));
     outputImageCounts.push(row.output_image_count != null ? Number(row.output_image_count) : null);
     thumbnailUrls.push(row.thumbnail_url ?? null);
+    vdpUrls.push(row.vdp_url ?? null);
     vehiclePrices.push(row.sellingPrice != null ? Number(row.sellingPrice) : row.vehicle_price != null ? Number(row.vehicle_price) : null);
     makes.push(row.make ?? null);
     models.push(row.model ?? null);
@@ -142,15 +143,15 @@ async function syncVins() {
   const INSERT_SQL = `
     INSERT INTO vins
       (dealer_vin_id, vin, enterprise_id, rooftop_id, status, after_24h, received_at, processed_at,
-       reason_bucket, hold_reason, has_photos, output_image_count, thumbnail_url, vehicle_price,
+       reason_bucket, hold_reason, has_photos, output_image_count, thumbnail_url, vdp_url, vehicle_price,
        make, model, year, trim, stock_number, vin_score, synced_at)
     SELECT
       UNNEST($1::text[]),    UNNEST($2::text[]),     UNNEST($3::text[]),     UNNEST($4::text[]),
       UNNEST($5::text[]),    UNNEST($6::smallint[]), UNNEST($7::text[]),     UNNEST($8::text[]),
       UNNEST($9::text[]),    UNNEST($10::text[]),    UNNEST($11::smallint[]),UNNEST($12::int[]),
-      UNNEST($13::text[]),   UNNEST($14::real[]),
-      UNNEST($15::text[]),   UNNEST($16::text[]),   UNNEST($17::text[]),    UNNEST($18::text[]),
-      UNNEST($19::text[]),   UNNEST($20::real[]),   UNNEST($21::text[])
+      UNNEST($13::text[]),   UNNEST($14::text[]),    UNNEST($15::real[]),
+      UNNEST($16::text[]),   UNNEST($17::text[]),   UNNEST($18::text[]),    UNNEST($19::text[]),
+      UNNEST($20::text[]),   UNNEST($21::real[]),   UNNEST($22::text[])
   `;
 
   const batchStarts = [];
@@ -168,7 +169,7 @@ async function syncVins() {
           slice(dealerVinIds), slice(vins), slice(enterpriseIds), slice(rooftopIds),
           slice(statuses), slice(after24hs), slice(receivedAts), slice(processedAts),
           slice(reasonBuckets), slice(holdReasons), slice(hasPhotosArr), slice(outputImageCounts),
-          slice(thumbnailUrls), slice(vehiclePrices),
+          slice(thumbnailUrls), slice(vdpUrls), slice(vehiclePrices),
           slice(makes), slice(models), slice(years), slice(trims),
           slice(stockNumbers), slice(vinScores), slice(syncedAts),
         ]);

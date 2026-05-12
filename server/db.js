@@ -35,6 +35,7 @@ export async function initSchema() {
       has_photos           SMALLINT DEFAULT 0,
       output_image_count   INT,
       thumbnail_url        TEXT,
+      vdp_url              TEXT,
       vehicle_price        REAL,
       synced_at            TEXT
     );
@@ -42,6 +43,7 @@ export async function initSchema() {
     ALTER TABLE vins ADD COLUMN IF NOT EXISTS has_photos SMALLINT DEFAULT 0;
     ALTER TABLE vins ADD COLUMN IF NOT EXISTS output_image_count INT;
     ALTER TABLE vins ADD COLUMN IF NOT EXISTS thumbnail_url TEXT;
+    ALTER TABLE vins ADD COLUMN IF NOT EXISTS vdp_url TEXT;
     ALTER TABLE vins ADD COLUMN IF NOT EXISTS vehicle_price REAL;
     ALTER TABLE vins ADD COLUMN IF NOT EXISTS make         TEXT;
     ALTER TABLE vins ADD COLUMN IF NOT EXISTS model        TEXT;
