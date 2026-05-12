@@ -121,7 +121,7 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
       <tr>
         ${kpiCard("#2563EB", "Vehicles Shot",      newVins,      imagesReceived)}
         ${kpiGap}
-        ${kpiCard("#059669", "Vehicles Published", vinsDelivered, imagesProcessed)}
+        ${kpiCard("#059669", "Vehicles Delivered", vinsDelivered, imagesProcessed)}
         ${kpiGap}
         ${kpiCard("#F59E0B", "Vehicles Pending",   vinsPending,   null)}
       </tr>
@@ -176,7 +176,7 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
       <tr>
         ${invCard90("#2563EB", "Active Vehicles",    inv90.received)}
         ${invGap}
-        ${invCard90("#059669", "Vehicles Published", inv90.invDelivered)}
+        ${invCard90("#059669", "Vehicles Delivered", inv90.invDelivered)}
         ${invGap}
         ${invCard90("#F59E0B", "Vehicles Pending",   inv90.invPending)}
       </tr>
@@ -204,7 +204,7 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
       <tr>
         ${invCard("Vehicles with Photos", withPhotos,      withPhotosPctCalc, "of total vehicles",       "#2563EB")}
         ${invGap}
-        ${invCard("Vehicles Published",  totalDelivered,  deliveredPct,      "", "#059669")}
+        ${invCard("Vehicles Delivered",  totalDelivered,  deliveredPct,      "", "#059669")}
         ${invGap}
         ${invCard("Vehicles Pending",    pendingWithPhotos, pendingPct,      "", "#F59E0B")}
       </tr>
@@ -239,10 +239,10 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
           </td>
           <td style="padding:10px 0 10px 10px;border-bottom:1px solid #F3F4F6;vertical-align:middle;text-align:right;white-space:nowrap;">
             <div style="font-size:10px;color:#9CA3AF;line-height:1.6;">Received&nbsp;&nbsp;${formatDt(v.received_at, timezone)}</div>
-            <div style="font-size:10px;color:#9CA3AF;line-height:1.6;">Published&nbsp;&nbsp;${formatDt(v.processed_at, timezone)}</div>
+            <div style="font-size:10px;color:#9CA3AF;line-height:1.6;">Delivered&nbsp;&nbsp;${formatDt(v.processed_at, timezone)}</div>
             ${processedUseTat
               ? `<div style="font-size:11px;font-weight:700;color:#059669;line-height:1.6;margin-top:1px;">TAT&nbsp;&nbsp;${formatTat(v.ttd_hrs)}</div>`
-              : `<div style="font-size:11px;font-weight:700;color:#059669;line-height:1.6;margin-top:1px;">Published</div>`}
+              : `<div style="font-size:11px;font-weight:700;color:#059669;line-height:1.6;margin-top:1px;">Delivered</div>`}
           </td>
           <td style="padding:10px 0 10px 10px;border-bottom:1px solid #F3F4F6;vertical-align:middle;text-align:center;white-space:nowrap;">
             ${vUrl ? `<a href="${vUrl}" style="display:inline-block;padding:4px 8px;color:#2563EB;font-size:10px;font-weight:600;text-decoration:none;font-family:Arial,Helvetica,sans-serif;letter-spacing:0.01em;">View &rarr;</a>` : ""}
@@ -293,7 +293,7 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
   // ── Recent Vehicles (IMS off, quiet day only) ────────────────────────────
   const recentUseTat = recentVins.length > 0 && recentVins.every(v => v.ttd_hrs == null || Number(v.ttd_hrs) <= 8);
   const recentRows = recentVins.length === 0
-    ? `<tr><td colspan="4" style="padding:24px 0;text-align:center;font-size:12px;color:#9CA3AF;line-height:1.4;">No vehicles published in the last 90 days.</td></tr>`
+    ? `<tr><td colspan="4" style="padding:24px 0;text-align:center;font-size:12px;color:#9CA3AF;line-height:1.4;">No vehicles delivered in the last 90 days.</td></tr>`
     : recentVins.map(v => {
         const thumb = v.thumbnail_url
           ? `<img src="${v.thumbnail_url}" alt="" width="80" style="display:block;width:80px;height:auto;border:0;">`
@@ -315,10 +315,10 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
           </td>
           <td style="padding:10px 0 10px 10px;border-bottom:1px solid #F3F4F6;vertical-align:middle;text-align:right;white-space:nowrap;">
             <div style="font-size:10px;color:#9CA3AF;line-height:1.6;">Received&nbsp;&nbsp;${formatDt(v.received_at, timezone)}</div>
-            <div style="font-size:10px;color:#9CA3AF;line-height:1.6;">Published&nbsp;&nbsp;${formatDt(v.processed_at, timezone)}</div>
+            <div style="font-size:10px;color:#9CA3AF;line-height:1.6;">Delivered&nbsp;&nbsp;${formatDt(v.processed_at, timezone)}</div>
             ${recentUseTat
               ? `<div style="font-size:11px;font-weight:700;color:#059669;line-height:1.6;margin-top:1px;">TAT&nbsp;&nbsp;${formatTat(v.ttd_hrs)}</div>`
-              : `<div style="font-size:11px;font-weight:700;color:#059669;line-height:1.6;margin-top:1px;">Published</div>`}
+              : `<div style="font-size:11px;font-weight:700;color:#059669;line-height:1.6;margin-top:1px;">Delivered</div>`}
           </td>
           <td style="padding:10px 0 10px 10px;border-bottom:1px solid #F3F4F6;vertical-align:middle;text-align:center;white-space:nowrap;">
             ${vUrl ? `<a href="${vUrl}" style="display:inline-block;padding:4px 8px;color:#2563EB;font-size:10px;font-weight:600;text-decoration:none;font-family:Arial,Helvetica,sans-serif;letter-spacing:0.01em;">View &rarr;</a>` : ""}
@@ -393,7 +393,7 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
             <div style="font-size:19px;font-weight:700;color:#111827;line-height:1.3;margin-bottom:8px;">${rooftopName}</div>
             <div style="font-size:13px;color:#6B7280;line-height:1.7;">${quietDay
               ? `No new vehicles were received on <strong style="color:#111827;">${dateLabel}</strong>. Here&rsquo;s a snapshot of your current inventory.`
-              : `Here&rsquo;s your Studio AI delivery summary for <strong style="color:#111827;">${dateLabel}</strong>. We published <strong style="color:#111827;">${n(vinsDelivered)}&thinsp;vehicle${vinsDelivered !== 1 ? "s" : ""}</strong> &mdash; here&rsquo;s the full breakdown.`
+              : `Here&rsquo;s your Studio AI delivery summary for <strong style="color:#111827;">${dateLabel}</strong>. We delivered <strong style="color:#111827;">${n(vinsDelivered)}&thinsp;vehicle${vinsDelivered !== 1 ? "s" : ""}</strong> &mdash; here&rsquo;s the full breakdown.`
             }</div>
           </td>
         </tr>
@@ -404,7 +404,7 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
         ${!quietDay ? `
         <tr>
           <td class="sec-pad" style="padding:28px 28px 0;">
-            ${secHead("Performance", "How did we do?", "Vehicles shot, published, and pending for the day")}
+            ${secHead("Performance", "How did we do?", "Vehicles shot, delivered, and pending for the day")}
             ${yesterdayCards}
           </td>
         </tr>
@@ -471,7 +471,7 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
         <!-- ══ RECENT VEHICLES (IMS off, quiet day) ════════════════════════════ -->
         <tr>
           <td class="sec-pad" style="padding:28px 28px 24px;background:#F9FAFB;">
-            ${secHead("", "Recent Vehicles", "Most recently published vehicles from the last 90 days")}
+            ${secHead("", "Recent Vehicles", "Most recently delivered vehicles from the last 90 days")}
             <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;">
               <thead>
                 <tr>
@@ -576,7 +576,7 @@ export function buildGroupReportHtml(data, dateLabel) {
       <tr>
         ${kpiCard("#2563EB", "Vehicles Received",  newVins,      imagesReceived)}
         ${kpiGap}
-        ${kpiCard("#059669", "Vehicles Published", vinsDelivered, imagesProcessed)}
+        ${kpiCard("#059669", "Vehicles Delivered", vinsDelivered, imagesProcessed)}
         ${kpiGap}
         ${kpiCard("#F59E0B", "Vehicles Pending",   vinsPending,   imagesPending)}
       </tr>
@@ -643,7 +643,7 @@ export function buildGroupReportHtml(data, dateLabel) {
             <tr>
               ${invCard("#2563EB", "Vehicles with Photos", withPhotos,   pct(withPhotosPct) + " of total")}
               ${invGap}
-              ${invCard("#059669", "Vehicles Published",   invDelivered, "")}
+              ${invCard("#059669", "Vehicles Delivered",   invDelivered, "")}
               ${invGap}
               ${invCard("#F59E0B", "Vehicles Pending",     invPending,   "")}
             </tr>
@@ -659,7 +659,7 @@ export function buildGroupReportHtml(data, dateLabel) {
                 <th style="padding:9px 10px 9px 0;border-bottom:2px solid #E5E7EB;text-align:left;font-size:9px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#9CA3AF;line-height:1.4;white-space:nowrap;">Rooftop</th>
                 <th style="padding:9px 10px;border-bottom:2px solid #E5E7EB;text-align:right;font-size:9px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#9CA3AF;line-height:1.4;white-space:nowrap;">Total</th>
                 <th style="padding:9px 10px;border-bottom:2px solid #E5E7EB;text-align:right;font-size:9px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#9CA3AF;line-height:1.4;white-space:nowrap;">With Photos</th>
-                <th style="padding:9px 10px;border-bottom:2px solid #E5E7EB;text-align:right;font-size:9px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#9CA3AF;line-height:1.4;white-space:nowrap;">Published</th>
+                <th style="padding:9px 10px;border-bottom:2px solid #E5E7EB;text-align:right;font-size:9px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#9CA3AF;line-height:1.4;white-space:nowrap;">Delivered</th>
                 <th style="padding:9px 0 9px 10px;border-bottom:2px solid #E5E7EB;text-align:right;font-size:9px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#9CA3AF;line-height:1.4;white-space:nowrap;">Pending</th>
               </tr>
             </thead>
@@ -693,7 +693,7 @@ export function buildGroupReportHtml(data, dateLabel) {
             <tr>
               ${invCard("#2563EB", "Vehicles Received",  received,     "")}
               ${invGap}
-              ${invCard("#059669", "Vehicles Published", invDelivered, "")}
+              ${invCard("#059669", "Vehicles Delivered", invDelivered, "")}
               ${invGap}
               ${invCard("#F59E0B", "Vehicles Pending",   invPending,   "")}
             </tr>
@@ -708,7 +708,7 @@ export function buildGroupReportHtml(data, dateLabel) {
               <tr>
                 <th style="padding:9px 10px 9px 0;border-bottom:2px solid #E5E7EB;text-align:left;font-size:9px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#9CA3AF;line-height:1.4;white-space:nowrap;">Rooftop</th>
                 <th style="padding:9px 10px;border-bottom:2px solid #E5E7EB;text-align:right;font-size:9px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#9CA3AF;line-height:1.4;white-space:nowrap;">Received</th>
-                <th style="padding:9px 10px;border-bottom:2px solid #E5E7EB;text-align:right;font-size:9px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#9CA3AF;line-height:1.4;white-space:nowrap;">Published</th>
+                <th style="padding:9px 10px;border-bottom:2px solid #E5E7EB;text-align:right;font-size:9px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#9CA3AF;line-height:1.4;white-space:nowrap;">Delivered</th>
                 <th style="padding:9px 0 9px 10px;border-bottom:2px solid #E5E7EB;text-align:right;font-size:9px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#9CA3AF;line-height:1.4;white-space:nowrap;">Pending</th>
               </tr>
             </thead>
@@ -750,10 +750,10 @@ export function buildGroupReportHtml(data, dateLabel) {
         </td>
         <td style="padding:10px 0 10px 10px;border-bottom:1px solid #F3F4F6;vertical-align:middle;text-align:right;white-space:nowrap;">
           <div style="font-size:10px;color:#9CA3AF;line-height:1.6;">Received&nbsp;&nbsp;${formatDt(v.received_at)}</div>
-          <div style="font-size:10px;color:#9CA3AF;line-height:1.6;">Published&nbsp;&nbsp;${formatDt(v.processed_at)}</div>
+          <div style="font-size:10px;color:#9CA3AF;line-height:1.6;">Delivered&nbsp;&nbsp;${formatDt(v.processed_at)}</div>
           ${groupRecentUseTat
             ? `<div style="font-size:11px;font-weight:700;color:#059669;line-height:1.6;margin-top:1px;">TAT&nbsp;&nbsp;${formatTat(v.ttd_hrs)}</div>`
-            : `<div style="font-size:11px;font-weight:700;color:#059669;line-height:1.6;margin-top:1px;">Published</div>`}
+            : `<div style="font-size:11px;font-weight:700;color:#059669;line-height:1.6;margin-top:1px;">Delivered</div>`}
         </td>
         <td style="padding:10px 0 10px 10px;border-bottom:1px solid #F3F4F6;vertical-align:middle;text-align:center;white-space:nowrap;">
           ${vUrl ? `<a href="${vUrl}" style="display:inline-block;padding:4px 8px;color:#2563EB;font-size:10px;font-weight:600;text-decoration:none;font-family:Arial,Helvetica,sans-serif;letter-spacing:0.01em;">View &rarr;</a>` : ""}
@@ -810,10 +810,10 @@ export function buildGroupReportHtml(data, dateLabel) {
         </td>
         <td style="padding:10px 0 10px 10px;border-bottom:1px solid #F3F4F6;vertical-align:middle;text-align:right;white-space:nowrap;">
           <div style="font-size:10px;color:#9CA3AF;line-height:1.6;">Received&nbsp;&nbsp;${formatDt(v.received_at)}</div>
-          <div style="font-size:10px;color:#9CA3AF;line-height:1.6;">Published&nbsp;&nbsp;${formatDt(v.processed_at)}</div>
+          <div style="font-size:10px;color:#9CA3AF;line-height:1.6;">Delivered&nbsp;&nbsp;${formatDt(v.processed_at)}</div>
           ${groupQuietUseTat
             ? `<div style="font-size:11px;font-weight:700;color:#059669;line-height:1.6;margin-top:1px;">TAT&nbsp;&nbsp;${formatTat(v.ttd_hrs)}</div>`
-            : `<div style="font-size:11px;font-weight:700;color:#059669;line-height:1.6;margin-top:1px;">Published</div>`}
+            : `<div style="font-size:11px;font-weight:700;color:#059669;line-height:1.6;margin-top:1px;">Delivered</div>`}
         </td>
         <td style="padding:10px 0 10px 10px;border-bottom:1px solid #F3F4F6;vertical-align:middle;text-align:center;white-space:nowrap;">
           ${vUrl ? `<a href="${vUrl}" style="display:inline-block;padding:4px 8px;color:#2563EB;font-size:10px;font-weight:600;text-decoration:none;font-family:Arial,Helvetica,sans-serif;letter-spacing:0.01em;">View &rarr;</a>` : ""}
@@ -825,7 +825,7 @@ export function buildGroupReportHtml(data, dateLabel) {
       <!-- ══ RECENT VEHICLES (quiet day) ═══════════════════════════════════════ -->
       <tr>
         <td class="sec-pad" style="padding:28px 28px 24px;background:#F9FAFB;">
-          ${secHead("", "Recent Vehicles", "Most recently published vehicles across all rooftops")}
+          ${secHead("", "Recent Vehicles", "Most recently delivered vehicles across all rooftops")}
           <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;">
             <thead>
               <tr>
@@ -938,7 +938,7 @@ export function buildGroupReportHtml(data, dateLabel) {
         ${!quietDay ? `
         <tr>
           <td class="sec-pad" style="padding:28px 28px 0;">
-            ${secHead("Yesterday", "Performance Snapshot", "Vehicles and images received, published, and pending across all rooftops", "#2563EB")}
+            ${secHead("Yesterday", "Performance Snapshot", "Vehicles and images received, delivered, and pending across all rooftops", "#2563EB")}
             ${yesterdayCards}
           </td>
         </tr>
@@ -955,7 +955,7 @@ export function buildGroupReportHtml(data, dateLabel) {
                 <tr>
                   <th style="${thStyle}padding-left:0;">Rooftop</th>
                   <th style="${thStyle}text-align:right;">Received</th>
-                  <th style="${thStyle}text-align:right;">Published</th>
+                  <th style="${thStyle}text-align:right;">Delivered</th>
                   <th style="${thStyle}text-align:right;">Pending</th>
                   ${showTat ? `<th style="${thStyle}padding-right:0;text-align:right;">Avg TAT</th>` : ""}
                 </tr>
