@@ -383,6 +383,7 @@ function toApiRow(r) {
     processedAt:  r.processed_at,
     syncedAt:     r.synced_at,
     vinScore:     r.vin_score ?? null,
+    vdpUrl:       r.vdp_url ?? null,
   };
 }
 
@@ -754,7 +755,7 @@ const VIN_FROM = `
 
 const VIN_SELECT = `
   SELECT v.vin, v.dealer_vin_id, v.enterprise_id, v.rooftop_id,
-         v.status, v.after_24h, v.has_photos, v.received_at, v.processed_at, v.reason_bucket, v.hold_reason, v.synced_at, v.vin_score,
+         v.status, v.after_24h, v.has_photos, v.received_at, v.processed_at, v.reason_bucket, v.hold_reason, v.synced_at, v.vin_score, v.vdp_url,
          rd.team_name AS rooftop, rd.team_type AS rooftop_type,
          ed.name AS enterprise, ed.poc_email AS csm
   ${VIN_FROM}
