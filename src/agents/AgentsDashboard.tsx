@@ -444,13 +444,20 @@ function AgentsDashboard() {
     [filteredDaily]
   );
 
-  // KPI strip totals: sum of filteredTotals (one row per team × agent_type).
-  // These are pre-deduplicated at the lead level by Metabase, so summing across
-  // teams is correct (no shared leads between teams).
-  const totals = useMemo(
-    () => filteredTotals.reduce((acc, r) => add(acc, projectRow(r)), { ...EMPTY }),
-    [filteredTotals]
-  );
+  // KPI strip totals — branch by date filter so the cards actually move when
+  // the user changes the date range:
+  //   • dateRange === "ALL" → sum the totals card (lead-level deduped, exact).
+  //   • any other range     → sum the (date-filtered) daily card. Daily rows
+  //     are deduped within a day but not across days, so distinct counts
+  //     (touched / qualified / appts) can be slightly inflated when a lead
+  //     re-engages on multiple days within the range. Volume fields (calls,
+  //     sms, $ value) are exact. We accept the small inflation in exchange for
+  //     responsiveness to the date filter — the alternative is KPIs that
+  //     silently ignore the date selector, which the user just flagged.
+  const totals = useMemo(() => {
+    const source = dateRange === "ALL" ? filteredTotals : filteredDaily;
+    return source.reduce((acc, r) => add(acc, projectRow(r)), { ...EMPTY });
+  }, [filteredTotals, filteredDaily, dateRange]);
 
   type RooftopAgg = {
     key: string;
@@ -492,6 +499,17 @@ function AgentsDashboard() {
       entry.daily.push({ day: (r as AgentRowDaily).day, ...projectRow(r) });
     }
     for (const e of m.values()) e.daily.sort((a, b) => a.day.localeCompare(b.day));
+    // When a date filter is active, recompute each rooftop's `total` from its
+    // (filtered) daily rows so the table's main numbers match the date selector.
+    // ALL keeps the totals card's lead-level-deduped figures, which are the
+    // most accurate. Rooftops with zero daily rows in range get dropped so the
+    // Total Accounts KPI reflects "accounts with activity in range".
+    if (dateRange !== "ALL") {
+      for (const e of m.values()) {
+        if (e.daily.length === 0) { m.delete(e.key); continue; }
+        e.total = e.daily.reduce((acc, d) => add(acc, d), { ...EMPTY });
+      }
+    }
     let out = Array.from(m.values());
     // In "sheet" mode, restrict the rooftop universe to those listed in the
     // master accounts sheet for the active (rooftop × agent_type). "no-sheet"
@@ -510,7 +528,7 @@ function AgentsDashboard() {
     }
     return out;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filteredTotals, filteredDaily, rooftopToStage, accountsByTeamAgent, accountsByNameAgent, mrrRange, dataMode]);
+  }, [filteredTotals, filteredDaily, rooftopToStage, accountsByTeamAgent, accountsByNameAgent, mrrRange, dataMode, dateRange]);
 
   const sortedRooftopRows = useMemo(() => {
     const rows = [...rooftopRows];
