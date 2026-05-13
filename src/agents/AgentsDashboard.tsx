@@ -31,8 +31,19 @@ type AgentRowDaily  = AgentRowBase & { day: string } & Record<string, unknown>;
 type AgentRowTotals = AgentRowBase & { conversion_rate: number | null } & Record<string, unknown>;
 type AnyAgentRow    = AgentRowDaily | AgentRowTotals;
 
-const teamId       = (r: AnyAgentRow): string => String(r["pld.team_id"] ?? "");
-const enterpriseId = (r: AnyAgentRow): string => String(r["pld.enterprise_id"] ?? "");
+// Field-name compatibility shim. The Metabase cards have flipped between
+// `pld.team_id` (qualified) and `team_id` (bare) — depending on which SQL
+// revision is live — so we read whichever the row carries. Same for the
+// enterprise id. Returns "" when neither is present so downstream callers
+// fall through to the rooftop-name composite key.
+const teamId = (r: AnyAgentRow): string => {
+  const v = r["team_id"] ?? r["pld.team_id"];
+  return v == null ? "" : String(v);
+};
+const enterpriseId = (r: AnyAgentRow): string => {
+  const v = r["enterprise_id"] ?? r["pld.enterprise_id"];
+  return v == null ? "" : String(v);
+};
 
 const AGENT_TYPES: AgentType[] = ["Sales Inbound", "Service Inbound", "Sales Outbound", "Service Outbound"];
 const AGENT_LABELS: Record<AgentType, string> = {
