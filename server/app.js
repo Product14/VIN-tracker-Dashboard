@@ -1,10 +1,59 @@
 import express from "express";
 import cors from "cors";
+import dns from "node:dns";
+import https from "node:https";
 import { query, getClient } from "./db.js";
 import { buildEmailHtml } from "./emailTemplate.js";
 import { sendReport }     from "./emailClient.js";
 import { getAllDeploymentStatuses, upsertDeploymentStatus } from "./viniStatuses.js";
 import { mapMetabaseRows } from "./viniRooftopMap.js";
+
+// Some local resolvers (mac dev boxes, restrictive networks) break dns.lookup() while
+// dns.resolve4() still works. Node's global fetch uses dns.lookup. Wrap https.request
+// with an explicit resolve4 lookup so Metabase passthroughs survive flaky resolvers.
+async function fetchJsonViaResolve4(url, { signal } = {}) {
+  let parsed;
+  try { parsed = new URL(url); } catch (e) { throw e; }
+  if (parsed.protocol !== "https:") throw new Error(`unsupported protocol ${parsed.protocol}`);
+
+  // Resolve up-front, then connect by IP and assert the hostname via TLS SNI + Host header.
+  const addrs = await new Promise((resolve, reject) =>
+    dns.resolve4(parsed.hostname, (err, a) => err ? reject(err) : resolve(a)));
+  if (!addrs?.length) throw new Error(`no A record for ${parsed.hostname}`);
+
+  return new Promise((resolve, reject) => {
+    let req;
+    const onAbort = () => { req?.destroy(new Error("aborted")); };
+    if (signal) signal.addEventListener("abort", onAbort);
+    req = https.request({
+      method: "GET",
+      host: addrs[0],                         // dial the IP directly
+      port: parsed.port || 443,
+      path: parsed.pathname + parsed.search,
+      servername: parsed.hostname,            // TLS SNI uses the real hostname
+      headers: { Host: parsed.hostname, Accept: "application/json" },
+    }, res => {
+      if (res.statusCode && res.statusCode >= 400) {
+        res.resume();
+        if (signal) signal.removeEventListener("abort", onAbort);
+        return reject(new Error(`HTTP ${res.statusCode}`));
+      }
+      const chunks = [];
+      res.on("data", c => chunks.push(c));
+      res.on("end", () => {
+        if (signal) signal.removeEventListener("abort", onAbort);
+        try { resolve(JSON.parse(Buffer.concat(chunks).toString("utf8"))); }
+        catch (e) { reject(e); }
+      });
+      res.on("error", reject);
+    });
+    req.on("error", err => {
+      if (signal) signal.removeEventListener("abort", onAbort);
+      reject(err);
+    });
+    req.end();
+  });
+}
 
 const app = express();
 app.use(cors());
@@ -39,10 +88,22 @@ async function fetchFromMetabase(url, label, retries = 3, timeoutMs = 0) {
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       if (attempt > 0) console.log(`[sync:${label}] retry attempt ${attempt}/${retries}`);
-      const opts = timeoutMs > 0 ? { signal: AbortSignal.timeout(timeoutMs) } : {};
-      const res = await fetch(url, opts);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return await res.json();
+      // Try Node's global fetch first; if the local resolver breaks (ENOTFOUND),
+      // fall back to https.request with an explicit dns.resolve4 lookup.
+      try {
+        const opts = timeoutMs > 0 ? { signal: AbortSignal.timeout(timeoutMs) } : {};
+        const res = await fetch(url, opts);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return await res.json();
+      } catch (err) {
+        const msg = String(err?.cause?.code || err?.code || err?.message || "");
+        if (msg.includes("ENOTFOUND") || msg.includes("EAI_AGAIN") || /fetch failed/i.test(err?.message ?? "")) {
+          console.warn(`[sync:${label}] dns.lookup broken, falling back to resolve4`);
+          const signal = timeoutMs > 0 ? AbortSignal.timeout(timeoutMs) : undefined;
+          return await fetchJsonViaResolve4(url, { signal });
+        }
+        throw err;
+      }
     } catch (err) {
       lastErr = err;
       if (attempt < retries) {
@@ -1187,6 +1248,305 @@ app.get("/api/agents", async (req, res) => {
     console.error("GET /api/agents error:", err?.message);
     return res.status(500).json({ error: err?.message ?? "Failed to load agents data" });
   }
+});
+
+// ─── GET /api/agent-stages — Rooftop → stage mapping (Google Sheet CSVs) ─────
+//
+// Config: STAGES_SHEET_URLS env var holds a JSON object mapping stage name to
+// a published-as-CSV Google Sheet URL — one sheet per stage. Each sheet is a
+// roster of rooftops currently at that stage; the dashboard overrides
+// Metabase's rooftop_stage using these. Example:
+//
+//   STAGES_SHEET_URLS={"Live":"https://docs.google.com/.../export?format=csv&gid=46675906",
+//                      "Onboarding":"https://docs.google.com/.../export?format=csv&gid=2053683245"}
+//
+// Sheets must have a header row containing a "Rooftop Name" column (case-
+// insensitive). Other rows + columns are ignored. Empty/duplicate rooftop names
+// are dropped. If a sheet fails to fetch, its stage is reported in `errors`
+// and other stages still load.
+
+const STAGES_TTL_MS = 10 * 60 * 1000; // 10 minutes
+let stagesCache = { data: null, fetchedAt: 0 };
+
+// Full CSV parser — handles quoted fields AND embedded newlines inside quotes.
+// Returns array of rows; each row is array of trimmed cell strings.
+function parseCsv(csv) {
+  const rows = [];
+  let row = [];
+  let cur = "";
+  let inQ = false;
+  const flushCell = () => { row.push(cur.trim()); cur = ""; };
+  const flushRow = () => { rows.push(row); row = []; };
+  for (let i = 0; i < csv.length; i++) {
+    const ch = csv[i];
+    if (inQ) {
+      if (ch === '"' && csv[i + 1] === '"') { cur += '"'; i++; }
+      else if (ch === '"') { inQ = false; }
+      else { cur += ch; }
+    } else {
+      if (ch === '"') inQ = true;
+      else if (ch === ",") flushCell();
+      else if (ch === "\r") { /* swallow */ }
+      else if (ch === "\n") { flushCell(); flushRow(); }
+      else cur += ch;
+    }
+  }
+  // Tail
+  if (cur.length > 0 || row.length > 0) { flushCell(); flushRow(); }
+  return rows;
+}
+
+// Find the header row index by looking for "Rooftop Name". Some sheets have
+// summary rows or grouping rows above the real header (the OB sheet has 2 rows
+// of metadata before its header).
+function findRooftopNameColumn(rows) {
+  for (let r = 0; r < Math.min(rows.length, 10); r++) {
+    const cells = rows[r].map(s => s.toLowerCase());
+    const col = cells.findIndex(c => c === "rooftop name");
+    if (col >= 0) return { headerRow: r, col };
+  }
+  return null;
+}
+
+function extractRooftopNames(csv) {
+  const rows = parseCsv(csv);
+  const loc = findRooftopNameColumn(rows);
+  if (!loc) return [];
+  const out = [];
+  const seen = new Set();
+  for (let i = loc.headerRow + 1; i < rows.length; i++) {
+    const v = (rows[i][loc.col] ?? "").trim();
+    if (!v) continue;
+    const k = v.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(v);
+  }
+  return out;
+}
+
+function parseStageSheetUrls() {
+  const raw = process.env.STAGES_SHEET_URLS;
+  if (!raw) return null;
+  try {
+    const obj = JSON.parse(raw);
+    if (!obj || typeof obj !== "object" || Array.isArray(obj)) return null;
+    const out = {};
+    for (const [k, v] of Object.entries(obj)) {
+      if (typeof v === "string" && v.length > 0) out[k] = v;
+    }
+    return Object.keys(out).length > 0 ? out : null;
+  } catch {
+    return null;
+  }
+}
+
+app.get("/api/agent-stages", async (req, res) => {
+  const sheetUrls = parseStageSheetUrls();
+  if (!sheetUrls) {
+    return res.json({
+      stages: {}, rooftopToStage: {}, errors: {},
+      note: "STAGES_SHEET_URLS not configured (set JSON: {\"Live\":\"...csv-url\",\"Onboarding\":\"...csv-url\"})",
+    });
+  }
+  try {
+    const force = req.query.refresh === "1";
+    const fresh = !force && stagesCache.data && (Date.now() - stagesCache.fetchedAt) < STAGES_TTL_MS;
+    if (!fresh) {
+      const entries = Object.entries(sheetUrls);
+      const results = await Promise.allSettled(entries.map(async ([stage, url]) => {
+        const resp = await fetch(url, { signal: AbortSignal.timeout(15000), redirect: "follow" });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const csv = await resp.text();
+        const names = extractRooftopNames(csv);
+        return { stage, names };
+      }));
+
+      const stages = {};
+      const errors = {};
+      const rooftopToStage = {};
+      results.forEach((r, idx) => {
+        const stage = entries[idx][0];
+        if (r.status === "fulfilled") {
+          stages[stage] = r.value.names;
+          for (const name of r.value.names) {
+            const key = name.toLowerCase().trim();
+            // First sheet to claim a name wins; record any conflicts.
+            if (!rooftopToStage[key]) rooftopToStage[key] = stage;
+          }
+        } else {
+          errors[stage] = r.reason?.message ?? "fetch failed";
+          stages[stage] = [];
+        }
+      });
+      stagesCache = {
+        data: { stages, rooftopToStage, errors },
+        fetchedAt: Date.now(),
+      };
+    }
+    return res.json({
+      ...stagesCache.data,
+      fetchedAt: new Date(stagesCache.fetchedAt).toISOString(),
+    });
+  } catch (err) {
+    console.error("GET /api/agent-stages error:", err?.message);
+    return res.status(500).json({
+      error: err?.message ?? "Failed to load stages",
+      stages: {}, rooftopToStage: {}, errors: {},
+    });
+  }
+});
+
+// ─── GET /api/dream — Dream Automotive · Lead Activity ─────────────────────
+//
+// Source: Metabase card dc97f9c0-4a31-43ef-a7ac-66f339fc2620.
+// Each Metabase row = one (lead × activity × meeting × action_item) tuple.
+// We dedupe activities by (lead_id, activity_at, activity_type) and group
+// activities under their parent lead. Browser receives one entry per lead
+// with the full activity timeline embedded.
+
+const DREAM_METABASE_URL =
+  "https://metabase.spyne.ai/api/public/card/dc97f9c0-4a31-43ef-a7ac-66f339fc2620/query/json";
+
+let dreamCache = { data: null, fetchedAt: 0, rawCount: 0 };
+const DREAM_TTL_MS = 5 * 60 * 1000;
+
+function aggregateDream(rawRows) {
+  // Pass 1: dedupe activities. Key = (lead_id, activity_at, activity_type) — the
+  // fanout is from LEFT JOINs against meetings/action_items so the same activity
+  // appears multiple times.
+  const actByKey = new Map();
+  // Pass 2: collect lead metadata and per-lead meeting/action-item sets.
+  const leads = new Map();
+
+  for (const r of rawRows) {
+    const leadId = r["l.lead_id"];
+    if (!leadId) continue;
+
+    let lead = leads.get(leadId);
+    if (!lead) {
+      lead = {
+        leadId,
+        teamId: r["l.team_id"] || null,
+        leadCreatedAt: r.lead_created_at || null,
+        leadSource: r.lead_source || null,
+        leadStage: r.lead_stage || null,
+        customerName: r.customer_name || null,
+        customerPhone: r.customer_phone || null,
+        meetingIds: new Set(),
+        actionItemIds: new Set(),
+        appointmentPitched: false,
+        appointmentScheduled: false,
+        firstActivityAt: null,
+        lastActivityAt: null,
+        callCount: 0,
+        smsCount: 0,
+        inboundCount: 0,
+        outboundCount: 0,
+        activities: [],
+      };
+      leads.set(leadId, lead);
+    }
+
+    // Roll up freshest non-null lead metadata (the LEFT JOINs sometimes null these).
+    if (!lead.customerName  && r.customer_name)  lead.customerName  = r.customer_name;
+    if (!lead.customerPhone && r.customer_phone) lead.customerPhone = r.customer_phone;
+    if (!lead.leadSource    && r.lead_source)    lead.leadSource    = r.lead_source;
+    if (!lead.leadStage     && r.lead_stage)     lead.leadStage     = r.lead_stage;
+    if (r.meeting_id)     lead.meetingIds.add(r.meeting_id);
+    if (r.action_item_id) lead.actionItemIds.add(r.action_item_id);
+    if (r.appointment_pitched   === "Yes") lead.appointmentPitched   = true;
+    if (r.appointment_scheduled === "Yes") lead.appointmentScheduled = true;
+
+    // Dedupe activity. Some rows have null activity_type (lead-only rows from the
+    // LEFT JOIN); skip them — they don't represent a real activity.
+    if (!r.activity_type || !r.activity_at) continue;
+    const actKey = `${leadId}::${r.activity_at}::${r.activity_type}`;
+    if (actByKey.has(actKey)) continue;
+
+    const activity = {
+      type: r.activity_type,                       // call | sms
+      at: r.activity_at,
+      direction: r.direction || null,              // "Inbound" | "Outbound"
+      status: r.activity_status || null,
+      callType: r.call_type || null,
+      endedReason: r.call_ended_reason || null,
+      agent: r.agent_name || null,
+      campaignId: r.campaign_id || null,
+      summary: r.call_summary || null,
+    };
+    actByKey.set(actKey, activity);
+    lead.activities.push(activity);
+
+    if (activity.type === "call")  lead.callCount++;
+    else if (activity.type === "sms")  lead.smsCount++;
+    if (activity.direction === "Inbound")  lead.inboundCount++;
+    else if (activity.direction === "Outbound") lead.outboundCount++;
+
+    if (!lead.firstActivityAt || activity.at < lead.firstActivityAt) lead.firstActivityAt = activity.at;
+    if (!lead.lastActivityAt  || activity.at > lead.lastActivityAt)  lead.lastActivityAt  = activity.at;
+  }
+
+  const out = [];
+  for (const lead of leads.values()) {
+    lead.activities.sort((a, b) => (a.at || "").localeCompare(b.at || ""));
+    out.push({
+      leadId: lead.leadId,
+      teamId: lead.teamId,
+      leadCreatedAt: lead.leadCreatedAt,
+      leadSource: lead.leadSource,
+      leadStage: lead.leadStage,
+      customerName: lead.customerName,
+      customerPhone: lead.customerPhone,
+      firstActivityAt: lead.firstActivityAt,
+      lastActivityAt: lead.lastActivityAt,
+      activityCount: lead.activities.length,
+      callCount: lead.callCount,
+      smsCount: lead.smsCount,
+      inboundCount: lead.inboundCount,
+      outboundCount: lead.outboundCount,
+      meetingCount: lead.meetingIds.size,
+      actionItemCount: lead.actionItemIds.size,
+      hasMeeting: lead.meetingIds.size > 0,
+      hasActionItem: lead.actionItemIds.size > 0,
+      appointmentPitched: lead.appointmentPitched,
+      appointmentScheduled: lead.appointmentScheduled,
+      activities: lead.activities,
+    });
+  }
+  // Sort by last activity (newest leads first); leads with no activity fall to bottom.
+  out.sort((a, b) =>
+    (b.lastActivityAt ?? b.leadCreatedAt ?? "").localeCompare(a.lastActivityAt ?? a.leadCreatedAt ?? "")
+  );
+  return out;
+}
+
+app.get("/api/dream", async (req, res) => {
+  const force = req.query.refresh === "1";
+  const fresh = !force && dreamCache.data && (Date.now() - dreamCache.fetchedAt) < DREAM_TTL_MS;
+
+  if (!fresh) {
+    try {
+      const raw = await fetchFromMetabase(DREAM_METABASE_URL, "DREAM", 1, 120000);
+      const aggregated = aggregateDream(Array.isArray(raw) ? raw : []);
+      dreamCache = { data: aggregated, fetchedAt: Date.now(), rawCount: Array.isArray(raw) ? raw.length : 0 };
+    } catch (err) {
+      console.error("GET /api/dream — refresh failed:", err?.message);
+      // Fall through and serve whatever we have cached (even if stale).
+      // Only 500 when we have absolutely nothing to show the client.
+      if (!dreamCache.data) {
+        return res.status(503).json({ error: `Metabase unreachable: ${err?.message ?? "unknown"}. No cached data available yet — try again in a moment.` });
+      }
+    }
+  }
+
+  return res.json({
+    leadCount: dreamCache.data.length,
+    rawRowCount: dreamCache.rawCount ?? null,
+    fetchedAt: new Date(dreamCache.fetchedAt).toISOString(),
+    leads: dreamCache.data,
+    stale: !fresh && (Date.now() - dreamCache.fetchedAt) >= DREAM_TTL_MS,
+  });
 });
 
 // ─── GET /api/vini/rooftops — Vini Account Health rows (Metabase → DB cache) ──
