@@ -1262,6 +1262,62 @@ function isExcludedAgentRooftop(row) {
   return AGENT_ROOFTOP_EXCLUDE.has(name);
 }
 
+// Numeric agent-card fields that should be summed when collapsing duplicates.
+// Includes both the old (total_sms) and new (total_sms_conversations) variants
+// the Metabase cards have flipped between, so dedupe survives schema changes.
+const AGENT_NUMERIC_FIELDS = [
+  "touched_leads", "leads_with_calls", "leads_with_sms",
+  "qualified_leads", "appointments", "appointment_value",
+  "total_calls", "total_sms", "total_sms_conversations",
+  "total_inbound_human_msgs",
+];
+const AGENT_KEEP_FIELDS = [
+  "enterprise_id", "enterprise_name", "rooftop_name", "rooftop_stage",
+  "service_type", "direction", "pld.team_id", "pld.enterprise_id",
+];
+// Merge agent rows by composite key (e.g. team_id+agent_type[+day]). Numeric
+// fields are summed; identity/string fields take the first non-empty value;
+// `conversion_rate` is recomputed (appointments / touched_leads) when both
+// inputs are present so the merged row stays internally consistent. Normalises
+// total_sms ↔ total_sms_conversations into total_sms so the dashboard's
+// projectRow doesn't need to care which variant the card emitted.
+function mergeAgentRows(rows, keyFields) {
+  const m = new Map();
+  for (const r of rows) {
+    const k = keyFields.map(f => String(r?.[f] ?? "")).join("::");
+    let acc = m.get(k);
+    if (!acc) {
+      acc = {};
+      for (const f of keyFields) acc[f] = r[f];
+      for (const f of AGENT_KEEP_FIELDS) if (r[f] != null && r[f] !== "") acc[f] = r[f];
+      for (const f of AGENT_NUMERIC_FIELDS) acc[f] = 0;
+      acc.agent_type = r.agent_type;
+      m.set(k, acc);
+    }
+    // Sum numerics. Skip nulls; coerce to number safely.
+    for (const f of AGENT_NUMERIC_FIELDS) {
+      const v = r[f];
+      if (v == null) continue;
+      const n = Number(v);
+      if (Number.isFinite(n)) acc[f] = (acc[f] ?? 0) + n;
+    }
+    // Backfill identity fields if the first row had blanks.
+    for (const f of AGENT_KEEP_FIELDS) {
+      if ((acc[f] == null || acc[f] === "") && r[f] != null && r[f] !== "") acc[f] = r[f];
+    }
+  }
+  // Normalise SMS field + recompute conversion_rate post-merge so summed rows
+  // expose a single canonical sms column and a self-consistent conversion %.
+  for (const acc of m.values()) {
+    if ((acc.total_sms == null || acc.total_sms === 0) && acc.total_sms_conversations) {
+      acc.total_sms = acc.total_sms_conversations;
+    }
+    acc.conversion_rate =
+      acc.touched_leads > 0 ? acc.appointments / acc.touched_leads : null;
+  }
+  return Array.from(m.values());
+}
+
 let agentsCache = { daily: null, totals: null, fetchedAt: 0 };
 const AGENTS_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -1286,9 +1342,22 @@ app.get("/api/agents", async (req, res) => {
       if (rawDaily.length !== filteredDaily.length || rawTotals.length !== filteredTotals.length) {
         console.log(`[api/agents] excluded internal rooftops — daily ${rawDaily.length}→${filteredDaily.length}, totals ${rawTotals.length}→${filteredTotals.length}`);
       }
+      // De-dup pass — Metabase currently emits multiple rows per
+      // (team_id × agent_type [× day]) in 180 cases for daily and 2 for totals,
+      // typically one real row + one all-zero ghost (visible in the dashboard
+      // as duplicate dates with one zero row). Sum numeric fields; keep the
+      // first-seen non-empty value for identity/string fields. Schema also
+      // varies between the two cards (daily uses total_sms_conversations,
+      // totals uses total_sms) — normalise to total_sms by copying from
+      // total_sms_conversations when the latter is the only one present.
+      const dedupedDaily  = mergeAgentRows(filteredDaily,  ["team_id", "agent_type", "day"]);
+      const dedupedTotals = mergeAgentRows(filteredTotals, ["team_id", "agent_type"]);
+      if (filteredDaily.length !== dedupedDaily.length || filteredTotals.length !== dedupedTotals.length) {
+        console.log(`[api/agents] merged duplicate rows — daily ${filteredDaily.length}→${dedupedDaily.length}, totals ${filteredTotals.length}→${dedupedTotals.length}`);
+      }
       agentsCache = {
-        daily: filteredDaily,
-        totals: filteredTotals,
+        daily: dedupedDaily,
+        totals: dedupedTotals,
         fetchedAt: Date.now(),
       };
     }
