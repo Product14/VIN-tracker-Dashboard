@@ -717,6 +717,14 @@ function AgentsDashboard() {
       {/* Chart — single plot, dual Y-axes so large- and small-scale series share the canvas */}
       {(() => {
         const spec = chartSpecFor(activeAgent, daily);
+        // Detect the "daily card lost its day column" failure mode. When the
+        // Metabase daily SQL drops `DATE(...) AS day` + GROUP BY day, every
+        // row arrives with `day === undefined`; D30/MTD/WEEK then filter every
+        // row out (Date(undefined) is NaN) and the chart silently looks empty.
+        // Surface it loudly instead — the fix is in the Metabase card, not the
+        // dashboard, so a clear pointer saves the next person triaging this.
+        const dailyMissingDay = dailyRows.length > 0
+          && dailyRows.every(r => r.day === undefined || r.day === null || String(r.day).trim() === "");
         return (
           <div style={{ background: "#fff", borderRadius: 12, border: "1px solid #e5e7eb", padding: 16, marginBottom: 20, position: "relative" }}>
             <div style={{ marginBottom: 10 }}>
@@ -729,6 +737,22 @@ function AgentsDashboard() {
             </div>
             {showingPlaceholder ? (
               <div className="agent-shimmer" style={{ height: 320 }} />
+            ) : dailyMissingDay ? (
+              <div style={{ height: 320, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+                <div style={{ maxWidth: 560, textAlign: "center", background: "#fef3c7", border: "1px solid #fbbf24", borderRadius: 10, padding: "18px 22px", color: "#78350f" }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 6 }}>
+                    Day-on-day chart unavailable
+                  </div>
+                  <div style={{ fontSize: 12, lineHeight: 1.5 }}>
+                    The Metabase <b>daily</b> card is not returning a <code>day</code> column.
+                    Add <code>DATE(activity_at) AS day</code> to the SELECT and to the GROUP BY in
+                    the daily card SQL, then click Refresh.
+                  </div>
+                  <div style={{ fontSize: 11, color: "#92400e", marginTop: 8 }}>
+                    All {dailyRows.length} daily rows have <code>day = null/undefined</code>.
+                  </div>
+                </div>
+              </div>
             ) : days.length === 0 ? (
               <div style={{ height: 320, display: "flex", alignItems: "center", justifyContent: "center", color: "#9ca3af", fontSize: 13 }}>
                 No data — widen your filters or pick a different date range.
