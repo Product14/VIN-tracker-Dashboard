@@ -1223,26 +1223,81 @@ app.post("/api/statuses", async (req, res) => {
   }
 });
 
-// ─── GET /api/agents — Day-on-day agent calls per rooftop (Metabase passthrough) ──
+// ─── GET /api/agents — V3 dual-card passthrough (Metabase) ──────────────────
+//
+// V3 anchors on activity-day (not lead-creation-day) — fixes the ~3x OB
+// appointment undercount we saw in V2. Two cards:
+//   • daily  — agents_v2_daily — per-day rows. Distinct-count fields
+//              (touched_leads, qualified_leads, appointments) are per-day,
+//              so summing across days double-counts. Used for the chart +
+//              per-day expanded rooftop rows.
+//   • totals — agents_v2_totals — one row per (team × agent_type),
+//              deduplicated at the lead level. Used for KPI cards + collapsed
+//              rooftop summary. DO NOT compute totals from daily client-side.
+//
+// Volume fields (total_calls, total_sms, appointment_value) ARE sum-friendly.
+// Both cards share Metabase filter params: activity_date, rooftop_stage,
+// team_id, enterprise_name, agent_type — currently fetched without params,
+// so totals reflect the card's default scope (all-time).
 
-const AGENTS_METABASE_URL =
-  "https://metabase.spyne.ai/api/public/card/524f9fb4-b27c-49f4-a670-7d2c406e77a2/query/json";
+const AGENTS_DAILY_URL =
+  "https://metabase.spyne.ai/api/public/card/b5f956e3-faee-4989-b5bf-6510de631deb/query/json";
+const AGENTS_TOTALS_URL =
+  "https://metabase.spyne.ai/api/public/card/a4bd2fd4-3d76-44c2-959a-d4abdbc57191/query/json";
 
-let agentsCache = { data: null, fetchedAt: 0 };
+// Internal / test rooftops that leak through Metabase's agent query. They have
+// activity rows (the agents were prompted there during demos / setup) but they
+// are not real customer deployments and would otherwise pollute every tab —
+// notably the "no-sheet" mode where the master accounts sheet isn't used to
+// gate the rooftop universe. Match is case-insensitive against rooftop_name.
+const AGENT_ROOFTOP_EXCLUDE = new Set([
+  "team 1", "team1",
+  "spyne motors", "spyne", "spyne auto group",
+  "khandelwal", "prompt testing", "speed to lead", "approval genie",
+  "onboardtest3", "onboardtest4",
+  "used inventory",
+]);
+function isExcludedAgentRooftop(row) {
+  const name = String(row?.rooftop_name ?? "").trim().toLowerCase();
+  return AGENT_ROOFTOP_EXCLUDE.has(name);
+}
+
+let agentsCache = { daily: null, totals: null, fetchedAt: 0 };
 const AGENTS_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 app.get("/api/agents", async (req, res) => {
   try {
     const force = req.query.refresh === "1";
-    const fresh = !force && agentsCache.data && (Date.now() - agentsCache.fetchedAt) < AGENTS_TTL_MS;
+    const fresh = !force && agentsCache.daily && agentsCache.totals
+                  && (Date.now() - agentsCache.fetchedAt) < AGENTS_TTL_MS;
     if (!fresh) {
-      const rows = await fetchFromMetabase(AGENTS_METABASE_URL, "AGENTS", 1, 60000);
-      agentsCache = { data: Array.isArray(rows) ? rows : [], fetchedAt: Date.now() };
+      const [daily, totals] = await Promise.all([
+        fetchFromMetabase(AGENTS_DAILY_URL, "AGENTS_DAILY", 1, 60000),
+        fetchFromMetabase(AGENTS_TOTALS_URL, "AGENTS_TOTALS", 1, 60000),
+      ]);
+      // Drop internal/test rooftops at the source so every consumer (the
+      // dashboard tabs, KPI strip, chart) sees a clean roster regardless of
+      // data-mode toggle. Logged once per refresh so we can tell from server
+      // logs whether the Metabase card still emits these.
+      const rawDaily  = Array.isArray(daily)  ? daily  : [];
+      const rawTotals = Array.isArray(totals) ? totals : [];
+      const filteredDaily  = rawDaily.filter(r  => !isExcludedAgentRooftop(r));
+      const filteredTotals = rawTotals.filter(r => !isExcludedAgentRooftop(r));
+      if (rawDaily.length !== filteredDaily.length || rawTotals.length !== filteredTotals.length) {
+        console.log(`[api/agents] excluded internal rooftops — daily ${rawDaily.length}→${filteredDaily.length}, totals ${rawTotals.length}→${filteredTotals.length}`);
+      }
+      agentsCache = {
+        daily: filteredDaily,
+        totals: filteredTotals,
+        fetchedAt: Date.now(),
+      };
     }
     return res.json({
-      rowCount: agentsCache.data.length,
       fetchedAt: new Date(agentsCache.fetchedAt).toISOString(),
-      rows: agentsCache.data,
+      dailyRowCount: agentsCache.daily.length,
+      totalsRowCount: agentsCache.totals.length,
+      daily: agentsCache.daily,
+      totals: agentsCache.totals,
     });
   } catch (err) {
     console.error("GET /api/agents error:", err?.message);
@@ -1325,6 +1380,34 @@ function extractRooftopNames(csv) {
   return out;
 }
 
+// ─── sheet_cache helpers (Postgres-backed fallback for Google Sheet fetches) ──
+
+async function readSheetCache(source) {
+  try {
+    const { rows } = await query(
+      "SELECT payload, fetched_at FROM sheet_cache WHERE source = $1",
+      [source]
+    );
+    return rows[0] ?? null;
+  } catch (err) {
+    console.warn(`[sheet_cache:${source}] read failed:`, err?.message);
+    return null;
+  }
+}
+
+async function writeSheetCache(source, payload) {
+  try {
+    await query(
+      `INSERT INTO sheet_cache (source, payload, fetched_at)
+       VALUES ($1, $2::jsonb, NOW())
+       ON CONFLICT (source) DO UPDATE SET payload = EXCLUDED.payload, fetched_at = NOW()`,
+      [source, JSON.stringify(payload)]
+    );
+  } catch (err) {
+    console.warn(`[sheet_cache:${source}] write failed:`, err?.message);
+  }
+}
+
 function parseStageSheetUrls() {
   const raw = process.env.STAGES_SHEET_URLS;
   if (!raw) return null;
@@ -1344,6 +1427,17 @@ function parseStageSheetUrls() {
 app.get("/api/agent-stages", async (req, res) => {
   const sheetUrls = parseStageSheetUrls();
   if (!sheetUrls) {
+    // No env config — but a previous run may have populated the persistent cache.
+    // Surface it so the dashboard keeps working even with the env var unset.
+    const cached = await readSheetCache("stages");
+    if (cached) {
+      return res.json({
+        ...cached.payload,
+        fetchedAt: cached.fetched_at,
+        cached: true,
+        note: "Served from sheet_cache (STAGES_SHEET_URLS unconfigured this deploy)",
+      });
+    }
     return res.json({
       stages: {}, rooftopToStage: {}, errors: {},
       note: "STAGES_SHEET_URLS not configured (set JSON: {\"Live\":\"...csv-url\",\"Onboarding\":\"...csv-url\"})",
@@ -1365,9 +1459,11 @@ app.get("/api/agent-stages", async (req, res) => {
       const stages = {};
       const errors = {};
       const rooftopToStage = {};
+      let anySuccess = false;
       results.forEach((r, idx) => {
         const stage = entries[idx][0];
         if (r.status === "fulfilled") {
+          anySuccess = true;
           stages[stage] = r.value.names;
           for (const name of r.value.names) {
             const key = name.toLowerCase().trim();
@@ -1379,10 +1475,30 @@ app.get("/api/agent-stages", async (req, res) => {
           stages[stage] = [];
         }
       });
+      // If every sheet failed (Google unreachable / sheet unpublished), fall back to
+      // the last good DB payload so consumers keep working with slightly stale data.
+      if (!anySuccess) {
+        const cached = await readSheetCache("stages");
+        if (cached) {
+          stagesCache = {
+            data: { ...cached.payload, errors, stale: true },
+            fetchedAt: new Date(cached.fetched_at).getTime(),
+          };
+          return res.json({
+            ...stagesCache.data,
+            fetchedAt: cached.fetched_at,
+            cached: true,
+            note: "All sheet fetches failed — served from sheet_cache",
+          });
+        }
+      }
       stagesCache = {
         data: { stages, rooftopToStage, errors },
         fetchedAt: Date.now(),
       };
+      // Persist on any partial success — better to keep a partial-stage snapshot than
+      // to lose stages we already had cached when one of the sheets goes unavailable.
+      if (anySuccess) await writeSheetCache("stages", stagesCache.data);
     }
     return res.json({
       ...stagesCache.data,
@@ -1390,9 +1506,211 @@ app.get("/api/agent-stages", async (req, res) => {
     });
   } catch (err) {
     console.error("GET /api/agent-stages error:", err?.message);
+    // Last-ditch fallback — anything we can serve is better than 500.
+    const cached = await readSheetCache("stages");
+    if (cached) {
+      return res.json({
+        ...cached.payload,
+        fetchedAt: cached.fetched_at,
+        cached: true,
+        note: `Served from sheet_cache after error: ${err?.message ?? "unknown"}`,
+      });
+    }
     return res.status(500).json({
       error: err?.message ?? "Failed to load stages",
       stages: {}, rooftopToStage: {}, errors: {},
+    });
+  }
+});
+
+// ─── GET /api/accounts-sheet — master "All Accounts" sheet (Google Sheet CSV) ─
+//
+// Source: the All Accounts sheet (gid=1705606702 in the master rooftop tracker).
+// One row per (rooftop × agent_type). Provides:
+//   • Current Stage  — authoritative for Live / Churned (supersedes Metabase
+//                      and the OB-stage roster sheet).
+//   • Agent MRR       — monthly revenue per (rooftop × agent_type).
+//
+// Config: ALL_ACCOUNTS_SHEET_URL env var (CSV-export URL). When unset, defaults
+// to the public CSV export of the known sheet. Data is cached in-process for
+// 10 minutes and persisted to sheet_cache so a failed Google fetch falls back
+// to the last good snapshot instead of breaking the dashboard.
+
+const DEFAULT_ACCOUNTS_SHEET_URL =
+  "https://docs.google.com/spreadsheets/d/1ZSPzZZGbI-ixJBLGhHa1zy-vxjom94SDLumhy7zDoPw/export?format=csv&gid=1705606702";
+const ACCOUNTS_TTL_MS = 10 * 60 * 1000;
+let accountsCache = { data: null, fetchedAt: 0 };
+
+// Build a header→index map from the row containing "Rooftop Name". Header
+// labels are normalised to lower-case + trimmed; multiple columns with the same
+// label (the sheet has two "Enterprise Type" columns side by side) collapse to
+// the first occurrence, which is what we want.
+function buildHeaderIndex(rows) {
+  for (let r = 0; r < Math.min(rows.length, 10); r++) {
+    const cells = rows[r].map(s => s.toLowerCase().trim());
+    if (cells.includes("rooftop name")) {
+      const idx = {};
+      cells.forEach((c, i) => { if (c && !(c in idx)) idx[c] = i; });
+      return { headerRow: r, idx };
+    }
+  }
+  return null;
+}
+
+// "$1,499" / "1499" / "1,499.50" → 1499.5 (number) or null. Empty / non-numeric
+// → null. We treat null as "no MRR provided" so the UI can grey it out instead
+// of showing $0 — that distinction matters for accounts that genuinely cost $0
+// vs accounts we just don't have data for.
+function parseMoney(v) {
+  if (v == null) return null;
+  const s = String(v).trim();
+  if (!s || s === "—" || s.startsWith("✏")) return null;
+  const cleaned = s.replace(/[$,\s]/g, "");
+  if (!cleaned) return null;
+  const n = Number(cleaned);
+  return Number.isFinite(n) ? n : null;
+}
+
+// Rows like "39 rooftops" / "12 rooftops" — the sheet rolls up bulk PWS quotes
+// at the top under a fake rooftop name. They aren't real accounts and would
+// otherwise inflate MRR totals if a downstream consumer summed agentMrr.
+const AGGREGATE_NAME_RE = /^\d+\s+rooftops?$/i;
+
+function parseAccountsSheet(csv) {
+  const rows = parseCsv(csv);
+  const hdr = buildHeaderIndex(rows);
+  if (!hdr) return { rows: [], rooftopNames: [], droppedAggregate: 0, dedupedDuplicates: 0 };
+
+  const COL = {
+    enterpriseName: hdr.idx["enterprise name"],
+    rooftopName:    hdr.idx["rooftop name"],
+    agentType:      hdr.idx["agent type"],
+    currentStage:   hdr.idx["current stage"],
+    subStage:       hdr.idx["sub stage"],
+    enterpriseId:   hdr.idx["enterprise id"],
+    rooftopId:      hdr.idx["rooftop id"],
+    agentMrr:       hdr.idx["agent mrr"],
+    collectedMrr:   hdr.idx["collected mrr"],
+    agentCarr:      hdr.idx["agent carr"],
+  };
+  // Rooftop Name is the only strictly required column.
+  if (COL.rooftopName == null) return { rows: [], rooftopNames: [], droppedAggregate: 0, dedupedDuplicates: 0 };
+
+  const out = [];
+  const namesSeen = new Set();
+  let droppedAggregate = 0;
+  for (let i = hdr.headerRow + 1; i < rows.length; i++) {
+    const row = rows[i];
+    const name = (row[COL.rooftopName] ?? "").trim();
+    if (!name) continue;
+    // Placeholder row (the sheet has a "✏ INPUT" row right under the header).
+    if (name.startsWith("✏")) continue;
+    if (AGGREGATE_NAME_RE.test(name)) { droppedAggregate++; continue; }
+
+    const entry = {
+      enterpriseName: COL.enterpriseName != null ? (row[COL.enterpriseName] ?? "").trim() : "",
+      rooftopName:    name,
+      agentType:      COL.agentType != null ? (row[COL.agentType] ?? "").trim() : "",
+      currentStage:   COL.currentStage != null ? (row[COL.currentStage] ?? "").trim() : "",
+      subStage:       COL.subStage != null ? (row[COL.subStage] ?? "").trim() : "",
+      enterpriseId:   COL.enterpriseId != null ? (row[COL.enterpriseId] ?? "").trim() : "",
+      rooftopId:      COL.rooftopId != null ? (row[COL.rooftopId] ?? "").trim() : "",
+      agentMrr:       COL.agentMrr != null ? parseMoney(row[COL.agentMrr]) : null,
+      collectedMrr:   COL.collectedMrr != null ? parseMoney(row[COL.collectedMrr]) : null,
+      agentCarr:      COL.agentCarr != null ? parseMoney(row[COL.agentCarr]) : null,
+    };
+    // Skip rows that don't identify an agent — agent_type drives the dashboard's
+    // per-tab join, so "TBC"-only / blank-agent rows are not addressable. Keep
+    // them in counts so the user can see how many sheet rows we ignored.
+    if (!entry.agentType || entry.agentType.toUpperCase() === "TBC") {
+      droppedAggregate++;
+      continue;
+    }
+    out.push(entry);
+    namesSeen.add(name);
+  }
+
+  // Collapse exact duplicates by (team_id, agent_type). The sheet currently has
+  // ~7 such duplicate pairs (Feldman Chevrolet, Feldmann Imports, Tropical
+  // Chevrolet, World Car Hyundai South, …) — often identical rows but
+  // occasionally with conflicting MRR. The "right" survivor of a conflict is
+  // ambiguous; we pick the higher-MRR row and prefer Churned > Live > others
+  // for stage so the result is at least deterministic and conservative.
+  const STAGE_PRIORITY = { "Churned": 3, "Live": 2 };
+  const stagePriority = (s) => STAGE_PRIORITY[s] ?? 1;
+  const dedupKey = (e) => e.rooftopId ? `tid:${e.rooftopId}::${e.agentType}` : `name:${e.rooftopName.toLowerCase()}::${e.agentType}`;
+  const merged = new Map();
+  let dedupedDuplicates = 0;
+  for (const e of out) {
+    const k = dedupKey(e);
+    const prev = merged.get(k);
+    if (!prev) { merged.set(k, e); continue; }
+    dedupedDuplicates++;
+    const keepNew =
+      stagePriority(e.currentStage) > stagePriority(prev.currentStage) ||
+      (stagePriority(e.currentStage) === stagePriority(prev.currentStage) &&
+        (e.agentMrr ?? 0) > (prev.agentMrr ?? 0));
+    if (keepNew) merged.set(k, e);
+  }
+
+  return {
+    rows: Array.from(merged.values()),
+    rooftopNames: Array.from(namesSeen),
+    droppedAggregate,
+    dedupedDuplicates,
+  };
+}
+
+app.get("/api/accounts-sheet", async (req, res) => {
+  const url = (process.env.ALL_ACCOUNTS_SHEET_URL || DEFAULT_ACCOUNTS_SHEET_URL).trim();
+
+  const force = req.query.refresh === "1";
+  const fresh = !force && accountsCache.data && (Date.now() - accountsCache.fetchedAt) < ACCOUNTS_TTL_MS;
+  if (fresh) {
+    return res.json({
+      ...accountsCache.data,
+      fetchedAt: new Date(accountsCache.fetchedAt).toISOString(),
+    });
+  }
+
+  try {
+    const resp = await fetch(url, { signal: AbortSignal.timeout(20000), redirect: "follow" });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const csv = await resp.text();
+    const parsed = parseAccountsSheet(csv);
+    accountsCache = { data: parsed, fetchedAt: Date.now() };
+    await writeSheetCache("accounts", parsed);
+    return res.json({
+      ...parsed,
+      fetchedAt: new Date(accountsCache.fetchedAt).toISOString(),
+    });
+  } catch (err) {
+    console.error("GET /api/accounts-sheet — fetch failed:", err?.message);
+    // Fall back to the last successful payload from sheet_cache (or in-memory if DB read fails).
+    const cached = await readSheetCache("accounts");
+    if (cached) {
+      accountsCache = {
+        data: cached.payload,
+        fetchedAt: new Date(cached.fetched_at).getTime(),
+      };
+      return res.json({
+        ...cached.payload,
+        fetchedAt: cached.fetched_at,
+        cached: true,
+        note: `Served from sheet_cache (Google fetch failed: ${err?.message ?? "unknown"})`,
+      });
+    }
+    if (accountsCache.data) {
+      return res.json({
+        ...accountsCache.data,
+        fetchedAt: new Date(accountsCache.fetchedAt).toISOString(),
+        cached: true,
+        note: `Served from in-memory cache (Google fetch failed: ${err?.message ?? "unknown"})`,
+      });
+    }
+    return res.status(503).json({
+      error: err?.message ?? "Failed to fetch accounts sheet",
+      rows: [], rooftopNames: [],
     });
   }
 });

@@ -4,10 +4,11 @@ const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
 
 type AgentType = "Sales Inbound" | "Service Inbound" | "Sales Outbound" | "Service Outbound";
 
-type AgentRowV3 = {
-  day: string;
-  team_id: string;
-  enterprise_id: string;
+// V3 — activity-day anchoring (vs V2's lead-creation-day) fixes the ~3x OB
+// appointment undercount. Two card shapes share most fields; daily adds `day`,
+// totals adds `conversion_rate`. SQL alias `pld.` bleeds through on the team/
+// enterprise key fields, so we read them via bracket access in helpers.
+type AgentRowBase = {
   enterprise_name: string;
   rooftop_name: string;
   rooftop_stage: string | null;
@@ -15,21 +16,23 @@ type AgentRowV3 = {
   direction: string;
   agent_type: AgentType;
 
-  total_leads: number | null;
   touched_leads: number | null;
-  total_leads_with_calls: number | null;
-  total_leads_with_sms: number | null;
   qualified_leads: number | null;
   appointments: number | null;
   appointment_value: number | null;
   total_calls: number | null;
   total_sms: number | null;
-  eligible_campaign_leads: number | null;
-  avg_followups_till_appt: number | string | null;
-  coverage: number | null;
-  conversion_rate: number | null;
-  quality_score: number | null;
+  leads_with_calls: number | null;
+  leads_with_sms: number | null;
 };
+// Index signature for the `pld.` prefixed fields (TS can't express dotted keys
+// in a closed type; we just hand-roll the access).
+type AgentRowDaily  = AgentRowBase & { day: string } & Record<string, unknown>;
+type AgentRowTotals = AgentRowBase & { conversion_rate: number | null } & Record<string, unknown>;
+type AnyAgentRow    = AgentRowDaily | AgentRowTotals;
+
+const teamId       = (r: AnyAgentRow): string => String(r["pld.team_id"] ?? "");
+const enterpriseId = (r: AnyAgentRow): string => String(r["pld.enterprise_id"] ?? "");
 
 const AGENT_TYPES: AgentType[] = ["Sales Inbound", "Service Inbound", "Sales Outbound", "Service Outbound"];
 const AGENT_LABELS: Record<AgentType, string> = {
@@ -49,11 +52,6 @@ const num = (v: unknown): number => {
   if (v == null) return 0;
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
-};
-const numOrNull = (v: unknown): number | null => {
-  if (v == null || v === "" || v === "NaN") return null;
-  const n = Number(v);
-  return Number.isFinite(n) ? n : null;
 };
 
 type DateRange = "ALL" | "TODAY" | "WEEK" | "MTD" | "D30" | "CUSTOM";
@@ -123,70 +121,51 @@ function todayIso(): string {
   return `${d.getFullYear()}-${m}-${day}`;
 }
 
-const rooftopLabel = (r: AgentRowV3) =>
-  r.rooftop_name?.trim() || r.enterprise_name?.trim() || r.team_id || "Unknown";
-const enterpriseLabel = (r: AgentRowV3) => r.enterprise_name?.trim() || "";
+const rooftopLabel = (r: AnyAgentRow) =>
+  r.rooftop_name?.trim() || r.enterprise_name?.trim() || teamId(r) || "Unknown";
+const enterpriseLabel = (r: AnyAgentRow) => r.enterprise_name?.trim() || "";
 
+// V3 Bucket — funnel is Touched → Qualified → Appointments (no "Total" tier).
+// Volume fields (calls / SMS / appt $) are sum-friendly across days; distinct-
+// count fields (touched/qualified/appts) are NOT — sum them only when reading
+// from the totals card (one row per team × agent_type, deduplicated lead-level).
 type Bucket = {
-  totalLeads: number;
   touched: number;
-  leadsWithCalls: number;
-  leadsWithSms: number;
   qualified: number;
   appts: number;
   apptValue: number;
   totalCalls: number;
   totalSms: number;
-  eligible: number;
-  fupSum: number;     // sum of avg_followups_till_appt × appts
-  fupWeight: number;  // sum of appts where fup is non-null
-  qSum: number;       // quality_score × total_leads
-  qWeight: number;    // total_leads where quality_score is non-null
+  leadsWithCalls: number;
+  leadsWithSms: number;
 };
 const EMPTY: Bucket = {
-  totalLeads: 0, touched: 0, leadsWithCalls: 0, leadsWithSms: 0,
-  qualified: 0, appts: 0, apptValue: 0, totalCalls: 0, totalSms: 0,
-  eligible: 0, fupSum: 0, fupWeight: 0, qSum: 0, qWeight: 0,
+  touched: 0, qualified: 0, appts: 0, apptValue: 0,
+  totalCalls: 0, totalSms: 0, leadsWithCalls: 0, leadsWithSms: 0,
 };
 
-function projectRow(r: AgentRowV3): Bucket {
-  const totalLeads = num(r.total_leads);
-  const appts = num(r.appointments);
-  const fup = numOrNull(r.avg_followups_till_appt);
-  const score = numOrNull(r.quality_score);
+function projectRow(r: AnyAgentRow): Bucket {
   return {
-    totalLeads,
     touched: num(r.touched_leads),
-    leadsWithCalls: num(r.total_leads_with_calls),
-    leadsWithSms: num(r.total_leads_with_sms),
     qualified: num(r.qualified_leads),
-    appts,
+    appts: num(r.appointments),
     apptValue: num(r.appointment_value),
     totalCalls: num(r.total_calls),
     totalSms: num(r.total_sms),
-    eligible: num(r.eligible_campaign_leads),
-    fupSum: fup != null && appts > 0 ? fup * appts : 0,
-    fupWeight: fup != null && appts > 0 ? appts : 0,
-    qSum: score != null && totalLeads > 0 ? score * totalLeads : 0,
-    qWeight: score != null && totalLeads > 0 ? totalLeads : 0,
+    leadsWithCalls: num(r.leads_with_calls),
+    leadsWithSms: num(r.leads_with_sms),
   };
 }
 function add(a: Bucket, b: Bucket): Bucket {
   return {
-    totalLeads: a.totalLeads + b.totalLeads,
     touched: a.touched + b.touched,
-    leadsWithCalls: a.leadsWithCalls + b.leadsWithCalls,
-    leadsWithSms: a.leadsWithSms + b.leadsWithSms,
     qualified: a.qualified + b.qualified,
     appts: a.appts + b.appts,
     apptValue: a.apptValue + b.apptValue,
     totalCalls: a.totalCalls + b.totalCalls,
     totalSms: a.totalSms + b.totalSms,
-    eligible: a.eligible + b.eligible,
-    fupSum: a.fupSum + b.fupSum,
-    fupWeight: a.fupWeight + b.fupWeight,
-    qSum: a.qSum + b.qSum,
-    qWeight: a.qWeight + b.qWeight,
+    leadsWithCalls: a.leadsWithCalls + b.leadsWithCalls,
+    leadsWithSms: a.leadsWithSms + b.leadsWithSms,
   };
 }
 
@@ -194,13 +173,10 @@ const fmtNum = (n: number) => n.toLocaleString();
 const fmtCurrency = (n: number) => `$${Math.round(n).toLocaleString()}`;
 const fmtRate = (num: number, den: number) =>
   den > 0 ? `${((num / den) * 100).toFixed(1)}%` : "—";
-const fmtScore = (b: Bucket) =>
-  b.qWeight > 0 ? `${(b.qSum / b.qWeight).toFixed(1)}` : "—";
-const fmtFollowups = (b: Bucket) =>
-  b.fupWeight > 0 ? (b.fupSum / b.fupWeight).toFixed(1) : "—";
 
 function AgentsDashboard() {
-  const [rows, setRows] = useState<AgentRowV3[]>([]);
+  const [dailyRows, setDailyRows] = useState<AgentRowDaily[]>([]);
+  const [totalsRows, setTotalsRows] = useState<AgentRowTotals[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [fetchedAt, setFetchedAt] = useState<string | null>(null);
@@ -210,13 +186,38 @@ function AgentsDashboard() {
   const [customRange, setCustomRange] = useState<CustomRange>(() => ({ from: "", to: todayIso() }));
   const [stageFilter, setStageFilter] = useState<Set<string>>(new Set());
   const [stageMasterList, setStageMasterList] = useState<string[]>([]);
-  // Rooftop-name (lower-case, trimmed) → curated stage from the Google Sheets.
-  // When present, this overrides Metabase's rooftop_stage value.
+  // Rooftop-name (lower-case, trimmed) → curated stage from the OB Google Sheet
+  // (the "per-stage roster" sheet). Used to surface Onboarding/OB-side stages
+  // that the master accounts sheet does not enumerate at the same granularity.
   const [rooftopToStage, setRooftopToStage] = useState<Map<string, string>>(new Map());
+  // Per (team_id + agent_type) AND (rooftop_name + agent_type) → account info
+  // from the master All-Accounts Google Sheet. Authoritative for the per-agent
+  // stage and the only source of MRR. Keyed at the (rooftop × agent_type) grain
+  // because one rooftop can be Live on Sales-IB and still In-OB on Service-OB —
+  // we do NOT cross-pollinate Live/Churn across agent_types.
+  // We index two ways so we can match Metabase rows that disagree with the sheet
+  // on rooftop_name spelling (e.g. Metabase "Lambert Buick GMC" vs sheet
+  // "Lambert Buick GMC Inc") — team_id is the strong key, name is the fallback.
+  type AccountInfo = { stage: string; mrr: number | null; subStage: string };
+  const [accountsByTeamAgent, setAccountsByTeamAgent] = useState<Map<string, AccountInfo>>(new Map());
+  const [accountsByNameAgent, setAccountsByNameAgent] = useState<Map<string, AccountInfo>>(new Map());
   const [search, setSearch] = useState("");
   const [selectedRooftops, setSelectedRooftops] = useState<Set<string>>(new Set());
+  // MRR range filter (inclusive). null on either side means unbounded.
+  const [mrrRange, setMrrRange] = useState<{ min: number | null; max: number | null }>({ min: null, max: null });
+  // Data-mode toggle:
+  //   • "sheet"    — sheet-driven. Restrict rooftops to those listed in the
+  //                  master accounts sheet for this (rooftop × agent_type), use
+  //                  the sheet's stage + MRR, and overlay the OB roster sheet.
+  //   • "no-sheet" — pure Metabase. Ignore BOTH Google sheets entirely. Stage
+  //                  reverts to Metabase's rooftop_stage; MRR is unavailable.
+  //                  Use this when the sheet is suspected out of sync with
+  //                  reality (it currently is for ~5 of the 7 Live Sales-OB
+  //                  rooftops — Dream Automotive, Landers Dodge CDJR, etc., are
+  //                  not in the sheet at all).
+  const [dataMode, setDataMode] = useState<"sheet" | "no-sheet">("no-sheet");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  // Sort state: null label means "default" (totalLeads desc, the original behavior).
+  // Sort state: null label means "default" (touched desc, the V3 funnel-top).
   const [sort, setSort] = useState<{ label: string | null; dir: "asc" | "desc" }>({ label: null, dir: "desc" });
 
   const load = (force = false) => {
@@ -225,7 +226,11 @@ function AgentsDashboard() {
     const url = `${API_BASE}/api/agents${force ? `?refresh=1&t=${Date.now()}` : ""}`;
     fetch(url, { cache: "no-store" })
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
-      .then(j => { setRows(j.rows ?? []); setFetchedAt(j.fetchedAt ?? null); })
+      .then(j => {
+        setDailyRows(Array.isArray(j.daily) ? j.daily : []);
+        setTotalsRows(Array.isArray(j.totals) ? j.totals : []);
+        setFetchedAt(j.fetchedAt ?? null);
+      })
       .catch(e => setError(e.message))
       .finally(() => setLoading(false));
   };
@@ -255,30 +260,101 @@ function AgentsDashboard() {
       .catch(() => { /* fall back to data-derived list */ });
   }, []);
 
-  // Curated stage for a row — sheet override (by normalized rooftop_name) takes
-  // precedence over Metabase's rooftop_stage.
-  const effectiveStage = (r: AgentRowV3): string | null => {
+  // All-Accounts master sheet (via /api/accounts-sheet). Response shape:
+  //   { rows: [{ rooftopName, agentType, currentStage, agentMrr, ... }], rooftopNames: [...] }
+  // Server side falls back to sheet_cache on Google fetch failure, so we don't
+  // need to do anything special here — empty list means "no data available".
+  useEffect(() => {
+    fetch(`${API_BASE}/api/accounts-sheet`, { cache: "no-store" })
+      .then(r => r.ok ? r.json() : null)
+      .then(j => {
+        if (!j || !Array.isArray(j.rows)) return;
+        const byTeam = new Map<string, AccountInfo>();
+        const byName = new Map<string, AccountInfo>();
+        for (const row of j.rows) {
+          const name = String(row.rooftopName ?? "").toLowerCase().trim();
+          const agent = String(row.agentType ?? "").trim().toLowerCase();
+          const teamId = String(row.rooftopId ?? "").trim();
+          if (!agent) continue;
+          const info: AccountInfo = {
+            stage: String(row.currentStage ?? "").trim(),
+            subStage: String(row.subStage ?? "").trim(),
+            mrr: typeof row.agentMrr === "number" ? row.agentMrr : null,
+          };
+          // Index by team_id first (the strong join key — survives name drift
+          // between Metabase and the sheet, e.g. "Lambert Buick GMC" vs
+          // "Lambert Buick GMC Inc"). Skip empty team_ids; those rooftops will
+          // be reachable only by name.
+          if (teamId) byTeam.set(`${teamId}::${agent}`, info);
+          if (name)   byName.set(`${name}::${agent}`, info);
+        }
+        setAccountsByTeamAgent(byTeam);
+        setAccountsByNameAgent(byName);
+      })
+      .catch(() => { /* sheet may be unconfigured / unreachable — silent fallback */ });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Per (rooftop × agent_type) lookup. We deliberately do NOT collapse across
+  // agent types: Sales-OB stage stays Sales-OB stage, even when Sales-IB on the
+  // same rooftop is Live. The user reported a bug where cross-agent precedence
+  // was marking Paragon Honda as Live on the Sales-OB tab when its actual
+  // Sales-OB row in the sheet said "In OB" — keep this strictly per-agent.
+  const accountInfoFor = (r: AnyAgentRow): AccountInfo | null => {
+    const agent = (r.agent_type ?? "").toLowerCase().trim();
+    if (!agent) return null;
+    const tid = teamId(r);
+    if (tid) {
+      const hit = accountsByTeamAgent.get(`${tid}::${agent}`);
+      if (hit) return hit;
+    }
+    const name = (r.rooftop_name ?? "").toLowerCase().trim();
+    if (name) {
+      const hit = accountsByNameAgent.get(`${name}::${agent}`);
+      if (hit) return hit;
+    }
+    return null;
+  };
+
+  // Stage resolver — per (rooftop × agent_type), with sheet > OB-roster > Metabase
+  // fallback. The accounts sheet is treated as authoritative when it has a row
+  // for this exact (rooftop × agent), even if it says "In OB" — that overrides
+  // whatever Metabase happens to be reporting.
+  const effectiveStage = (r: AnyAgentRow): string | null => {
+    const info = accountInfoFor(r);
+    if (info?.stage) return info.stage;
+    // OB roster sheet — rooftop-wide (not per-agent), used when the accounts
+    // sheet does not list this rooftop for this agent_type.
     const name = (r.rooftop_name ?? "").toLowerCase().trim();
     if (name && rooftopToStage.has(name)) return rooftopToStage.get(name)!;
     return r.rooftop_stage ?? null;
   };
 
+  // MRR for a specific (rooftop × agent_type). The master sheet stores MRR per
+  // agent row, so this is the right granularity for the rooftop table when
+  // viewed inside a single agent tab.
+  const mrrFor = (r: AnyAgentRow): number | null => {
+    const info = accountInfoFor(r);
+    return info?.mrr ?? null;
+  };
+
   // Reset row-expansion state whenever the active agent or filters narrow.
-  useEffect(() => { setExpanded(new Set()); }, [activeAgent, dateRange, customRange, stageFilter, search, selectedRooftops]);
+  useEffect(() => { setExpanded(new Set()); }, [activeAgent, dateRange, customRange, stageFilter, search, selectedRooftops, mrrRange, dataMode]);
   // Reset sort when the agent (and therefore the column set) changes.
   useEffect(() => { setSort({ label: null, dir: "desc" }); }, [activeAgent]);
 
-  // Stages observed in the data after sheet override is applied.
+  // Stages observed in the data after sheet override is applied. Read from
+  // totals (one row per team × agent_type — already deduplicated).
   const observedStages = useMemo(() => {
     const s = new Set<string>();
-    rows.forEach(r => {
+    totalsRows.forEach(r => {
       const eff = effectiveStage(r);
       if (eff) s.add(eff);
     });
     return s;
   // effectiveStage closes over rooftopToStage; declare that as the dep.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, rooftopToStage]);
+  }, [totalsRows, rooftopToStage]);
 
   // Master list = sheet order first (preserves the curated order), then any observed
   // stages not in the sheet appended at the end (highlighted as "(unlisted)").
@@ -300,49 +376,69 @@ function AgentsDashboard() {
 
   const presentAgents = useMemo(() => {
     const s = new Set<AgentType>();
-    rows.forEach(r => { if (r.agent_type) s.add(r.agent_type); });
+    totalsRows.forEach(r => { if (r.agent_type) s.add(r.agent_type); });
     return s;
-  }, [rows]);
+  }, [totalsRows]);
 
-  // Rooftops available in the current agent/date/stage scope. Used to populate the dropdown.
+  // Stable rooftop key: prefer team_id when present, else compose from names.
+  const rowKey = (r: AnyAgentRow): string =>
+    teamId(r) || `${r.enterprise_name ?? ""}::${r.rooftop_name ?? ""}`;
+
+  // Rooftops available in the current agent/stage scope. From totals so the
+  // dropdown matches the KPI universe; date filter is daily-only in V3.
   const availableRooftops = useMemo(() => {
     const m = new Map<string, { key: string; label: string; enterprise: string }>();
-    for (const r of rows) {
+    for (const r of totalsRows) {
       if (r.agent_type !== activeAgent) continue;
-      if (!inRange(r.day, dateRange, customRange)) continue;
       if (stageFilter.size > 0 && !stageFilter.has(effectiveStage(r) ?? "")) continue;
-      const key = r.team_id || `${r.enterprise_name ?? ""}::${r.rooftop_name ?? ""}`;
+      const key = rowKey(r);
       if (!m.has(key)) {
         m.set(key, { key, label: rooftopLabel(r), enterprise: enterpriseLabel(r) });
       }
     }
     return Array.from(m.values()).sort((a, b) => a.label.localeCompare(b.label));
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, activeAgent, dateRange, customRange, stageFilter, rooftopToStage]);
+  }, [totalsRows, activeAgent, stageFilter, rooftopToStage]);
 
-  const filtered = useMemo(() => {
+  // Filter predicate shared by both daily and totals pipelines (minus the date
+  // check, which only applies to daily — totals are all-time per Metabase scope).
+  const matchesAgentStageRooftopSearch = (r: AnyAgentRow): boolean => {
+    if (r.agent_type !== activeAgent) return false;
+    if (stageFilter.size > 0 && !stageFilter.has(effectiveStage(r) ?? "")) return false;
+    if (selectedRooftops.size > 0 && !selectedRooftops.has(rowKey(r))) return false;
     const q = search.trim().toLowerCase();
-    const hasSelection = selectedRooftops.size > 0;
-    return rows.filter(r => {
-      if (r.agent_type !== activeAgent) return false;
+    if (q) {
+      const hay = `${rooftopLabel(r)} ${enterpriseLabel(r)}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  };
+
+  const filteredDaily = useMemo(() => {
+    return dailyRows.filter(r => {
+      if (!matchesAgentStageRooftopSearch(r)) return false;
       if (!inRange(r.day, dateRange, customRange)) return false;
-      if (stageFilter.size > 0 && !stageFilter.has(effectiveStage(r) ?? "")) return false;
-      if (hasSelection) {
-        const key = r.team_id || `${r.enterprise_name ?? ""}::${r.rooftop_name ?? ""}`;
-        if (!selectedRooftops.has(key)) return false;
-      }
-      if (q) {
-        const hay = `${rooftopLabel(r)} ${enterpriseLabel(r)}`.toLowerCase();
-        if (!hay.includes(q)) return false;
-      }
       return true;
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, activeAgent, dateRange, customRange, stageFilter, search, selectedRooftops, rooftopToStage]);
+  }, [dailyRows, activeAgent, dateRange, customRange, stageFilter, search, selectedRooftops, rooftopToStage]);
+
+  const filteredTotals = useMemo(() => {
+    return totalsRows.filter(matchesAgentStageRooftopSearch);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [totalsRows, activeAgent, stageFilter, search, selectedRooftops, rooftopToStage]);
 
   const days = useMemo(
-    () => Array.from(new Set(filtered.map(r => r.day))).sort(),
-    [filtered]
+    () => Array.from(new Set(filteredDaily.map(r => r.day))).sort(),
+    [filteredDaily]
+  );
+
+  // KPI strip totals: sum of filteredTotals (one row per team × agent_type).
+  // These are pre-deduplicated at the lead level by Metabase, so summing across
+  // teams is correct (no shared leads between teams).
+  const totals = useMemo(
+    () => filteredTotals.reduce((acc, r) => add(acc, projectRow(r)), { ...EMPTY }),
+    [filteredTotals]
   );
 
   type RooftopAgg = {
@@ -350,48 +446,85 @@ function AgentsDashboard() {
     rooftop: string;
     enterprise: string;
     stage: string | null;
+    mrr: number | null;
+    inSheet: boolean;
     daily: ({ day: string } & Bucket)[];
-    total: Bucket;
+    total: Bucket;  // sourced from totals card, NOT from summing daily
   };
   const rooftopRows: RooftopAgg[] = useMemo(() => {
     const m = new Map<string, RooftopAgg>();
-    const stageMap = new Map<string, { day: string; stage: string | null }>();
-    for (const r of filtered) {
-      const key = r.team_id || `${r.enterprise_name ?? ""}::${r.rooftop_name ?? ""}`;
-      let entry = m.get(key);
-      if (!entry) {
-        entry = {
-          key, rooftop: rooftopLabel(r), enterprise: enterpriseLabel(r),
-          stage: effectiveStage(r), daily: [], total: { ...EMPTY },
-        };
-        m.set(key, entry);
-      }
-      const prev = stageMap.get(key);
-      if (!prev || r.day > prev.day) stageMap.set(key, { day: r.day, stage: effectiveStage(r) });
-      const proj = projectRow(r);
-      entry.total = add(entry.total, proj);
-      entry.daily.push({ day: r.day, ...proj });
+    // Seed from totals — the authoritative summary row per rooftop.
+    for (const r of filteredTotals) {
+      const key = rowKey(r);
+      if (m.has(key)) continue; // shouldn't happen — totals is unique per team × agent_type
+      // "no-sheet" mode bypasses BOTH Google sheets: stage falls back to
+      // Metabase's rooftop_stage and MRR is unavailable (no data source). Used
+      // to audit reality when the master accounts sheet is suspected to be
+      // out of sync with the current Live roster.
+      const useSheet = dataMode === "sheet";
+      const info = useSheet ? accountInfoFor(r) : null;
+      m.set(key, {
+        key, rooftop: rooftopLabel(r), enterprise: enterpriseLabel(r),
+        stage: useSheet ? effectiveStage(r) : (r.rooftop_stage ?? null),
+        mrr: info?.mrr ?? null,
+        inSheet: info != null,
+        daily: [],
+        total: projectRow(r),
+      });
     }
-    for (const [key, entry] of m) entry.stage = stageMap.get(key)?.stage ?? entry.stage;
+    // Attach per-day breakdown from daily, only for rooftops already in the
+    // totals universe (so a daily-only ghost row doesn't sneak in).
+    for (const r of filteredDaily) {
+      const key = rowKey(r);
+      const entry = m.get(key);
+      if (!entry) continue;
+      entry.daily.push({ day: (r as AgentRowDaily).day, ...projectRow(r) });
+    }
     for (const e of m.values()) e.daily.sort((a, b) => a.day.localeCompare(b.day));
-    return Array.from(m.values());
-  // effectiveStage closes over rooftopToStage — list it so the agg re-runs on load.
+    let out = Array.from(m.values());
+    // In "sheet" mode, restrict the rooftop universe to those listed in the
+    // master accounts sheet for the active (rooftop × agent_type). "no-sheet"
+    // mode shows everything Metabase has activity for — no sheet filtering.
+    if (dataMode === "sheet") out = out.filter(rt => rt.inSheet);
+    // MRR range filter applies after aggregation — comparing against the
+    // resolved per-(rooftop × agent) MRR. A null MRR is treated as "unknown"
+    // and excluded as soon as either bound is set.
+    if (mrrRange.min != null || mrrRange.max != null) {
+      out = out.filter(rt => {
+        if (rt.mrr == null) return false;
+        if (mrrRange.min != null && rt.mrr < mrrRange.min) return false;
+        if (mrrRange.max != null && rt.mrr > mrrRange.max) return false;
+        return true;
+      });
+    }
+    return out;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filtered, rooftopToStage]);
+  }, [filteredTotals, filteredDaily, rooftopToStage, accountsByTeamAgent, accountsByNameAgent, mrrRange, dataMode]);
 
   const sortedRooftopRows = useMemo(() => {
     const rows = [...rooftopRows];
     const cols = columnsFor(activeAgent);
-    // Rooftop / Day header → sort by rooftop name. Any metric col → sort by its sortValue.
     if (sort.label === "Rooftop / Day") {
       rows.sort((a, b) => a.rooftop.localeCompare(b.rooftop));
       if (sort.dir === "desc") rows.reverse();
       return rows;
     }
+    if (sort.label === "MRR") {
+      // Nulls sink to bottom regardless of direction — they aren't comparable
+      // with real numbers and we don't want them dominating the top of an asc sort.
+      rows.sort((a, b) => {
+        const av = a.mrr; const bv = b.mrr;
+        if (av == null && bv == null) return 0;
+        if (av == null) return 1;
+        if (bv == null) return -1;
+        return sort.dir === "asc" ? av - bv : bv - av;
+      });
+      return rows;
+    }
     const col = sort.label ? cols.find(c => c.label === sort.label) : null;
     if (!col) {
-      // Default: total leads desc (preserve historical behavior).
-      rows.sort((a, b) => b.total.totalLeads - a.total.totalLeads);
+      // V3 default: Touched desc (funnel top).
+      rows.sort((a, b) => b.total.touched - a.total.touched);
       return rows;
     }
     rows.sort((a, b) => {
@@ -402,16 +535,17 @@ function AgentsDashboard() {
     return rows;
   }, [rooftopRows, sort, activeAgent]);
 
+  // Day-on-day series for the chart — aggregate daily across rooftops in scope.
+  // Per-day distinct counts are NOT summable across days, but ARE summable
+  // across teams within the same day (different teams = different leads).
   const daily = useMemo(() => {
     const byDay = new Map<string, Bucket>();
-    for (const r of filtered) {
+    for (const r of filteredDaily) {
       const prev = byDay.get(r.day) ?? EMPTY;
       byDay.set(r.day, add(prev, projectRow(r)));
     }
     return days.map(d => byDay.get(d) ?? { ...EMPTY });
-  }, [filtered, days]);
-
-  const totals = useMemo(() => daily.reduce(add, { ...EMPTY }), [daily]);
+  }, [filteredDaily, days]);
 
   const { liveRooftops, churnedRooftops } = useMemo(() => {
     let live = 0, churned = 0;
@@ -422,7 +556,7 @@ function AgentsDashboard() {
     return { liveRooftops: live, churnedRooftops: churned };
   }, [rooftopRows]);
 
-  const showingPlaceholder = loading && rows.length === 0;
+  const showingPlaceholder = loading && totalsRows.length === 0;
 
   const toggleExpand = (key: string) => {
     setExpanded(prev => {
@@ -456,19 +590,15 @@ function AgentsDashboard() {
           <h1 style={{ fontSize: 22, fontWeight: 800, color: "#111827", margin: 0 }}>
             Agents — Per-Agent Campaign Metrics
           </h1>
-          <p style={{ fontSize: 13, color: "#6b7280", margin: "4px 0 0", maxWidth: 800 }}>
-            One tab per agent (Sales/Service × Inbound/Outbound). Each tab shows the metrics
-            specific to that agent's funnel — for inbound, lead-creation-day attribution; for
-            outbound, campaign-day attribution. Rooftop stage is taken from the curated Google
-            Sheets (one sheet per stage) when a match exists; otherwise Metabase's
-            <code>rooftop_stage</code> is used. Live and Churned counts use the most recent day's
-            stage per <code>team_id</code> within the active filters.
+          <p style={{ fontSize: 13, color: "#6b7280", margin: "4px 0 0", maxWidth: 820 }}>
+            One tab per agent (Sales / Service × Inbound / Outbound). Date filter applies to
+            the chart and per-day breakdown; KPIs and the rooftop summary show all-time totals.
           </p>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10, paddingTop: 4 }}>
           {fetchedAt && !loading && (
             <span style={{ fontSize: 12, color: "#16a34a" }}>
-              ● {rows.length.toLocaleString()} rows · fetched {new Date(fetchedAt).toLocaleTimeString()}
+              ● {(dailyRows.length + totalsRows.length).toLocaleString()} rows ({totalsRows.length.toLocaleString()} totals · {dailyRows.length.toLocaleString()} daily) · fetched {new Date(fetchedAt).toLocaleTimeString()}
             </span>
           )}
           {loading && <span style={{ fontSize: 12, color: "#6b7280" }}>Fetching…</span>}
@@ -490,12 +620,12 @@ function AgentsDashboard() {
       <div style={{ display: "flex", gap: 4, marginBottom: 12, borderBottom: "1px solid #e5e7eb" }}>
         {AGENT_TYPES.map(t => {
           const active = t === activeAgent;
-          const hasData = presentAgents.has(t) || rows.length === 0;
+          const hasData = presentAgents.has(t) || totalsRows.length === 0;
           return (
             <button
               key={t}
               onClick={() => setActiveAgent(t)}
-              disabled={!loading && rows.length > 0 && !hasData}
+              disabled={!loading && totalsRows.length > 0 && !hasData}
               title={!hasData ? `No ${t} rows in current data` : undefined}
               style={{
                 padding: "10px 16px", border: "none", background: "transparent",
@@ -560,6 +690,15 @@ function AgentsDashboard() {
         />
         <input type="text" value={search} onChange={e => setSearch(e.target.value)} placeholder="Search enterprise…"
           style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid #d1d5db", fontSize: 13, minWidth: 180 }} />
+        <MrrRangeFilter value={mrrRange} onChange={setMrrRange} />
+        <SegmentedControl
+          options={[
+            { key: "sheet" as const,    label: "In sheet" },
+            { key: "no-sheet" as const, label: "No sheet" },
+          ]}
+          value={dataMode}
+          onChange={setDataMode}
+        />
         <div style={{ marginLeft: "auto", fontSize: 12, color: "#6b7280" }}>
           {rooftopRows.length} rooftop{rooftopRows.length === 1 ? "" : "s"} · {days.length} day{days.length === 1 ? "" : "s"}
         </div>
@@ -638,7 +777,7 @@ function AgentsDashboard() {
 
 type KpiSpec = { label: string; value: string | number; color: string; sub?: string };
 
-function KpiStrip({ agent, totals, liveRooftops, churnedRooftops, totalRooftops, loading }: {
+function KpiStrip({ totals, liveRooftops, churnedRooftops, totalRooftops, loading }: {
   agent: AgentType;
   totals: Bucket;
   liveRooftops: number;
@@ -648,28 +787,17 @@ function KpiStrip({ agent, totals, liveRooftops, churnedRooftops, totalRooftops,
 }) {
   const channelMix = (b: Bucket) => `${fmtNum(b.leadsWithCalls)} via calls · ${fmtNum(b.leadsWithSms)} via SMS`;
 
-  // MAIN — the four headline metrics. For Service IB there is no separate "total
-  // leads" concept (it's a phone answering service), so Touched is the head metric;
-  // we substitute Total Calls in the first slot to keep volume visible.
-  const totalLabel = agent === "Sales Outbound" ? "Total Leads Synced"
-                   : agent === "Service Outbound" ? "Total Leads Synced"
-                   : agent === "Service Inbound" ? "Total Calls"
-                   : "Unique Leads";
-  const totalValue = agent === "Service Inbound" ? totals.totalCalls : totals.totalLeads;
-  const totalSub = agent === "Service Inbound" && totals.leadsWithCalls > 0
-    ? `${fmtNum(totals.leadsWithCalls)} unique leads`
-    : undefined;
-
+  // V3 funnel — Touched → Qualified → Appointments. No "Total" tier (total_leads
+  // is gone since activity-day anchoring made it not meaningful). Same shape
+  // across all four agent tabs so the numbers compare cleanly.
   const main: KpiSpec[] = [
-    { label: totalLabel, value: fmtNum(totalValue), color: "#6366f1", sub: totalSub },
     { label: "Touched", value: fmtNum(totals.touched), color: "#0ea5e9", sub: channelMix(totals) },
-    { label: "Qualified", value: fmtNum(totals.qualified), color: "#0d9488", sub: fmtRate(totals.qualified, totals.touched) + " of touched" },
-    { label: "Appointments", value: fmtNum(totals.appts), color: "#22c55e", sub: fmtRate(totals.appts, totals.touched) + " of touched" },
+    { label: "Qualified", value: fmtNum(totals.qualified), color: "#0d9488",
+      sub: fmtRate(totals.qualified, totals.touched) + " of touched" },
+    { label: "Appointments", value: fmtNum(totals.appts), color: "#22c55e",
+      sub: fmtRate(totals.appts, totals.touched) + " of touched" },
   ];
 
-  // SECONDARY — smaller cards. Always include the user-requested core four
-  // (calls/sms, followups, conv rate, total accounts); fold in agent-specific
-  // extras after that.
   const accountsSub = `${liveRooftops} live · ${churnedRooftops} churned`;
   const secondary: KpiSpec[] = [
     { label: "Total Calls", value: fmtNum(totals.totalCalls), color: "#6366f1",
@@ -677,32 +805,19 @@ function KpiStrip({ agent, totals, liveRooftops, churnedRooftops, totalRooftops,
     { label: "Total SMS", value: fmtNum(totals.totalSms), color: "#0ea5e9",
       sub: totals.leadsWithSms > 0 ? `${fmtNum(totals.leadsWithSms)} unique leads` : undefined },
     { label: "Conversion Rate", value: fmtRate(totals.appts, totals.touched), color: "#15803d", sub: "appts / touched" },
-    { label: "Followups till Appt", value: fmtFollowups(totals), color: "#9333ea", sub: "SMS + calls per appt" },
     { label: "Total Accounts", value: fmtNum(totalRooftops), color: "#475569", sub: accountsSub },
     { label: "Appointment Value", value: fmtCurrency(totals.apptValue), color: "#ea580c" },
-    { label: "Quality Score", value: fmtScore(totals), color: "#db2777", sub: "lead-weighted" },
   ];
-
-  // OB-specific extra (still emitted by the SQL).
-  if (agent === "Sales Outbound" || agent === "Service Outbound") {
-    secondary.push(
-      { label: "Eligible", value: fmtNum(totals.eligible), color: "#0369a1",
-        sub: fmtRate(totals.eligible, totals.totalLeads) + " of total" },
-    );
-  }
-  if (agent === "Sales Inbound") {
-    secondary.push({ label: "Coverage", value: fmtRate(totals.touched, totals.totalLeads), color: "#8b5cf6", sub: "touched / unique" });
-  }
 
   return (
     <div style={{ marginBottom: 18 }}>
-      {/* MAIN — large headline cards */}
+      {/* MAIN — large headline cards (V3 funnel: Touched · Qualified · Appts) */}
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
         {main.map(c => (
           <KpiCard key={c.label} label={c.label} value={c.value} color={c.color} loading={loading} sub={c.sub} size="main" />
         ))}
       </div>
-      {/* SECONDARY — smaller cards under the main row */}
+      {/* SECONDARY — volume + conv rate + accounts */}
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
         {secondary.map(c => (
           <KpiCard key={c.label} label={c.label} value={c.value} color={c.color} loading={loading} sub={c.sub} size="secondary" />
@@ -725,24 +840,16 @@ type ChartSpec = {
   leftLabel: string;
   rightLabel: string;
 };
-function chartSpecFor(agent: AgentType, daily: Bucket[]): ChartSpec {
-  // Four lines only across all agents: Total · Touched · Qualified · Appointments.
-  // "Total" = unique leads volume; for Service Inbound (no leads-creation count) we
-  // use Total Calls as the volume series on the left axis.
-  const totalLabel = agent === "Sales Outbound" ? "Total Leads Synced"
-                   : agent === "Service Outbound" ? "Total Leads Synced"
-                   : agent === "Service Inbound" ? "Total Calls"
-                   : "Unique Leads";
-  const totalValues = agent === "Service Inbound"
-    ? daily.map(d => d.totalCalls)
-    : daily.map(d => d.totalLeads);
+function chartSpecFor(_agent: AgentType, daily: Bucket[]): ChartSpec {
+  // V3 funnel — three lines: Touched · Qualified · Appointments. Touched is
+  // typically ~10x larger than Qualified, which is ~10x larger than Appts —
+  // Touched rides the left axis, the two smaller series share the right.
   return {
-    title: `${totalLabel} · Touched · Qualified · Appointments`,
-    leftLabel: totalLabel,
-    rightLabel: "Touched / Qualified / Appts",
+    title: "Touched · Qualified · Appointments",
+    leftLabel: "Touched",
+    rightLabel: "Qualified / Appts",
     series: [
-      { name: totalLabel,     color: "#6366f1", values: totalValues,               axis: "L" },
-      { name: "Touched",      color: "#0ea5e9", values: daily.map(d => d.touched),   axis: "R" },
+      { name: "Touched",      color: "#0ea5e9", values: daily.map(d => d.touched),   axis: "L" },
       { name: "Qualified",    color: "#0d9488", values: daily.map(d => d.qualified), axis: "R" },
       { name: "Appointments", color: "#22c55e", values: daily.map(d => d.appts),     axis: "R" },
     ],
@@ -753,6 +860,8 @@ function chartSpecFor(agent: AgentType, daily: Bucket[]): ChartSpec {
 
 type RooftopRowData = {
   key: string; rooftop: string; enterprise: string; stage: string | null;
+  mrr: number | null;
+  inSheet: boolean;
   daily: ({ day: string } & Bucket)[]; total: Bucket;
 };
 
@@ -766,7 +875,8 @@ function RooftopTable({ agent, rows, expanded, onToggle, loading, sort, onSort }
   onSort: (label: string) => void;
 }) {
   const cols = columnsFor(agent);
-  const totalCols = cols.length + 2; // arrow + rooftop label + metrics
+  // arrow + rooftop label + MRR + metrics
+  const totalCols = cols.length + 3;
 
   const sortIndicator = (label: string) => {
     if (sort.label !== label) return <span style={{ color: "#d1d5db", marginLeft: 4 }}>⇅</span>;
@@ -788,6 +898,12 @@ function RooftopTable({ agent, rows, expanded, onToggle, loading, sort, onSort }
             style={{ ...thStyle, ...sortableHeaderStyle("Rooftop / Day"), textAlign: "left", minWidth: 240 }}
             onClick={() => onSort("Rooftop / Day")}>
             Rooftop / Day{sortIndicator("Rooftop / Day")}
+          </th>
+          <th
+            style={{ ...thStyle, ...sortableHeaderStyle("MRR"), textAlign: "right", minWidth: 90 }}
+            onClick={() => onSort("MRR")}
+            title="Agent MRR from the All-Accounts sheet">
+            MRR{sortIndicator("MRR")}
           </th>
           {cols.map(c => (
             <th
@@ -838,6 +954,9 @@ function RooftopTable({ agent, rows, expanded, onToggle, loading, sort, onSort }
                     <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 2 }}>{row.enterprise}</div>
                   )}
                 </td>
+                <td style={{ ...tdStyle, textAlign: "right", color: row.mrr != null ? "#0369a1" : "#9ca3af", fontWeight: row.mrr != null ? 600 : 400 }}>
+                  {row.mrr != null ? fmtCurrency(row.mrr) : "—"}
+                </td>
                 {cols.map(c => (
                   <td key={c.label} style={{ ...tdStyle, textAlign: "right", color: c.emphasize ? "#0369a1" : "#374151", fontWeight: c.emphasize ? 600 : 400 }}>
                     {c.render(row.total)}
@@ -848,6 +967,7 @@ function RooftopTable({ agent, rows, expanded, onToggle, loading, sort, onSort }
                 <tr key={`${row.key}::${d.day}`} style={{ borderTop: "1px solid #f3f4f6", background: "#fafbff" }}>
                   <td style={dayCellStyle} />
                   <td style={{ ...dayCellStyle, paddingLeft: 36, color: "#6b7280" }}>{fmtDay(d.day)}</td>
+                  <td style={dayCellStyle} />
                   {cols.map(c => (
                     <td key={c.label} style={{ ...dayCellStyle, textAlign: "right", color: "#4b5563" }}>
                       {c.render(d)}
@@ -879,50 +999,18 @@ const fmtChannelMix = (b: Bucket): string =>
 
 const safeRate = (n: number, d: number) => (d > 0 ? n / d : -1); // -1 sinks "—" to bottom on desc
 
-function columnsFor(agent: AgentType): Col[] {
-  if (agent === "Sales Inbound") {
-    return [
-      { label: "Unique Leads", render: b => fmtNum(b.totalLeads), sortValue: b => b.totalLeads, emphasize: true },
-      { label: "Touched", render: b => fmtNum(b.touched), sortValue: b => b.touched },
-      { label: "Calls / SMS", render: fmtChannelMix, sortValue: b => b.leadsWithCalls + b.leadsWithSms, minWidth: 100 },
-      { label: "Total Calls", render: b => fmtNum(b.totalCalls), sortValue: b => b.totalCalls },
-      { label: "Total SMS", render: b => fmtNum(b.totalSms), sortValue: b => b.totalSms },
-      { label: "Qualified", render: b => fmtNum(b.qualified), sortValue: b => b.qualified },
-      { label: "Coverage", render: b => fmtRate(b.touched, b.totalLeads), sortValue: b => safeRate(b.touched, b.totalLeads), minWidth: 90 },
-      { label: "Appts", render: b => fmtNum(b.appts), sortValue: b => b.appts, emphasize: true },
-      { label: "Conv. Rate", render: b => fmtRate(b.appts, b.touched), sortValue: b => safeRate(b.appts, b.touched), minWidth: 90 },
-      { label: "Appt $", render: b => fmtCurrency(b.apptValue), sortValue: b => b.apptValue, minWidth: 90 },
-      { label: "Quality", render: b => fmtScore(b), sortValue: b => (b.qWeight > 0 ? b.qSum / b.qWeight : -1), minWidth: 80 },
-    ];
-  }
-  if (agent === "Service Inbound") {
-    return [
-      { label: "Touched", render: b => fmtNum(b.touched), sortValue: b => b.touched, emphasize: true },
-      { label: "Calls / SMS", render: fmtChannelMix, sortValue: b => b.leadsWithCalls + b.leadsWithSms, minWidth: 100 },
-      { label: "Total Calls", render: b => fmtNum(b.totalCalls), sortValue: b => b.totalCalls },
-      { label: "Total SMS", render: b => fmtNum(b.totalSms), sortValue: b => b.totalSms },
-      { label: "Qualified", render: b => fmtNum(b.qualified), sortValue: b => b.qualified },
-      { label: "Appts", render: b => fmtNum(b.appts), sortValue: b => b.appts, emphasize: true },
-      { label: "Conv. Rate", render: b => fmtRate(b.appts, b.touched), sortValue: b => safeRate(b.appts, b.touched), minWidth: 90 },
-      { label: "Appt $", render: b => fmtCurrency(b.apptValue), sortValue: b => b.apptValue, minWidth: 90 },
-      { label: "Quality", render: b => fmtScore(b), sortValue: b => (b.qWeight > 0 ? b.qSum / b.qWeight : -1), minWidth: 80 },
-    ];
-  }
-  // Sales OB & Service OB share columns
-  const leadsLabel = "Total Leads Synced";
+function columnsFor(_agent: AgentType): Col[] {
+  // V3 uniform column set across all four agent tabs (the SQL schema is now
+  // uniform, no Eligible/Targeted/Engaged/Intent/Coverage/Followups/Quality).
   return [
-    { label: leadsLabel, render: b => fmtNum(b.totalLeads), sortValue: b => b.totalLeads, emphasize: true },
-    { label: "Eligible", render: b => fmtNum(b.eligible), sortValue: b => b.eligible },
-    { label: "Touched", render: b => fmtNum(b.touched), sortValue: b => b.touched },
-    { label: "Calls / SMS", render: fmtChannelMix, sortValue: b => b.leadsWithCalls + b.leadsWithSms, minWidth: 100 },
-    { label: "Total Calls", render: b => fmtNum(b.totalCalls), sortValue: b => b.totalCalls },
-    { label: "Total SMS", render: b => fmtNum(b.totalSms), sortValue: b => b.totalSms },
+    { label: "Touched", render: b => fmtNum(b.touched), sortValue: b => b.touched, emphasize: true },
     { label: "Qualified", render: b => fmtNum(b.qualified), sortValue: b => b.qualified },
     { label: "Appts", render: b => fmtNum(b.appts), sortValue: b => b.appts, emphasize: true },
     { label: "Conv. Rate", render: b => fmtRate(b.appts, b.touched), sortValue: b => safeRate(b.appts, b.touched), minWidth: 90 },
+    { label: "Calls / SMS", render: fmtChannelMix, sortValue: b => b.leadsWithCalls + b.leadsWithSms, minWidth: 100 },
+    { label: "Total Calls", render: b => fmtNum(b.totalCalls), sortValue: b => b.totalCalls },
+    { label: "Total SMS", render: b => fmtNum(b.totalSms), sortValue: b => b.totalSms },
     { label: "Appt $", render: b => fmtCurrency(b.apptValue), sortValue: b => b.apptValue, minWidth: 90 },
-    { label: "Followups", render: b => fmtFollowups(b), sortValue: b => (b.fupWeight > 0 ? b.fupSum / b.fupWeight : -1), minWidth: 90 },
-    { label: "Quality", render: b => fmtScore(b), sortValue: b => (b.qWeight > 0 ? b.qSum / b.qWeight : -1), minWidth: 80 },
   ];
 }
 
@@ -1070,6 +1158,119 @@ function MultiSelectDropdown({
               );
             })}
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MrrRangeFilter({ value, onChange }: {
+  value: { min: number | null; max: number | null };
+  onChange: (v: { min: number | null; max: number | null }) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
+
+  // Empty string in the input → null bound. We parse on each keystroke so the
+  // filter feels live; an invalid number (NaN) also collapses to null.
+  const setBound = (which: "min" | "max", raw: string) => {
+    const trimmed = raw.trim();
+    if (trimmed === "") return onChange({ ...value, [which]: null });
+    const n = Number(trimmed.replace(/[$,\s]/g, ""));
+    onChange({ ...value, [which]: Number.isFinite(n) ? n : null });
+  };
+
+  const label = (() => {
+    if (value.min == null && value.max == null) return "All MRR";
+    if (value.min != null && value.max != null) return `$${value.min}–$${value.max}`;
+    if (value.min != null) return `≥ $${value.min}`;
+    return `≤ $${value.max}`;
+  })();
+
+  const active = value.min != null || value.max != null;
+
+  // A few presets — most slicing happens at these levels in conversations with
+  // CS so wire them up directly. Custom values still come from the input fields.
+  const presets: { label: string; min: number | null; max: number | null }[] = [
+    { label: "Under $500",      min: null, max: 499 },
+    { label: "$500 – $999",     min: 500,  max: 999 },
+    { label: "$1,000 – $1,499", min: 1000, max: 1499 },
+    { label: "$1,500+",         min: 1500, max: null },
+  ];
+
+  return (
+    <div ref={wrapRef} style={{ position: "relative" }}>
+      <button onClick={() => setOpen(v => !v)}
+        style={{
+          display: "inline-flex", alignItems: "center", gap: 8,
+          padding: "6px 10px", borderRadius: 8, border: "1px solid #d1d5db",
+          background: "#fff", fontSize: 13, fontWeight: 600, color: "#374151",
+          cursor: "pointer", minWidth: 160,
+        }}>
+        <span style={{ fontSize: 12, color: "#6b7280", fontWeight: 600 }}>MRR</span>
+        <span style={{ flex: 1, textAlign: "left", color: active ? "#111827" : "#9ca3af", fontWeight: active ? 600 : 500 }}>
+          {label}
+        </span>
+        <span style={{ color: "#9ca3af", fontSize: 10 }}>▼</span>
+      </button>
+      {open && (
+        <div style={{
+          position: "absolute", top: "calc(100% + 4px)", left: 0, zIndex: 20,
+          background: "#fff", border: "1px solid #e5e7eb", borderRadius: 10,
+          boxShadow: "0 6px 20px rgba(0,0,0,0.08)", padding: 12, minWidth: 240,
+        }}>
+          <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 10 }}>
+            <span style={{ fontSize: 11, color: "#6b7280", fontWeight: 600, minWidth: 30 }}>Min</span>
+            <input type="number" inputMode="numeric" min={0} step={50}
+              value={value.min == null ? "" : value.min}
+              onChange={e => setBound("min", e.target.value)}
+              placeholder="—"
+              style={{ flex: 1, padding: "6px 8px", borderRadius: 6, border: "1px solid #d1d5db", fontSize: 13 }} />
+          </div>
+          <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 10 }}>
+            <span style={{ fontSize: 11, color: "#6b7280", fontWeight: 600, minWidth: 30 }}>Max</span>
+            <input type="number" inputMode="numeric" min={0} step={50}
+              value={value.max == null ? "" : value.max}
+              onChange={e => setBound("max", e.target.value)}
+              placeholder="—"
+              style={{ flex: 1, padding: "6px 8px", borderRadius: 6, border: "1px solid #d1d5db", fontSize: 13 }} />
+          </div>
+          <div style={{ borderTop: "1px solid #f3f4f6", paddingTop: 8, display: "flex", flexWrap: "wrap", gap: 4 }}>
+            {presets.map(p => {
+              const isActive = p.min === value.min && p.max === value.max;
+              return (
+                <button key={p.label} onClick={() => onChange({ min: p.min, max: p.max })}
+                  style={{
+                    padding: "3px 8px", borderRadius: 6,
+                    border: `1px solid ${isActive ? "#4f46e5" : "#e5e7eb"}`,
+                    background: isActive ? "#eef2ff" : "#fff",
+                    color: isActive ? "#4f46e5" : "#374151",
+                    fontSize: 11, fontWeight: 600, cursor: "pointer",
+                  }}>
+                  {p.label}
+                </button>
+              );
+            })}
+          </div>
+          {active && (
+            <button onClick={() => onChange({ min: null, max: null })}
+              style={{
+                marginTop: 10, width: "100%", padding: "6px 10px",
+                borderRadius: 6, border: "1px solid #d1d5db", background: "#fff",
+                fontSize: 12, fontWeight: 600, color: "#4f46e5", cursor: "pointer",
+              }}>
+              Clear MRR filter
+            </button>
+          )}
         </div>
       )}
     </div>

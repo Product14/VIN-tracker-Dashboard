@@ -101,6 +101,16 @@ export async function initSchema() {
       rows_json    JSONB NOT NULL DEFAULT '[]',
       synced_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+
+    -- Persistent fallback for Google Sheet stage rosters (one row per source: 'stages' for the
+    -- per-stage CSV bundle, 'accounts' for the master all-accounts sheet that carries MRR + the
+    -- Live/Churn signal). When a fetch from Google fails (sheet unpublished, network blip),
+    -- the API serves the last known-good payload from this table instead of erroring.
+    CREATE TABLE IF NOT EXISTS sheet_cache (
+      source       TEXT PRIMARY KEY,
+      payload      JSONB NOT NULL,
+      fetched_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
   `);
 
   // Materialized views — dropped and recreated on every cold start so schema changes
