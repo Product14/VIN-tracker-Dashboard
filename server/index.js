@@ -1,4 +1,8 @@
 import "./loadEnv.js";
+import dns from "node:dns";
+// Some macOS dev environments hang on IPv6 lookups for hosted Metabase; prefer IPv4
+// so /api/dream and other Metabase passthroughs don't time out under flaky resolvers.
+dns.setDefaultResultOrder?.("ipv4first");
 import { initSchema } from "./db.js";
 import app from "./app.js";
 
