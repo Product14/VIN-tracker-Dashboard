@@ -77,11 +77,6 @@ const DATE_RANGES: { key: DateRange; label: string }[] = [
 
 type CustomRange = { from: string; to: string }; // ISO yyyy-mm-dd, both inclusive
 
-function fmtDay(iso: string): string {
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return iso;
-  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-}
 function startOfDay(d: Date): Date { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
 function startOfWeekMon(d: Date): Date {
   const x = startOfDay(d);
@@ -89,36 +84,53 @@ function startOfWeekMon(d: Date): Date {
   x.setDate(x.getDate() + (day === 0 ? -6 : 1 - day));
   return x;
 }
+// Parse a "YYYY-MM-DD" Metabase day string as a local-midnight Date so it lines
+// up with the viewer's calendar. Critical: `new Date("YYYY-MM-DD")` parses as
+// UTC midnight, which silently shifts the day backwards for any viewer west of
+// UTC — that's the bug that made TODAY/D30 look broken outside IST.
+function parseDay(iso: string | null | undefined): Date | null {
+  if (iso == null) return null;
+  const s = String(iso).trim();
+  if (!s) return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+  if (m) return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : startOfDay(d);
+}
+function fmtDay(iso: string): string {
+  const d = parseDay(iso);
+  if (!d) return iso;
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
 function inRange(iso: string, range: DateRange, custom: CustomRange): boolean {
   if (range === "ALL") return true;
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return false;
+  const day = parseDay(iso);
+  if (!day) return false;
   const today = startOfDay(new Date());
-  if (range === "TODAY") return startOfDay(d).getTime() === today.getTime();
+  if (range === "TODAY") return day.getTime() === today.getTime();
   if (range === "WEEK") {
     const wk = startOfWeekMon(today);
     const end = new Date(wk); end.setDate(wk.getDate() + 7);
-    return d >= wk && d < end;
+    return day >= wk && day < end;
   }
   if (range === "MTD") {
     const mStart = new Date(today.getFullYear(), today.getMonth(), 1);
     const mEnd = new Date(today.getFullYear(), today.getMonth() + 1, 1);
-    return d >= mStart && d < mEnd;
+    return day >= mStart && day < mEnd;
   }
   if (range === "D30") {
     const start = new Date(today); start.setDate(start.getDate() - 29);
     const end = new Date(today); end.setDate(end.getDate() + 1);
-    return d >= start && d < end;
+    return day >= start && day < end;
   }
   if (range === "CUSTOM") {
-    const day = startOfDay(d);
     if (custom.from) {
-      const f = startOfDay(new Date(custom.from));
-      if (!isNaN(f.getTime()) && day < f) return false;
+      const f = parseDay(custom.from);
+      if (f && day < f) return false;
     }
     if (custom.to) {
-      const t = startOfDay(new Date(custom.to));
-      if (!isNaN(t.getTime()) && day > t) return false;
+      const t = parseDay(custom.to);
+      if (t && day > t) return false;
     }
     return true;
   }
