@@ -2614,7 +2614,23 @@ async function handleProcessReportQueue(req, res) {
     return res.status(401).json({ error: "Unauthorized" });
   }
 
-  // ── Step 0: Check Metabase sync lock ──────────────────────────────────────
+  // ── Step 0: Early exit if nothing to do ───────────────────────────────────
+  // Cron runs 09:00–10:59 UTC to cover the 09:00 UTC daily run + drain window.
+  // Once the queue drains, remaining ticks bail here without touching the rest.
+  try {
+    const { rows: [{ open_rows }] } = await query(
+      `SELECT COUNT(*)::int AS open_rows
+         FROM report_queue
+        WHERE status IN ('pending','processing')`
+    );
+    if (open_rows === 0) {
+      return res.json({ ok: true, skipped: true, reason: "queue_empty" });
+    }
+  } catch (e) {
+    console.error("[process-queue] failed to check queue depth:", e?.message);
+  }
+
+  // ── Step 0b: Check Metabase sync lock ─────────────────────────────────────
   try {
     const { rows: [syncState] } = await query("SELECT running FROM sync_state LIMIT 1");
     if (syncState?.running) {
@@ -3382,8 +3398,9 @@ async function resolveArchivedReport(rooftopId, date, isTest) {
 }
 
 // ─── GET /api/cleanup-report-archive ─────────────────────────────────────────
-// Daily cron — deletes archived report HTML older than 30 days so the table
+// Daily cron — deletes archived report HTML older than 8 days so the table
 // stays bounded. Production AND test rows, Rooftop AND Group, all age out together.
+// 8 days = UI's 7-day window + 1-day buffer for timezone/cron-ordering edges.
 app.get("/api/cleanup-report-archive", async (req, res) => {
   const cronSecret = process.env.CRON_SECRET;
   if (cronSecret && req.headers.authorization !== `Bearer ${cronSecret}`) {
@@ -3392,9 +3409,9 @@ app.get("/api/cleanup-report-archive", async (req, res) => {
   try {
     const { rowCount } = await query(
       `DELETE FROM daily_report_emails
-        WHERE report_day < CURRENT_DATE - INTERVAL '30 days'`
+        WHERE report_day < CURRENT_DATE - INTERVAL '8 days'`
     );
-    console.log(`[cleanup-report-archive] pruned ${rowCount} rows older than 30 days`);
+    console.log(`[cleanup-report-archive] pruned ${rowCount} rows older than 8 days`);
     return res.json({ ok: true, deleted: rowCount });
   } catch (e) {
     console.error("[cleanup-report-archive] error:", e?.message);
