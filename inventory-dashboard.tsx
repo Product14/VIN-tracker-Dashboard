@@ -1071,11 +1071,25 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
                   {visibleDates.map((d: string) => {
                     const entry = (r.reportHistory ?? []).find((h: any) => h.date === d);
                     if (!entry) return <td key={d} style={{ ...tdStyle, textAlign: "center", color: "#9ca3af" }}>—</td>;
-                    if (entry.status === "sent") return (
-                      <td key={d} style={{ ...tdStyle, textAlign: "center" }}>
-                        <span style={{ background: "#dcfce7", color: "#166534", borderRadius: 4, padding: "2px 7px", fontSize: 12, fontWeight: 500 }}>Sent</span>
-                      </td>
-                    );
+                    if (entry.status === "sent") {
+                      const badgeStyle = { background: "#dcfce7", color: "#166534", borderRadius: 4, padding: "2px 7px", fontSize: 12, fontWeight: 500 };
+                      if (entry.has_html) return (
+                        <td key={d} style={{ ...tdStyle, textAlign: "center" }}>
+                          <a
+                            href={`${API_BASE}/api/rooftop-report?rooftopId=${encodeURIComponent(r.rooftopId)}&date=${d}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            title="Open the report that was emailed on this day"
+                            style={{ ...badgeStyle, textDecoration: "none", cursor: "pointer" }}
+                          >Sent</a>
+                        </td>
+                      );
+                      return (
+                        <td key={d} style={{ ...tdStyle, textAlign: "center" }}>
+                          <span style={badgeStyle} title="Archived HTML not available for this date">Sent</span>
+                        </td>
+                      );
+                    }
                     return (
                       <td key={d} style={{ ...tdStyle, textAlign: "center" }}>
                         <span style={{ background: "#fef3c7", color: "#92400e", borderRadius: 4, padding: "2px 7px", fontSize: 12, fontWeight: 500 }}>

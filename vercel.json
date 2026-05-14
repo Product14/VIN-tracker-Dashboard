@@ -15,6 +15,7 @@
     { "path": "/api/scheduled-report",     "schedule": "30 12 * * *" },
     { "path": "/api/scheduled-report",     "schedule": "30 18 * * *" },
     { "path": "/api/send-daily-report",    "schedule": "0 9 * * *"   },
-    { "path": "/api/process-report-queue", "schedule": "* * * * *"   }
+    { "path": "/api/process-report-queue", "schedule": "* * * * *"   },
+    { "path": "/api/cleanup-report-archive", "schedule": "0 3 * * *" }
   ]
 }

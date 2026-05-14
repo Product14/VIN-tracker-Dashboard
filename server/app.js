@@ -654,17 +654,28 @@ function buildRooftopSource(dateFilter) {
   ),
   report_history AS (
     SELECT
-      rooftop_id,
+      s.rooftop_id,
       JSON_AGG(
         JSON_BUILD_OBJECT(
-          'date',   TO_CHAR(report_day, 'YYYY-MM-DD'),
-          'status', status,
-          'reason', error_reason
-        ) ORDER BY report_day DESC
+          'date',     TO_CHAR(s.report_day, 'YYYY-MM-DD'),
+          'status',   s.status,
+          'reason',   s.error_reason,
+          'has_html', (dre_r.rooftop_id IS NOT NULL OR dre_g.enterprise_id IS NOT NULL)
+        ) ORDER BY s.report_day DESC
       ) AS report_history
-    FROM rooftop_report_status_daily
-    WHERE report_day IN (SELECT report_day FROM top7_dates)
-    GROUP BY rooftop_id
+    FROM rooftop_report_status_daily s
+    LEFT JOIN daily_report_emails dre_r
+      ON dre_r.report_type   = 'Rooftop'
+     AND dre_r.rooftop_id    = s.rooftop_id
+     AND dre_r.report_day    = s.report_day
+     AND dre_r.is_test       = FALSE
+    LEFT JOIN daily_report_emails dre_g
+      ON dre_g.report_type   = 'Group'
+     AND dre_g.enterprise_id = s.enterprise_id
+     AND dre_g.report_day    = s.report_day
+     AND dre_g.is_test       = FALSE
+    WHERE s.report_day IN (SELECT report_day FROM top7_dates)
+    GROUP BY s.rooftop_id
   )`;
   const from = `(SELECT inv.*, rh.report_history
                  FROM ${invSource} inv LEFT JOIN report_history rh ON rh.rooftop_id = inv.rooftop_id) combined`;
@@ -2495,6 +2506,17 @@ app.get("/api/send-daily-report", async (req, res) => {
 // for the report_day belonging to the given run_id.
 // Priority: sent (1) > individual Rooftop-type error (2) > Group-type error (3).
 async function writeReportStatusSnapshot(runId) {
+  // Test runs must never touch the dashboard snapshot — they go through the
+  // full queue/email/archive path so previews work, but their queue rows are
+  // invisible to customer-facing status. The UPSERT guard below makes 'sent'
+  // sticky, so a test-induced flip would otherwise corrupt that (rooftop, day)
+  // permanently. The admin backfill endpoint applies the same filter.
+  const { rows: [run] } = await query(
+    `SELECT test_mode FROM daily_report_runs WHERE run_id = $1`,
+    [runId]
+  );
+  if (run?.test_mode) return;
+
   await query(`
     INSERT INTO rooftop_report_status_daily
       (report_day, rooftop_id, enterprise_id, status, error_reason)
@@ -2808,6 +2830,38 @@ async function handleProcessReportQueue(req, res) {
 
         const toArr = Array.isArray(to) ? to : [to];
         const ccArr = cc ? (Array.isArray(cc) ? cc : [cc]) : null;
+
+        // Archive the rendered HTML so the dashboard's "Sent" badge can reopen
+        // the exact email later. is_test segregates QA sends from real customer
+        // rows for the same (rooftop, day) — both coexist, only is_test=false
+        // is surfaced to the dashboard. Failure is logged but never fails the
+        // queue row: the email already left.
+        try {
+          await query(
+            `INSERT INTO daily_report_emails
+               (report_type, rooftop_id, enterprise_id, report_day, is_test,
+                html, subject, to_emails, cc_emails,
+                report_queue_id, run_id, entity_name, sent_at)
+             VALUES ('Rooftop', $1, $2, $3::date, $4,
+                     $5, $6, $7, $8,
+                     $9, $10, $11, NOW())
+             ON CONFLICT (rooftop_id, report_day, is_test) WHERE report_type = 'Rooftop'
+             DO UPDATE SET html            = EXCLUDED.html,
+                           subject         = EXCLUDED.subject,
+                           to_emails       = EXCLUDED.to_emails,
+                           cc_emails       = EXCLUDED.cc_emails,
+                           report_queue_id = EXCLUDED.report_queue_id,
+                           run_id          = EXCLUDED.run_id,
+                           entity_name     = EXCLUDED.entity_name,
+                           sent_at         = NOW()`,
+            [rooftop_id, rt.enterprise_id, yesterdayStr, testMode,
+             html, subject, toArr, ccArr,
+             id, run_id, rt.team_name]
+          );
+        } catch (e) {
+          console.error(`[process-queue] failed to persist report HTML for ${rooftop_id} ${yesterdayStr} (test=${testMode}):`, e?.message);
+        }
+
         await query(
           `UPDATE report_queue SET status='sent', entity_id=$2, entity_name=$3, to_emails=$4, cc_emails=$5, processed_at=NOW() WHERE id=$1`,
           [id, rooftop_id, rt.team_name, toArr, ccArr]
@@ -2870,6 +2924,36 @@ async function handleProcessReportQueue(req, res) {
 
         const toArr = Array.isArray(to) ? to : [to];
         const ccArr = cc ? (Array.isArray(cc) ? cc : [cc]) : null;
+
+        // Archive the Group/Enterprise email HTML. A child rooftop's "Sent"
+        // badge — which the snapshot writer marks as sent on the basis of THIS
+        // Group send — falls back to this row via the endpoint's lookup.
+        try {
+          await query(
+            `INSERT INTO daily_report_emails
+               (report_type, rooftop_id, enterprise_id, report_day, is_test,
+                html, subject, to_emails, cc_emails,
+                report_queue_id, run_id, entity_name, sent_at)
+             VALUES ('Group', NULL, $1, $2::date, $3,
+                     $4, $5, $6, $7,
+                     $8, $9, $10, NOW())
+             ON CONFLICT (enterprise_id, report_day, is_test) WHERE report_type = 'Group'
+             DO UPDATE SET html            = EXCLUDED.html,
+                           subject         = EXCLUDED.subject,
+                           to_emails       = EXCLUDED.to_emails,
+                           cc_emails       = EXCLUDED.cc_emails,
+                           report_queue_id = EXCLUDED.report_queue_id,
+                           run_id          = EXCLUDED.run_id,
+                           entity_name     = EXCLUDED.entity_name,
+                           sent_at         = NOW()`,
+            [enterprise_id, yesterdayStr, testMode,
+             html, subject, toArr, ccArr,
+             id, run_id, ent.name]
+          );
+        } catch (e) {
+          console.error(`[process-queue] failed to persist group report HTML for ${enterprise_id} ${yesterdayStr} (test=${testMode}):`, e?.message);
+        }
+
         await query(
           `UPDATE report_queue SET status='sent', entity_id=$2, entity_name=$3, to_emails=$4, cc_emails=$5, processed_at=NOW() WHERE id=$1`,
           [id, enterprise_id, ent.name, toArr, ccArr]
@@ -3182,6 +3266,139 @@ app.get("/api/preview-daily-report/raw", async (req, res) => {
   } catch (e) {
     console.error("[preview-daily-report/raw] error:", e?.message);
     return res.status(500).send(`<pre>Error: ${e?.message}</pre>`);
+  }
+});
+
+// ─── GET /api/rooftop-report ─────────────────────────────────────────────────
+// Serves the exact HTML that was emailed for a rooftop on a specific day.
+// Renders as a wrapper page with the email HTML in an iframe — same pattern as
+// /api/preview-daily-report. Document isolation prevents the browser's HTML5
+// table-fostering rules from breaking the email's nested-table layout.
+// Resolution order (performed via the /raw sub-endpoint):
+//   1. Rooftop-type archive for (rooftop_id, date)
+//   2. Group-type archive for (enterprise_id, date) — parent group covered this rooftop
+//   3. 404
+// ?test=true reads QA rows. No auth — matches /api/preview-daily-report/raw.
+app.get("/api/rooftop-report", async (req, res) => {
+  const rooftopId = String(req.query.rooftopId || "").trim();
+  const date      = String(req.query.date || "").trim();
+  const isTest    = req.query.test === "true";
+  if (!rooftopId || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return res.status(400).send("<pre>Missing or invalid rooftopId / date (YYYY-MM-DD)</pre>");
+  }
+  try {
+    // Resolve which row will be served (Rooftop direct vs Group fallback) so the
+    // wrapper page can render the right banner. The /raw endpoint repeats the
+    // same lookup when the iframe loads.
+    const meta = await resolveArchivedReport(rooftopId, date, isTest);
+    if (!meta) {
+      return res.status(404).send(
+        `<pre>No ${isTest ? "test" : "production"} report archived for rooftop ${rooftopId} on ${date}.
+Reports are only archived for emails sent after this feature was deployed.</pre>`
+      );
+    }
+
+    const rawSrc = `/api/rooftop-report/raw?rooftopId=${encodeURIComponent(rooftopId)}&date=${date}${isTest ? "&test=true" : ""}`;
+    const to      = (meta.to_emails || []).join(", ") || "(none)";
+    const subject = meta.subject || "";
+    const sentAt  = new Date(meta.sent_at).toISOString();
+    const banners = [];
+    if (isTest) {
+      banners.push(`<div style="background:#fef3c7;color:#92400e;padding:8px 14px;font:14px -apple-system,sans-serif;border-bottom:2px solid #f59e0b">⚠ TEST SEND — sent_at ${sentAt} · to ${to} · subject "${subject}"</div>`);
+    }
+    if (meta.source === "group") {
+      const who = meta.entity_name ? `<b>${meta.entity_name}</b>'s` : "its parent enterprise's";
+      banners.push(`<div style="background:#dbeafe;color:#1e40af;padding:8px 14px;font:14px -apple-system,sans-serif;border-bottom:1px solid #93c5fd">ℹ Group report — this rooftop didn't get its own daily email; it was covered by ${who} group report.</div>`);
+    }
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    return res.send(`<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Report — ${date}</title>
+<style>
+  body { margin:0; padding:0; background:#EBEBEB; }
+  iframe { display:block; width:600px; max-width:100%; margin:0 auto; border:none; background:#FFFFFF; }
+</style></head>
+<body>
+  ${banners.join("")}
+  <iframe src="${rawSrc}" id="f" scrolling="no"></iframe>
+  <script>
+    const f = document.getElementById("f");
+    function resize() { try { f.style.height = f.contentDocument.body.scrollHeight + "px"; } catch (e) {} }
+    f.addEventListener("load", resize);
+  </script>
+</body></html>`);
+  } catch (e) {
+    console.error("[rooftop-report] error:", e?.message);
+    return res.status(500).send(`<pre>Error: ${e?.message}</pre>`);
+  }
+});
+
+// Raw email HTML — loaded inside the iframe above, isolated from outer page styles.
+app.get("/api/rooftop-report/raw", async (req, res) => {
+  const rooftopId = String(req.query.rooftopId || "").trim();
+  const date      = String(req.query.date || "").trim();
+  const isTest    = req.query.test === "true";
+  if (!rooftopId || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return res.status(400).send("<pre>Missing or invalid rooftopId / date (YYYY-MM-DD)</pre>");
+  }
+  try {
+    const row = await resolveArchivedReport(rooftopId, date, isTest);
+    if (!row) return res.status(404).send("<pre>Not found</pre>");
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    return res.send(row.html);
+  } catch (e) {
+    console.error("[rooftop-report/raw] error:", e?.message);
+    return res.status(500).send(`<pre>Error: ${e?.message}</pre>`);
+  }
+});
+
+// Looks up the archived report for (rooftopId, date, isTest). Tries the
+// Rooftop-type row first, then falls back to the parent enterprise's Group-type
+// row. Returns null if neither exists.
+async function resolveArchivedReport(rooftopId, date, isTest) {
+  let { rows } = await query(
+    `SELECT html, to_emails, subject, sent_at, entity_name, 'rooftop'::text AS source
+       FROM daily_report_emails
+      WHERE report_type = 'Rooftop' AND rooftop_id = $1
+        AND report_day = $2::date AND is_test = $3`,
+    [rooftopId, date, isTest]
+  );
+  if (rows.length > 0) return rows[0];
+
+  const { rows: rt } = await query(
+    `SELECT enterprise_id FROM rooftop_details WHERE team_id = $1`,
+    [rooftopId]
+  );
+  const entId = rt[0]?.enterprise_id;
+  if (!entId) return null;
+
+  ({ rows } = await query(
+    `SELECT html, to_emails, subject, sent_at, entity_name, 'group'::text AS source
+       FROM daily_report_emails
+      WHERE report_type = 'Group' AND enterprise_id = $1
+        AND report_day = $2::date AND is_test = $3`,
+    [entId, date, isTest]
+  ));
+  return rows[0] || null;
+}
+
+// ─── GET /api/cleanup-report-archive ─────────────────────────────────────────
+// Daily cron — deletes archived report HTML older than 30 days so the table
+// stays bounded. Production AND test rows, Rooftop AND Group, all age out together.
+app.get("/api/cleanup-report-archive", async (req, res) => {
+  const cronSecret = process.env.CRON_SECRET;
+  if (cronSecret && req.headers.authorization !== `Bearer ${cronSecret}`) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  try {
+    const { rowCount } = await query(
+      `DELETE FROM daily_report_emails
+        WHERE report_day < CURRENT_DATE - INTERVAL '30 days'`
+    );
+    console.log(`[cleanup-report-archive] pruned ${rowCount} rows older than 30 days`);
+    return res.json({ ok: true, deleted: rowCount });
+  } catch (e) {
+    console.error("[cleanup-report-archive] error:", e?.message);
+    return res.status(500).json({ error: e?.message });
   }
 });
 

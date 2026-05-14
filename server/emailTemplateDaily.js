@@ -46,14 +46,20 @@ function formatTat(hrs) {
 
 // ─── Shared snippets ──────────────────────────────────────────────────────────
 
-// 1-px horizontal rule, Outlook-safe
-function rule(color = "#E5E7EB") {
-  return `<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;"><tr><td height="1" style="height:1px;font-size:0;line-height:0;background:${color};">&nbsp;</td></tr></table>`;
-}
-
-// Vertical spacer
+// Vertical spacer. Use when nested inside a <td> (between sibling tables).
 function spacer(px) {
   return `<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;"><tr><td height="${px}" style="height:${px}px;font-size:0;line-height:0;">&nbsp;</td></tr></table>`;
+}
+
+// Row-form variants — use between sibling <tr> elements of an outer table.
+// A bare <table> placed between <tr> rows is invalid HTML5 and gets
+// foster-parented OUT of the parent table by browsers (Gmail tolerates it),
+// which breaks the 600px-wide email layout when previewed in a browser.
+function ruleRow(color = "#E5E7EB") {
+  return `<tr><td style="padding:0;line-height:0;font-size:0;height:1px;background:${color};">&nbsp;</td></tr>`;
+}
+function spacerRow(px) {
+  return `<tr><td height="${px}" style="height:${px}px;font-size:0;line-height:0;padding:0;">&nbsp;</td></tr>`;
 }
 
 // ─── Rooftop Report ───────────────────────────────────────────────────────────
@@ -398,7 +404,7 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
           </td>
         </tr>
 
-        ${rule()}
+        ${ruleRow()}
 
         <!-- ══ YESTERDAY'S PERFORMANCE — hidden on quiet days ════════════════ -->
         ${!quietDay ? `
@@ -408,9 +414,9 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
             ${yesterdayCards}
           </td>
         </tr>
-        ${spacer(28)}
+        ${spacerRow(28)}
         ` : ""}
-        ${rule()}
+        ${ruleRow()}
 
         <!-- ══ INVENTORY SNAPSHOT ══════════════════════════════════════════════ -->
         <tr>
@@ -419,8 +425,8 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
           </td>
         </tr>
 
-        ${spacer(28)}
-        ${rule()}
+        ${spacerRow(28)}
+        ${ruleRow()}
 
         <!-- ══ PUBLISHED VINs — hidden on quiet days ═══════════════════════════ -->
         ${!quietDay ? `
@@ -444,7 +450,7 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
         ` : ""}
 
         ${noImageVins.length > 0 ? `
-        ${rule()}
+        ${ruleRow()}
 
         <!-- ══ VEHICLES WITHOUT PHOTOS ════════════════════════════════════════ -->
         <tr>
@@ -466,7 +472,7 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
         ` : ""}
 
         ${imsOff && quietDay ? `
-        ${rule()}
+        ${ruleRow()}
 
         <!-- ══ RECENT VEHICLES (IMS off, quiet day) ════════════════════════════ -->
         <tr>
@@ -488,7 +494,7 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
         </tr>
         ` : ""}
 
-        ${rule()}
+        ${ruleRow()}
 
         <!-- ══ CONTACT SUPPORT ════════════════════════════════════════════════ -->
         <tr>
@@ -499,7 +505,7 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
           </td>
         </tr>
 
-        ${rule()}
+        ${ruleRow()}
 
         <!-- ══ FOOTER ══════════════════════════════════════════════════════════ -->
         <tr>
@@ -650,7 +656,7 @@ export function buildGroupReportHtml(data, dateLabel) {
           </table>
         </td>
       </tr>
-      ${spacer(20)}
+      ${spacerRow(20)}
       <tr>
         <td class="sec-pad" style="padding:0 28px 24px;">
           <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;">
@@ -700,7 +706,7 @@ export function buildGroupReportHtml(data, dateLabel) {
           </table>
         </td>
       </tr>
-      ${spacer(20)}
+      ${spacerRow(20)}
       <tr>
         <td class="sec-pad" style="padding:0 28px 24px;">
           <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;">
@@ -932,7 +938,7 @@ export function buildGroupReportHtml(data, dateLabel) {
           </td>
         </tr>
 
-        ${rule()}
+        ${ruleRow()}
 
         <!-- ══ YESTERDAY'S SNAPSHOT — hidden on quiet days ═════════════════════ -->
         ${!quietDay ? `
@@ -943,8 +949,8 @@ export function buildGroupReportHtml(data, dateLabel) {
           </td>
         </tr>
 
-        ${spacer(28)}
-        ${rule()}
+        ${spacerRow(28)}
+        ${ruleRow()}
 
         <!-- ══ ROOFTOP BREAKDOWN — hidden on quiet days ════════════════════════ -->
         <tr>
@@ -965,18 +971,18 @@ export function buildGroupReportHtml(data, dateLabel) {
           </td>
         </tr>
 
-        ${rule()}
+        ${ruleRow()}
 
         ${recentVinsSection}
 
-        ${recentVinsSection ? rule() : ""}
+        ${recentVinsSection ? ruleRow() : ""}
         ` : ""}
 
         ${inventorySection}
 
-        ${recentPublishedSection ? `${rule()}${recentPublishedSection}` : ""}
+        ${recentPublishedSection ? `${ruleRow()}${recentPublishedSection}` : ""}
 
-        ${rule()}
+        ${ruleRow()}
 
         <!-- ══ CONTACT SUPPORT ═════════════════════════════════════════════════ -->
         <tr>
@@ -987,7 +993,7 @@ export function buildGroupReportHtml(data, dateLabel) {
           </td>
         </tr>
 
-        ${rule()}
+        ${ruleRow()}
 
         <!-- ══ FOOTER ══════════════════════════════════════════════════════════ -->
         <tr>
