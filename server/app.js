@@ -2830,6 +2830,7 @@ async function handleProcessReportQueue(req, res) {
       ? `AND DATE(received_at::timestamptz AT TIME ZONE $2) >= ($3::date - INTERVAL '90 days')
          AND DATE(received_at::timestamptz AT TIME ZONE $2) <= $3::date`
       : ``;
+    const params = imsOff ? [id, tz, yesterdayStr] : [id];
     const { rows: [r] } = await query(
       `SELECT COUNT(*) AS bad_count FROM vins
         WHERE ${field} = $1
@@ -2841,7 +2842,7 @@ async function handleProcessReportQueue(req, res) {
             vin_creation IS NULL
             OR processed_at::timestamptz < vin_creation::timestamptz
           )`,
-      [id, tz, yesterdayStr]
+      params
     );
     return Number(r.bad_count) > 0;
   }

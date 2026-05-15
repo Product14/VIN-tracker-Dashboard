@@ -79,6 +79,7 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
     // Yesterday
     newVins,
     vinsDelivered,
+    vinsPending,
     avgTtlDaysYesterday,
     avgScoreYesterday,
     // Inventory totals (IMS-on) / inv90 fields populated when IMS-off
@@ -166,7 +167,7 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
 
   // ── Pill / chip helpers ────────────────────────────────────────────────────
   // Each chip is its own <td> in a 2-cell table — survives Gmail without flex.
-  const chip = (bg, fg, lblColor, label, value, unit) => `
+  const chip = (bg, fg, lblColor, label, value) => `
     <td valign="middle" style="background:${bg};padding:6px 10px;border-radius:999px;font-family:-apple-system,BlinkMacSystemFont,Arial,Helvetica,sans-serif;">
       <table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;">
         <tr>
@@ -174,16 +175,30 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
             <span style="display:inline-block;font-size:9px;font-weight:700;letter-spacing:0.3px;text-transform:uppercase;color:${lblColor};opacity:0.85;">${label}</span>
           </td>
           <td valign="middle" style="padding:0;">
-            <span style="font-size:12.5px;font-weight:700;color:${fg};letter-spacing:-0.2px;">${value}${unit ? `<span style="font-size:9.5px;font-weight:500;opacity:0.7;margin-left:1px;">${unit}</span>` : ""}</span>
+            <span style="font-size:12.5px;font-weight:700;color:${fg};letter-spacing:-0.2px;">${value}</span>
           </td>
         </tr>
       </table>
     </td>`;
 
+  // Format Time to Line as "Xd Yh" / "Yh" / "Zm" — never shows fractional days.
+  // Input is a number of days (e.g. 0.2, 1.5, 12.0). Returns null if input is null.
+  const formatTtl = (days) => {
+    if (days == null) return null;
+    const totalMins = Math.max(0, Math.round(Number(days) * 24 * 60));
+    if (totalMins < 60) return `${totalMins}m`;
+    const totalHrs = Math.round(totalMins / 60);
+    if (totalHrs < 24) return `${totalHrs}h`;
+    const d = Math.floor(totalHrs / 24);
+    const h = totalHrs - d * 24;
+    return h === 0 ? `${d}d` : `${d}d ${h}h`;
+  };
+
   const buildChipsRow = (ttlDays, score) => {
     const cells = [];
-    if (ttlDays != null) cells.push(chip("#efeaff", "#5b3ce8", "#5b3ce8", "Time to Line", Number(ttlDays).toFixed(1), "days"));
-    if (score   != null) cells.push(chip("#eaf0ff", "#1a4ad6", "#1a4ad6", "Media Score",  Number(score).toFixed(1),  ""));
+    const ttlStr = formatTtl(ttlDays);
+    if (ttlStr != null) cells.push(chip("#efeaff", "#5b3ce8", "#5b3ce8", "Time to Line", ttlStr));
+    if (score  != null) cells.push(chip("#eaf0ff", "#1a4ad6", "#1a4ad6", "Media Score",  Number(score).toFixed(1)));
     if (cells.length === 0) return "";
     const sep = `<td width="6" style="width:6px;font-size:0;line-height:0;">&nbsp;</td>`;
     return `
@@ -199,8 +214,8 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
   // ── Card builder (Yesterday and Inventory share the same shell) ────────────
   // Layout per card: 2-column table (donut left, legend right). The donut is an
   // <img> pointing at /api/donut.svg so Gmail renders it via image proxy.
-  const buildCard = ({ title, donut, legend, chipsHtml }) => `
-    <td valign="top" style="width:50%;background:#FFFFFF;border:1px solid #e7e9ee;border-radius:14px;padding:14px 16px;font-family:-apple-system,BlinkMacSystemFont,Arial,Helvetica,sans-serif;">
+  const buildCard = ({ title, donut, legend, chipsHtml, widthPct = "50%" }) => `
+    <td valign="top" style="width:${widthPct};background:#FFFFFF;border:1px solid #e7e9ee;border-radius:14px;padding:14px 16px;font-family:-apple-system,BlinkMacSystemFont,Arial,Helvetica,sans-serif;">
       <div style="font-size:11px;letter-spacing:0.8px;text-transform:uppercase;color:#5b6577;font-weight:600;margin-bottom:6px;line-height:1.4;">${title}</div>
       <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;">
         <tr>
@@ -226,9 +241,11 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
       </tr>
     </table>`;
 
-  const yesterdayCard = buildCard({
+  // Yesterday card is hidden on quiet days (no vehicles received yesterday) —
+  // the Inventory card then expands to full width.
+  const yesterdayCard = quietDay ? "" : buildCard({
     title: "Yesterday",
-    donut: donutImg({ green: vinsDelivered, total: Math.max(newVins, 1), center: yCenter, label: yLabel }),
+    donut: donutImg({ green: vinsDelivered, amber: vinsPending || 0, total: Math.max(newVins, 1), center: yCenter, label: yLabel }),
     legend: `
       ${legendRow("#16a34a", "Vehicles Shot",      n(newVins),       "")}
       ${legendRow("#16a34a", "Vehicles Delivered", n(vinsDelivered), "")}
@@ -244,12 +261,12 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
       ${legendRow("#d97706", "No Photos", n(invNoPhotos),  "")}
     `.trim(),
     chipsHtml: buildChipsRow(avgTtlDaysInventory, avgScoreInventory),
+    widthPct: quietDay ? "100%" : "50%",
   });
 
-  const cardsRow = `
-    <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:separate;border-spacing:14px 0;mso-table-lspace:0pt;mso-table-rspace:0pt;">
-      <tr>${yesterdayCard}${inventoryCard}</tr>
-    </table>`;
+  const cardsRow = quietDay
+    ? `<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;"><tr>${inventoryCard}</tr></table>`
+    : `<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:separate;border-spacing:14px 0;mso-table-lspace:0pt;mso-table-rspace:0pt;"><tr>${yesterdayCard}${inventoryCard}</tr></table>`;
 
   // ── Full HTML ─────────────────────────────────────────────────────────────
   // Email-safe: 100% inline styles, table-based layout, hosted images for
