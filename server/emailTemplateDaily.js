@@ -266,7 +266,7 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
 
   const cardsRow = quietDay
     ? `<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;"><tr>${inventoryCard}</tr></table>`
-    : `<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:separate;border-spacing:14px 0;mso-table-lspace:0pt;mso-table-rspace:0pt;"><tr>${yesterdayCard}${inventoryCard}</tr></table>`;
+    : `<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;"><tr>${yesterdayCard}<td width="14" style="width:14px;min-width:14px;font-size:0;line-height:0;">&nbsp;</td>${inventoryCard}</tr></table>`;
 
   // ── Full HTML ─────────────────────────────────────────────────────────────
   // Email-safe: 100% inline styles, table-based layout, hosted images for
