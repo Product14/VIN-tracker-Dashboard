@@ -51,6 +51,7 @@ export async function initSchema() {
     ALTER TABLE vins ADD COLUMN IF NOT EXISTS trim         TEXT;
     ALTER TABLE vins ADD COLUMN IF NOT EXISTS stock_number TEXT;
     ALTER TABLE vins ADD COLUMN IF NOT EXISTS vin_score REAL;
+    ALTER TABLE vins ADD COLUMN IF NOT EXISTS vin_creation TEXT;
 
     -- Migration: swap PK from vin → dealer_vin_id on existing deployments.
     DO $$

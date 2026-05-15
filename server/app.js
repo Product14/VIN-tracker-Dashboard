@@ -94,7 +94,7 @@ async function syncVins() {
   const statuses = [], after24hs = [], receivedAts = [], processedAts = [];
   const reasonBuckets = [], holdReasons = [], hasPhotosArr = [];
   const outputImageCounts = [], thumbnailUrls = [], vdpUrls = [], vehiclePrices = [], syncedAts = [];
-  const makes = [], models = [], years = [], trims = [], stockNumbers = [], vinScores = [];
+  const makes = [], models = [], years = [], trims = [], stockNumbers = [], vinScores = [], vinCreations = [];
 
   for (const row of deduped) {
     vins.push(row.vinName ?? "");
@@ -118,6 +118,7 @@ async function syncVins() {
     trims.push(row.trim ?? null);
     stockNumbers.push(row.stockNumber ?? null);
     vinScores.push(row.vin_score != null ? Number(row.vin_score) : null);
+    vinCreations.push(cleanDate(row.vinCreation));
     syncedAts.push(syncedAt);
   }
 
@@ -144,14 +145,14 @@ async function syncVins() {
     INSERT INTO vins
       (dealer_vin_id, vin, enterprise_id, rooftop_id, status, after_24h, received_at, processed_at,
        reason_bucket, hold_reason, has_photos, output_image_count, thumbnail_url, vdp_url, vehicle_price,
-       make, model, year, trim, stock_number, vin_score, synced_at)
+       make, model, year, trim, stock_number, vin_score, synced_at, vin_creation)
     SELECT
       UNNEST($1::text[]),    UNNEST($2::text[]),     UNNEST($3::text[]),     UNNEST($4::text[]),
       UNNEST($5::text[]),    UNNEST($6::smallint[]), UNNEST($7::text[]),     UNNEST($8::text[]),
       UNNEST($9::text[]),    UNNEST($10::text[]),    UNNEST($11::smallint[]),UNNEST($12::int[]),
       UNNEST($13::text[]),   UNNEST($14::text[]),    UNNEST($15::real[]),
       UNNEST($16::text[]),   UNNEST($17::text[]),   UNNEST($18::text[]),    UNNEST($19::text[]),
-      UNNEST($20::text[]),   UNNEST($21::real[]),   UNNEST($22::text[])
+      UNNEST($20::text[]),   UNNEST($21::real[]),   UNNEST($22::text[]),    UNNEST($23::text[])
   `;
 
   const batchStarts = [];
@@ -171,7 +172,7 @@ async function syncVins() {
           slice(reasonBuckets), slice(holdReasons), slice(hasPhotosArr), slice(outputImageCounts),
           slice(thumbnailUrls), slice(vdpUrls), slice(vehiclePrices),
           slice(makes), slice(models), slice(years), slice(trims),
-          slice(stockNumbers), slice(vinScores), slice(syncedAts),
+          slice(stockNumbers), slice(vinScores), slice(syncedAts), slice(vinCreations),
         ]);
         console.log(`[sync:VIN_DETAILS] batch ${batchNum} done (rows ${i + 1}–${Math.min(i + BATCH_SIZE, deduped.length)})`);
       } finally {
@@ -381,6 +382,7 @@ function toApiRow(r) {
     hasPhotos:    r.has_photos !== null ? Boolean(r.has_photos) : false,
     receivedAt:   r.received_at,
     processedAt:  r.processed_at,
+    vinCreation:  r.vin_creation ?? null,
     syncedAt:     r.synced_at,
     vinScore:     r.vin_score ?? null,
     vdpUrl:       r.vdp_url ?? null,
