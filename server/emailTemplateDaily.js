@@ -102,9 +102,11 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
   const quietDay = !newVins || newVins === 0;
 
   // ── Public base URL ────────────────────────────────────────────────────────
-  // The donut graphic is served from /api/donut.svg on this app's own server.
-  // Gmail's image proxy needs an absolute, publicly reachable URL.
-  const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL
+  // Donut graphic is served from /api/donut.svg on this app's own server. Reuses
+  // DASHBOARD_URL (already set in Vercel and used elsewhere in the codebase as
+  // the canonical public hostname). Falls back to Vercel's auto-injected
+  // VERCEL_URL for preview deploys, then empty for local dev.
+  const DASHBOARD_URL = process.env.DASHBOARD_URL
     || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "");
 
   const donutImg = ({ green = 0, amber = 0, total = 100, center = "", label = "" }, size = 150) => {
@@ -112,7 +114,7 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
       green: String(green), amber: String(amber), total: String(total),
       center, label, w: String(size),
     }).toString();
-    return `<img src="${PUBLIC_BASE_URL}/api/donut.svg?${qs}" width="${size}" height="${size}" alt="" style="display:block;width:${size}px;height:${size}px;border:0;outline:none;text-decoration:none;" />`;
+    return `<img src="${DASHBOARD_URL}/api/donut.svg?${qs}" width="${size}" height="${size}" alt="" style="display:block;width:${size}px;height:${size}px;border:0;outline:none;text-decoration:none;" />`;
   };
 
   // ── Card-level numbers ─────────────────────────────────────────────────────
