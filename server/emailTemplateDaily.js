@@ -70,9 +70,13 @@ const DASHBOARD_URL = (process.env.DASHBOARD_URL
 ).replace(/\/+$/, "");
 
 const donutImg = ({ green = 0, blue = 0, amber = 0, total = 100, center = "", label = "" }, size = 150) => {
+  // Render SVG at 3× the display size so Gmail's image proxy rasterizes at a
+  // higher resolution; the <img> width/height attributes downscale to the
+  // intended CSS size for crisp output on retina/3× DPI screens.
+  const renderSize = size * 3;
   const qs = new URLSearchParams({
     green: String(green), blue: String(blue), amber: String(amber), total: String(total),
-    center, label, w: String(size),
+    center, label, w: String(renderSize),
   }).toString();
   return `<img src="${DASHBOARD_URL}/api/donut.svg?${qs}" width="${size}" height="${size}" alt="" style="display:block;width:${size}px;height:${size}px;border:0;outline:none;text-decoration:none;" />`;
 };

@@ -2380,7 +2380,7 @@ app.get("/api/donut.svg", (req, res) => {
   const amber  = Math.max(0, Math.min(total - green - blue, Number(req.query.amber) || 0));
   const center = String(req.query.center || "").slice(0, 12);
   const label  = String(req.query.label  || "").slice(0, 24);
-  const w      = Math.min(400, Math.max(60, Number(req.query.w) || 150));
+  const w      = Math.min(600, Math.max(60, Number(req.query.w) || 150));
 
   const C        = 2 * Math.PI * 58;
   const greenLen = (green / total) * C;
