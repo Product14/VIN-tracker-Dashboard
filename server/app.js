@@ -2376,13 +2376,15 @@ app.post(
 app.get("/api/donut.svg", (req, res) => {
   const total  = Math.max(1, Number(req.query.total)  || 100);
   const green  = Math.max(0, Math.min(total, Number(req.query.green) || 0));
-  const amber  = Math.max(0, Math.min(total - green, Number(req.query.amber) || 0));
+  const blue   = Math.max(0, Math.min(total - green, Number(req.query.blue) || 0));
+  const amber  = Math.max(0, Math.min(total - green - blue, Number(req.query.amber) || 0));
   const center = String(req.query.center || "").slice(0, 12);
   const label  = String(req.query.label  || "").slice(0, 24);
   const w      = Math.min(400, Math.max(60, Number(req.query.w) || 150));
 
   const C        = 2 * Math.PI * 58;
   const greenLen = (green / total) * C;
+  const blueLen  = (blue  / total) * C;
   const amberLen = (amber / total) * C;
 
   // Escape minimal XML chars for the user-supplied label/center text
@@ -2393,7 +2395,8 @@ app.get("/api/donut.svg", (req, res) => {
   <g transform="rotate(-90 75 75)">
     <circle cx="75" cy="75" r="58" fill="none" stroke="#eef0f4" stroke-width="18"/>
     ${greenLen > 0 ? `<circle cx="75" cy="75" r="58" fill="none" stroke="#16a34a" stroke-width="18" stroke-dasharray="${greenLen.toFixed(2)} ${C.toFixed(2)}"/>` : ""}
-    ${amberLen > 0 ? `<circle cx="75" cy="75" r="58" fill="none" stroke="#d97706" stroke-width="18" stroke-dasharray="${amberLen.toFixed(2)} ${C.toFixed(2)}" stroke-dashoffset="${(-greenLen).toFixed(2)}"/>` : ""}
+    ${blueLen  > 0 ? `<circle cx="75" cy="75" r="58" fill="none" stroke="#2f6bff" stroke-width="18" stroke-dasharray="${blueLen.toFixed(2)} ${C.toFixed(2)}" stroke-dashoffset="${(-greenLen).toFixed(2)}"/>` : ""}
+    ${amberLen > 0 ? `<circle cx="75" cy="75" r="58" fill="none" stroke="#d97706" stroke-width="18" stroke-dasharray="${amberLen.toFixed(2)} ${C.toFixed(2)}" stroke-dashoffset="${(-(greenLen + blueLen)).toFixed(2)}"/>` : ""}
   </g>
   <text x="75" y="76" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Arial,Helvetica,sans-serif" font-size="26" font-weight="700" fill="#0c1322" letter-spacing="-0.5">${esc(center)}</text>
   <text x="75" y="92" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Arial,Helvetica,sans-serif" font-size="9.5" font-weight="600" fill="#98a0ad" letter-spacing="0.8">${esc(label)}</text>

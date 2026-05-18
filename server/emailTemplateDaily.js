@@ -69,9 +69,9 @@ const DASHBOARD_URL = (process.env.DASHBOARD_URL
   || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "")
 ).replace(/\/+$/, "");
 
-const donutImg = ({ green = 0, amber = 0, total = 100, center = "", label = "" }, size = 150) => {
+const donutImg = ({ green = 0, blue = 0, amber = 0, total = 100, center = "", label = "" }, size = 150) => {
   const qs = new URLSearchParams({
-    green: String(green), amber: String(amber), total: String(total),
+    green: String(green), blue: String(blue), amber: String(amber), total: String(total),
     center, label, w: String(size),
   }).toString();
   return `<img src="${DASHBOARD_URL}/api/donut.svg?${qs}" width="${size}" height="${size}" alt="" style="display:block;width:${size}px;height:${size}px;border:0;outline:none;text-decoration:none;" />`;
@@ -174,6 +174,9 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
   const invDelivered  = imsOff ? (inv90?.invDelivered  || 0) : (totalDelivered || 0);
   const invWithPhotos = imsOff ? (inv90?.received      || 0) : (withPhotos     || 0);
   const invNoPhotos   = noImagesTotal || 0;
+  // Pending = has-photos-but-not-delivered. Donut and legend show this so the
+  // three counts (delivered + pending + no-photos) reconcile to invTotal.
+  const invPending    = Math.max(0, invTotal - invDelivered - invNoPhotos);
 
   // ── Recent Vehicles rows ───────────────────────────────────────────────────
   const recentRowsHtml = recentVins.length === 0
@@ -269,9 +272,10 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
 
   const inventoryCard = buildCard({
     title: "Inventory &middot; Till Yesterday",
-    donut: donutImg({ green: invDelivered, amber: invNoPhotos, total: Math.max(invTotal, 1), center: n(invTotal), label: "INVENTORY" }),
+    donut: donutImg({ green: invDelivered, blue: invPending, amber: invNoPhotos, total: Math.max(invTotal, 1), center: n(invTotal), label: "INVENTORY" }),
     legend: `
       ${legendRow("#16a34a", "Delivered", n(invDelivered), `/${n(invWithPhotos)}`)}
+      ${invPending > 0 ? legendRow("#2f6bff", "Pending", n(invPending), "") : ""}
       ${legendRow("#d97706", "No Photos", n(invNoPhotos),  "")}
     `.trim(),
     chipsHtml: buildChipsRow(avgTtlDaysInventory, avgScoreInventory, { centered: quietDay }),
@@ -435,6 +439,7 @@ export function buildGroupReportHtml(data, dateLabel) {
     ? (invKpis.totalActive || 0)
     : ((invKpis.received || 0) + (noPhotosGroup || 0));
   const invDelivered = invKpis.invDelivered || 0;
+  const invPending   = invKpis.invPending   || 0;
   const invNoPhotos  = noPhotosGroup || 0;
   const invWithPh    = allImsIntegrated ? (invKpis.withPhotos || 0) : invDelivered;
 
@@ -489,8 +494,9 @@ export function buildGroupReportHtml(data, dateLabel) {
 
   const inventoryCard = buildCard({
     title: "Inventory \xb7 Till Yesterday",
-    donut: donutImg({ green: invDelivered, amber: invNoPhotos, total: Math.max(invTotal, 1), center: String(invTotal), label: "INVENTORY" }),
+    donut: donutImg({ green: invDelivered, blue: invPending, amber: invNoPhotos, total: Math.max(invTotal, 1), center: String(invTotal), label: "INVENTORY" }),
     legend: legendRow("#16a34a", "Delivered",  String(invDelivered), `/${invWithPh}`) +
+            (invPending > 0 ? legendRow("#2f6bff", "Pending", String(invPending), "") : "") +
             legendRow("#d97706", "No Photos",  String(invNoPhotos),  ""),
     chipsHtml: buildChipsRow(avgTtlDaysInventory, avgScoreInventory, { centered: quietDay }),
     widthPct: quietDay ? "auto" : "50%",
