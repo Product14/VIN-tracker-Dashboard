@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find /Users/abhijeet -maxdepth 4 -name \"rooftop-view*.csv\" 2>/dev/null | head -5)",
+      "Read(//Users/abhijeet/**)"
+    ]
+  }
+}

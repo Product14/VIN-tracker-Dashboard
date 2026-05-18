@@ -1581,7 +1581,15 @@ async function computeRooftopDailyReport(rooftopId, yesterday, timezone = "Ameri
       ROUND(AVG(
         EXTRACT(EPOCH FROM (processed_at::timestamptz - received_at::timestamptz)) / 3600.0
       ) FILTER (WHERE status = 'Delivered' AND COALESCE(has_photos, 0) = 1 AND DATE(received_at::timestamptz AT TIME ZONE $3) = $2::date
-                  AND processed_at IS NOT NULL AND received_at IS NOT NULL)::numeric, 1) AS avg_ttd_hrs
+                  AND processed_at IS NOT NULL AND received_at IS NOT NULL)::numeric, 1) AS avg_ttd_hrs,
+      -- Time-to-line = processed_at - vin_creation, averaged across yesterday-delivered VINs (days)
+      ROUND(AVG(
+        EXTRACT(EPOCH FROM (processed_at::timestamptz - vin_creation::timestamptz)) / 86400.0
+      ) FILTER (WHERE status = 'Delivered' AND COALESCE(has_photos, 0) = 1 AND DATE(received_at::timestamptz AT TIME ZONE $3) = $2::date
+                  AND processed_at IS NOT NULL AND vin_creation IS NOT NULL)::numeric, 1) AS avg_ttl_days_yday,
+      -- Avg media score across yesterday-delivered VINs
+      ROUND(AVG(vin_score) FILTER (WHERE status = 'Delivered' AND COALESCE(has_photos, 0) = 1 AND DATE(received_at::timestamptz AT TIME ZONE $3) = $2::date
+                                     AND vin_score IS NOT NULL)::numeric, 1) AS avg_score_yday
     FROM vins
     WHERE rooftop_id = $1
   `, [rooftopId, yesterday, timezone]);
@@ -1640,7 +1648,40 @@ async function computeRooftopDailyReport(rooftopId, yesterday, timezone = "Ameri
   let withPhotosPct = 0, deliveryPct = 0, pendingPct = 0;
   let noImageVins = [], noImagesTotal = 0;
   let inv90 = null;
-  let recentVins = [], recentVinsTotal = 0;
+  let avgTtlDaysInventory = null, avgScoreInventory = null;
+
+  // Recent Vehicles list — populated for every rooftop (yesterday-delivered with
+  // photos; fall back to last-90-day deliveries on quiet days). Drives the
+  // permanent "Recent Vehicles · Latest activity" section in the email.
+  const [{ rows: recentVinsRows }, { rows: [recentVinsCount] }] = await Promise.all([
+    query(`
+      SELECT
+        vin, dealer_vin_id, stock_number, thumbnail_url,
+        make, model, year, trim,
+        received_at, processed_at,
+        ROUND(EXTRACT(EPOCH FROM (processed_at::timestamptz - received_at::timestamptz)) / 3600.0 ::numeric, 2) AS ttd_hrs
+      FROM vins
+      WHERE rooftop_id = $1
+        AND status = 'Delivered'
+        AND COALESCE(has_photos, 0) = 1
+        AND processed_at IS NOT NULL
+        AND DATE(received_at::timestamptz AT TIME ZONE $3) <= $2::date
+        AND DATE(received_at::timestamptz AT TIME ZONE $3) >= ($2::date - INTERVAL '90 days')
+      ORDER BY processed_at DESC
+      LIMIT 5
+    `, [rooftopId, yesterday, timezone]),
+    query(`
+      SELECT COUNT(*)::int AS total FROM vins
+       WHERE rooftop_id = $1
+         AND status = 'Delivered'
+         AND COALESCE(has_photos, 0) = 1
+         AND processed_at IS NOT NULL
+         AND DATE(received_at::timestamptz AT TIME ZONE $3) <= $2::date
+         AND DATE(received_at::timestamptz AT TIME ZONE $3) >= ($2::date - INTERVAL '90 days')
+    `, [rooftopId, yesterday, timezone]),
+  ]);
+  let recentVins      = recentVinsRows;
+  let recentVinsTotal = Number(recentVinsCount.total) || 0;
 
   if (!imsOff) {
     const { rows: [totals] } = await query(`
@@ -1648,7 +1689,14 @@ async function computeRooftopDailyReport(rooftopId, yesterday, timezone = "Ameri
         COUNT(*)                                                                          AS total_active,
         COUNT(*) FILTER (WHERE status = 'Delivered' AND COALESCE(has_photos, 0) = 1)   AS total_delivered,
         COUNT(*) FILTER (WHERE status != 'Delivered')                                   AS total_pending,
-        COUNT(*) FILTER (WHERE COALESCE(has_photos, 0) = 1)                             AS with_photos
+        COUNT(*) FILTER (WHERE COALESCE(has_photos, 0) = 1)                             AS with_photos,
+        -- Inventory-cohort TTL & media score: all delivered-with-photos inventory
+        ROUND(AVG(
+          EXTRACT(EPOCH FROM (processed_at::timestamptz - vin_creation::timestamptz)) / 86400.0
+        ) FILTER (WHERE status = 'Delivered' AND COALESCE(has_photos, 0) = 1
+                    AND processed_at IS NOT NULL AND vin_creation IS NOT NULL)::numeric, 1) AS avg_ttl_days_inv,
+        ROUND(AVG(vin_score) FILTER (WHERE status = 'Delivered' AND COALESCE(has_photos, 0) = 1
+                                       AND vin_score IS NOT NULL)::numeric, 1) AS avg_score_inv
       FROM vins
       WHERE rooftop_id = $1
         AND (received_at IS NULL OR DATE(received_at::timestamptz AT TIME ZONE $3) <= $2::date)
@@ -1689,13 +1737,22 @@ async function computeRooftopDailyReport(rooftopId, yesterday, timezone = "Ameri
     deliveryPct    = totalActive > 0 ? Math.round(totalDelivered / totalActive * 1000) / 10 : 0;
     pendingPct     = totalActive > 0 ? Math.round(totalPending   / totalActive * 1000) / 10 : 0;
     withPhotosPct  = totalActive > 0 ? Math.round(withPhotos     / totalActive * 1000) / 10 : 0;
+    avgTtlDaysInventory = totals.avg_ttl_days_inv != null ? Number(totals.avg_ttl_days_inv) : null;
+    avgScoreInventory   = totals.avg_score_inv != null ? Number(totals.avg_score_inv) : null;
   } else {
     // Rolling 90-day snapshot — used when IMS integration is off
     const { rows: [inv] } = await query(`
       SELECT
         COUNT(*)                                              AS received,
         COUNT(*) FILTER (WHERE status = 'Delivered')         AS inv_delivered,
-        COUNT(*) FILTER (WHERE status != 'Delivered')        AS inv_pending
+        COUNT(*) FILTER (WHERE status != 'Delivered')        AS inv_pending,
+        -- 90-day delivered cohort: TTL (days) and avg media score
+        ROUND(AVG(
+          EXTRACT(EPOCH FROM (processed_at::timestamptz - vin_creation::timestamptz)) / 86400.0
+        ) FILTER (WHERE status = 'Delivered'
+                    AND processed_at IS NOT NULL AND vin_creation IS NOT NULL)::numeric, 1) AS avg_ttl_days_inv,
+        ROUND(AVG(vin_score) FILTER (WHERE status = 'Delivered'
+                                       AND vin_score IS NOT NULL)::numeric, 1) AS avg_score_inv
       FROM vins
       WHERE rooftop_id = $1
         AND COALESCE(has_photos, 0) = 1
@@ -1708,48 +1765,17 @@ async function computeRooftopDailyReport(rooftopId, yesterday, timezone = "Ameri
       invDelivered: Number(inv.inv_delivered) || 0,
       invPending:   Number(inv.inv_pending)   || 0,
     };
+    avgTtlDaysInventory = inv.avg_ttl_days_inv != null ? Number(inv.avg_ttl_days_inv) : null;
+    avgScoreInventory   = inv.avg_score_inv != null ? Number(inv.avg_score_inv) : null;
 
-    // 5 most recently published vehicles — shown on quiet days in place of yesterday's table
-    const [{ rows: recentVinsRows }, { rows: [recentVinsCount] }] = await Promise.all([
-      query(`
-        SELECT
-          vin,
-          dealer_vin_id,
-          stock_number,
-          thumbnail_url,
-          make,
-          model,
-          year,
-          trim,
-          received_at,
-          processed_at,
-          ROUND(
-            EXTRACT(EPOCH FROM (processed_at::timestamptz - received_at::timestamptz)) / 3600.0
-            ::numeric, 2
-          ) AS ttd_hrs
-        FROM vins
-        WHERE rooftop_id = $1
-          AND status = 'Delivered'
-          AND COALESCE(has_photos, 0) = 1
-          AND processed_at IS NOT NULL
-          AND DATE(received_at::timestamptz AT TIME ZONE $3) <= $2::date
-          AND DATE(received_at::timestamptz AT TIME ZONE $3) >= ($2::date - INTERVAL '90 days')
-        ORDER BY processed_at DESC
-        LIMIT 5
-      `, [rooftopId, yesterday, timezone]),
-      query(`
-        SELECT COUNT(*)::int AS total
-        FROM vins
-        WHERE rooftop_id = $1
-          AND status = 'Delivered'
-          AND COALESCE(has_photos, 0) = 1
-          AND processed_at IS NOT NULL
-          AND DATE(received_at::timestamptz AT TIME ZONE $3) <= $2::date
-          AND DATE(received_at::timestamptz AT TIME ZONE $3) >= ($2::date - INTERVAL '90 days')
-      `, [rooftopId, yesterday, timezone]),
-    ]);
-    recentVins      = recentVinsRows;
-    recentVinsTotal = Number(recentVinsCount.total) || 0;
+    // No-photos count (always shown regardless of IMS status, per design spec)
+    const { rows: [noPhotos] } = await query(`
+      SELECT COUNT(*)::int AS total FROM vins
+       WHERE rooftop_id = $1
+         AND COALESCE(has_photos, 0) = 0
+    `, [rooftopId]);
+    noImagesTotal = Number(noPhotos.total) || 0;
+
   }
 
   return {
@@ -1765,6 +1791,11 @@ async function computeRooftopDailyReport(rooftopId, yesterday, timezone = "Ameri
     imagesProcessed: Number(kpi.images_processed)|| 0,
     imagesPending:   Number(kpi.images_pending)  || 0,
     avgTtdHrs:       kpi.avg_ttd_hrs != null ? Number(kpi.avg_ttd_hrs) : null,
+    // Time-to-line (days) & media score aggregates for the new email design
+    avgTtlDaysYesterday:  kpi.avg_ttl_days_yday != null ? Number(kpi.avg_ttl_days_yday) : null,
+    avgScoreYesterday:    kpi.avg_score_yday    != null ? Number(kpi.avg_score_yday)    : null,
+    avgTtlDaysInventory,
+    avgScoreInventory,
     // Total inventory KPIs (zeroed when IMS off)
     totalActive,
     withPhotos,
@@ -1796,7 +1827,12 @@ async function computeGroupDailyReport(enterpriseId, yesterday, timezone = "Amer
       COALESCE(SUM(output_image_count) FILTER (WHERE status != 'Delivered'), 0)          AS images_pending,
       ROUND(AVG(
         EXTRACT(EPOCH FROM (processed_at::timestamptz - received_at::timestamptz)) / 3600.0
-      ) FILTER (WHERE status = 'Delivered' AND processed_at IS NOT NULL)::numeric, 1)   AS avg_ttd_hrs
+      ) FILTER (WHERE status = 'Delivered' AND processed_at IS NOT NULL)::numeric, 1)   AS avg_ttd_hrs,
+      ROUND(AVG(EXTRACT(EPOCH FROM (processed_at::timestamptz - vin_creation::timestamptz))/86400.0)
+        FILTER (WHERE status='Delivered' AND COALESCE(has_photos,0)=1
+                AND vin_creation IS NOT NULL AND processed_at IS NOT NULL)::numeric, 1)  AS avg_ttl_days_yday,
+      ROUND(AVG(vin_score) FILTER (WHERE status='Delivered' AND COALESCE(has_photos,0)=1
+                AND vin_score IS NOT NULL)::numeric, 1)                                  AS avg_score_yday
     FROM vins
     WHERE enterprise_id = $1
       AND COALESCE(has_photos, 0) = 1
@@ -1954,13 +1990,18 @@ async function computeGroupDailyReport(enterpriseId, yesterday, timezone = "Amer
         COUNT(*)                                                                          AS total_active,
         COUNT(*) FILTER (WHERE COALESCE(has_photos, 0) = 1)                             AS with_photos,
         COUNT(*) FILTER (WHERE status = 'Delivered' AND COALESCE(has_photos, 0) = 1)    AS inv_delivered,
-        COUNT(*) FILTER (WHERE status != 'Delivered' AND COALESCE(has_photos, 0) = 1)   AS inv_pending
+        COUNT(*) FILTER (WHERE status != 'Delivered' AND COALESCE(has_photos, 0) = 1)   AS inv_pending,
+        ROUND(AVG(EXTRACT(EPOCH FROM (processed_at::timestamptz - vin_creation::timestamptz))/86400.0)
+          FILTER (WHERE status='Delivered' AND COALESCE(has_photos,0)=1
+                  AND vin_creation IS NOT NULL AND processed_at IS NOT NULL)::numeric, 1) AS avg_ttl_days_inv,
+        ROUND(AVG(vin_score) FILTER (WHERE status='Delivered' AND COALESCE(has_photos,0)=1
+                  AND vin_score IS NOT NULL)::numeric, 1)                                AS avg_score_inv
       FROM vins
       WHERE enterprise_id = $1
         AND (received_at IS NULL OR DATE(received_at::timestamptz AT TIME ZONE $3) <= $2::date)
     `, [enterpriseId, yesterday, timezone]);
 
-    const invTotal     = Number(inv.total_active) || 0;
+    const invTotal      = Number(inv.total_active) || 0;
     const invWithPhotos = Number(inv.with_photos)  || 0;
     invKpis = {
       totalActive:    invTotal,
@@ -1968,6 +2009,8 @@ async function computeGroupDailyReport(enterpriseId, yesterday, timezone = "Amer
       withPhotosPct:  invTotal > 0 ? Math.round(invWithPhotos / invTotal * 1000) / 10 : 0,
       invDelivered:   Number(inv.inv_delivered) || 0,
       invPending:     Number(inv.inv_pending)   || 0,
+      avgTtlDaysInv:  inv.avg_ttl_days_inv != null ? Number(inv.avg_ttl_days_inv) : null,
+      avgScoreInv:    inv.avg_score_inv    != null ? Number(inv.avg_score_inv)    : null,
     };
 
     const { rows: invRows } = await query(`
@@ -1977,7 +2020,11 @@ async function computeGroupDailyReport(enterpriseId, yesterday, timezone = "Amer
         COUNT(*)                                                                            AS total_active,
         COUNT(*) FILTER (WHERE COALESCE(v.has_photos, 0) = 1)                             AS with_photos,
         COUNT(*) FILTER (WHERE v.status = 'Delivered' AND COALESCE(v.has_photos, 0) = 1)  AS inv_delivered,
-        COUNT(*) FILTER (WHERE v.status != 'Delivered' AND COALESCE(v.has_photos, 0) = 1) AS inv_pending
+        COUNT(*) FILTER (WHERE v.status != 'Delivered' AND COALESCE(v.has_photos, 0) = 1) AS inv_pending,
+        ROUND(AVG(EXTRACT(EPOCH FROM (v.processed_at::timestamptz - v.received_at::timestamptz))/3600.0)
+          FILTER (WHERE v.status='Delivered' AND COALESCE(v.has_photos,0)=1
+                  AND v.processed_at IS NOT NULL
+                  AND v.processed_at::timestamptz >= v.received_at::timestamptz)::numeric, 1) AS avg_ttd_hrs
       FROM vins v
       LEFT JOIN rooftop_details rd ON v.rooftop_id = rd.team_id
       WHERE v.enterprise_id = $1
@@ -1987,16 +2034,18 @@ async function computeGroupDailyReport(enterpriseId, yesterday, timezone = "Amer
     `, [enterpriseId, yesterday, timezone]);
 
     inventoryByRooftop = invRows.map(r => {
-      const tot = Number(r.total_active) || 0;
-      const wp  = Number(r.with_photos)  || 0;
+      const tot  = Number(r.total_active) || 0;
+      const wp   = Number(r.with_photos)  || 0;
       return {
-        rooftop_id:    r.rooftop_id,
-        rooftop_name:  r.rooftop_name,
-        total_active:  tot,
-        with_photos:   wp,
+        rooftop_id:      r.rooftop_id,
+        rooftop_name:    r.rooftop_name,
+        total_active:    tot,
+        with_photos:     wp,
         with_photos_pct: tot > 0 ? Math.round(wp / tot * 1000) / 10 : 0,
-        inv_delivered: Number(r.inv_delivered) || 0,
-        inv_pending:   Number(r.inv_pending)   || 0,
+        inv_delivered:   Number(r.inv_delivered) || 0,
+        inv_pending:     Number(r.inv_pending)   || 0,
+        no_photos_count: tot - wp,
+        avg_ttd_hrs:     r.avg_ttd_hrs != null ? Number(r.avg_ttd_hrs) : null,
       };
     });
 
@@ -2005,31 +2054,43 @@ async function computeGroupDailyReport(enterpriseId, yesterday, timezone = "Amer
       SELECT
         COUNT(*)                                              AS received,
         COUNT(*) FILTER (WHERE status = 'Delivered')         AS inv_delivered,
-        COUNT(*) FILTER (WHERE status != 'Delivered')        AS inv_pending
+        COUNT(*) FILTER (WHERE status != 'Delivered')        AS inv_pending,
+        COUNT(*) FILTER (WHERE COALESCE(has_photos,0) = 0)  AS no_photos_total,
+        ROUND(AVG(EXTRACT(EPOCH FROM (processed_at::timestamptz - vin_creation::timestamptz))/86400.0)
+          FILTER (WHERE status='Delivered' AND vin_creation IS NOT NULL
+                  AND processed_at IS NOT NULL)::numeric, 1) AS avg_ttl_days_inv,
+        ROUND(AVG(vin_score) FILTER (WHERE status='Delivered'
+                  AND vin_score IS NOT NULL)::numeric, 1)    AS avg_score_inv
       FROM vins
       WHERE enterprise_id = $1
-        AND COALESCE(has_photos, 0) = 1
         AND DATE(received_at::timestamptz AT TIME ZONE $3) <= $2::date
         AND DATE(received_at::timestamptz AT TIME ZONE $3) >= ($2::date - INTERVAL '90 days')
     `, [enterpriseId, yesterday, timezone]);
 
     invKpis = {
-      received:     Number(inv.received)      || 0,
-      invDelivered: Number(inv.inv_delivered) || 0,
-      invPending:   Number(inv.inv_pending)   || 0,
+      received:      Number(inv.received)      || 0,
+      invDelivered:  Number(inv.inv_delivered) || 0,
+      invPending:    Number(inv.inv_pending)   || 0,
+      noPhotosTotal: Number(inv.no_photos_total) || 0,
+      avgTtlDaysInv: inv.avg_ttl_days_inv != null ? Number(inv.avg_ttl_days_inv) : null,
+      avgScoreInv:   inv.avg_score_inv    != null ? Number(inv.avg_score_inv)    : null,
     };
 
     const { rows: invRows } = await query(`
       SELECT
         v.rooftop_id,
-        MAX(rd.team_name)                                     AS rooftop_name,
-        COUNT(*)                                              AS received,
-        COUNT(*) FILTER (WHERE v.status = 'Delivered')       AS inv_delivered,
-        COUNT(*) FILTER (WHERE v.status != 'Delivered')      AS inv_pending
+        MAX(rd.team_name)                                                                      AS rooftop_name,
+        COUNT(*) FILTER (WHERE COALESCE(v.has_photos,0)=1)                                   AS received,
+        COUNT(*) FILTER (WHERE v.status = 'Delivered' AND COALESCE(v.has_photos,0)=1)        AS inv_delivered,
+        COUNT(*) FILTER (WHERE v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1)       AS inv_pending,
+        COUNT(*) FILTER (WHERE COALESCE(v.has_photos,0)=0)                                   AS no_photos_count,
+        ROUND(AVG(EXTRACT(EPOCH FROM (v.processed_at::timestamptz - v.received_at::timestamptz))/3600.0)
+          FILTER (WHERE v.status='Delivered' AND COALESCE(v.has_photos,0)=1
+                  AND v.processed_at IS NOT NULL
+                  AND v.processed_at::timestamptz >= v.received_at::timestamptz)::numeric, 1) AS avg_ttd_hrs
       FROM vins v
       LEFT JOIN rooftop_details rd ON v.rooftop_id = rd.team_id
       WHERE v.enterprise_id = $1
-        AND COALESCE(v.has_photos, 0) = 1
         AND DATE(v.received_at::timestamptz AT TIME ZONE $3) <= $2::date
         AND DATE(v.received_at::timestamptz AT TIME ZONE $3) >= ($2::date - INTERVAL '90 days')
       GROUP BY v.rooftop_id
@@ -2037,27 +2098,39 @@ async function computeGroupDailyReport(enterpriseId, yesterday, timezone = "Amer
     `, [enterpriseId, yesterday, timezone]);
 
     inventoryByRooftop = invRows.map(r => ({
-      rooftop_id:    r.rooftop_id,
-      rooftop_name:  r.rooftop_name,
-      received:      Number(r.received)      || 0,
-      inv_delivered: Number(r.inv_delivered) || 0,
-      inv_pending:   Number(r.inv_pending)   || 0,
+      rooftop_id:      r.rooftop_id,
+      rooftop_name:    r.rooftop_name,
+      received:        Number(r.received)        || 0,
+      inv_delivered:   Number(r.inv_delivered)   || 0,
+      inv_pending:     Number(r.inv_pending)     || 0,
+      no_photos_count: Number(r.no_photos_count) || 0,
+      avg_ttd_hrs:     r.avg_ttd_hrs != null ? Number(r.avg_ttd_hrs) : null,
     }));
   }
+
+  const noPhotosGroup = allImsIntegrated
+    ? (invKpis.totalActive - invKpis.withPhotos)
+    : (invKpis.noPhotosTotal || 0);
 
   return {
     enterpriseId,
     enterpriseName:  enterprise?.name ?? enterpriseId,
     rooftopCount:    Number(totals.rooftop_count) || 0,
     // Yesterday KPIs
-    newVins:         Number(kpi.new_vins)        || 0,
-    vinsDelivered:   Number(kpi.vins_delivered)  || 0,
-    vinsPending:     Number(kpi.vins_pending)    || 0,
-    imagesReceived:  Number(kpi.images_received) || 0,
-    imagesProcessed: Number(kpi.images_processed)|| 0,
-    imagesPending:   Number(kpi.images_pending)  || 0,
-    avgTtdHrs:       kpi.avg_ttd_hrs != null ? Number(kpi.avg_ttd_hrs) : null,
-    // Total inventory KPIs (legacy — not rendered in group email)
+    newVins:              Number(kpi.new_vins)        || 0,
+    vinsDelivered:        Number(kpi.vins_delivered)  || 0,
+    vinsPending:          Number(kpi.vins_pending)    || 0,
+    imagesReceived:       Number(kpi.images_received) || 0,
+    imagesProcessed:      Number(kpi.images_processed)|| 0,
+    imagesPending:        Number(kpi.images_pending)  || 0,
+    avgTtdHrs:            kpi.avg_ttd_hrs       != null ? Number(kpi.avg_ttd_hrs)       : null,
+    avgTtlDaysYesterday:  kpi.avg_ttl_days_yday != null ? Number(kpi.avg_ttl_days_yday) : null,
+    avgScoreYesterday:    kpi.avg_score_yday    != null ? Number(kpi.avg_score_yday)    : null,
+    // Inventory TTL + score (from invKpis, set in both IMS branches)
+    avgTtlDaysInventory:  invKpis.avgTtlDaysInv ?? null,
+    avgScoreInventory:    invKpis.avgScoreInv   ?? null,
+    noPhotosGroup,
+    // Total inventory KPIs (legacy)
     totalActive,
     totalDelivered,
     totalPending,
@@ -2287,6 +2360,49 @@ app.post(
     return res.json({ ok: true, inserted: rowsToInsert.length, skipped: errors.length });
   }
 );
+
+// ─── Donut SVG endpoint ──────────────────────────────────────────────────────
+// Renders the donut graphic embedded in the rooftop daily email as a hosted SVG
+// image. Gmail strips inline <svg>; an <img src=".../api/donut.svg?..."> goes
+// through Google's image proxy and renders reliably across clients.
+//
+// Query params:
+//   green     — green arc length, in same units as `total` (default: 0)
+//   amber     — amber arc length, in same units as `total` (default: 0)
+//   total     — denominator (default: 100). green + amber must be ≤ total.
+//   center    — center number text (e.g. "100%", "50")
+//   label     — center sublabel text (e.g. "DELIVERED", "INVENTORY")
+//   w         — output width in px (default 150)
+app.get("/api/donut.svg", (req, res) => {
+  const total  = Math.max(1, Number(req.query.total)  || 100);
+  const green  = Math.max(0, Math.min(total, Number(req.query.green) || 0));
+  const amber  = Math.max(0, Math.min(total - green, Number(req.query.amber) || 0));
+  const center = String(req.query.center || "").slice(0, 12);
+  const label  = String(req.query.label  || "").slice(0, 24);
+  const w      = Math.min(400, Math.max(60, Number(req.query.w) || 150));
+
+  const C        = 2 * Math.PI * 58;
+  const greenLen = (green / total) * C;
+  const amberLen = (amber / total) * C;
+
+  // Escape minimal XML chars for the user-supplied label/center text
+  const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+  const svg = `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${w}" viewBox="0 0 150 150">
+  <g transform="rotate(-90 75 75)">
+    <circle cx="75" cy="75" r="58" fill="none" stroke="#eef0f4" stroke-width="18"/>
+    ${greenLen > 0 ? `<circle cx="75" cy="75" r="58" fill="none" stroke="#16a34a" stroke-width="18" stroke-dasharray="${greenLen.toFixed(2)} ${C.toFixed(2)}"/>` : ""}
+    ${amberLen > 0 ? `<circle cx="75" cy="75" r="58" fill="none" stroke="#d97706" stroke-width="18" stroke-dasharray="${amberLen.toFixed(2)} ${C.toFixed(2)}" stroke-dashoffset="${(-greenLen).toFixed(2)}"/>` : ""}
+  </g>
+  <text x="75" y="76" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Arial,Helvetica,sans-serif" font-size="26" font-weight="700" fill="#0c1322" letter-spacing="-0.5">${esc(center)}</text>
+  <text x="75" y="92" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Arial,Helvetica,sans-serif" font-size="9.5" font-weight="600" fill="#98a0ad" letter-spacing="0.8">${esc(label)}</text>
+</svg>`;
+
+  res.set("Content-Type", "image/svg+xml; charset=utf-8");
+  res.set("Cache-Control", "public, max-age=86400, immutable");
+  res.send(svg);
+});
 
 // ─── Daily Report Endpoint ────────────────────────────────────────────────────
 // Returns 202 immediately. Enqueues all recipients into report_queue.
@@ -2746,6 +2862,33 @@ async function handleProcessReportQueue(req, res) {
     return Number(r.negative_count) > 0;
   }
 
+  // Time-to-line gate — skips email if any delivered VIN in the inventory cohort
+  // (Inventory card) has missing vin_creation or processed_at < vin_creation.
+  // IMS-on: cohort = all-time delivered with photos. IMS-off: 90-day delivered.
+  // The yesterday-delivered cohort is a subset of the inventory cohort, so a
+  // single check covers both cards' TTL pills.
+  async function hasInvalidVinCreation(field, id, tz, yesterdayStr, imsOff) {
+    const windowClause = imsOff
+      ? `AND DATE(received_at::timestamptz AT TIME ZONE $2) >= ($3::date - INTERVAL '90 days')
+         AND DATE(received_at::timestamptz AT TIME ZONE $2) <= $3::date`
+      : ``;
+    const params = imsOff ? [id, tz, yesterdayStr] : [id];
+    const { rows: [r] } = await query(
+      `SELECT COUNT(*) AS bad_count FROM vins
+        WHERE ${field} = $1
+          AND status = 'Delivered'
+          AND COALESCE(has_photos, 0) = 1
+          AND processed_at IS NOT NULL
+          ${windowClause}
+          AND (
+            vin_creation IS NULL
+            OR processed_at::timestamptz < vin_creation::timestamptz
+          )`,
+      params
+    );
+    return Number(r.bad_count) > 0;
+  }
+
 
   // ── Step 3: Process each row ───────────────────────────────────────────────
   let sentCount = 0, skippedCount = 0, errorCount = 0;
@@ -2819,6 +2962,11 @@ async function handleProcessReportQueue(req, res) {
             console.log(`[process-queue] rooftop ${rooftop_id} skipped — negative TAT detected`);
             skippedCount++; continue;
           }
+        }
+        if (await hasInvalidVinCreation("rooftop_id", rooftop_id, tz, yesterdayStr, imsOff)) {
+          await query(`UPDATE report_queue SET status='skipped', entity_id=$2, entity_name=$3, error_reason='ttl_data_invalid', processed_at=NOW() WHERE id=$1`, [id, rooftop_id, rt.team_name]);
+          console.log(`[process-queue] rooftop ${rooftop_id} skipped — missing vin_creation or negative TTL`);
+          skippedCount++; continue;
         }
 
         const data    = await computeRooftopDailyReport(rooftop_id, yesterdayStr, tz, imsOff);
@@ -2934,6 +3082,12 @@ async function handleProcessReportQueue(req, res) {
             skippedCount++; continue;
           }
         }
+        if (await hasInvalidVinCreation("enterprise_id", enterprise_id, tz, yesterdayStr, !data.allImsIntegrated)) {
+          await query(`UPDATE report_queue SET status='skipped', entity_id=$2, entity_name=$3, error_reason='ttl_data_invalid', processed_at=NOW() WHERE id=$1`, [id, enterprise_id, ent.name]);
+          console.log(`[process-queue] enterprise ${enterprise_id} skipped — invalid vin_creation data`);
+          skippedCount++; continue;
+        }
+
         const html    = buildGroupReportHtml(data, dateLabel);
         const to      = testMode ? testTo : (Array.isArray(row.to_emails) && row.to_emails.length > 0 ? row.to_emails : email.split(",").map(s => s.trim()).filter(Boolean));
         const cc      = testMode ? testCc : undefined;
