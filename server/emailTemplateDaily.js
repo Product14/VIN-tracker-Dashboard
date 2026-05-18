@@ -93,8 +93,19 @@ const formatTtl = (days) => {
   return h === 0 ? `${d}d` : `${d}d ${h}h`;
 };
 
-const chip = (bg, fg, lblColor, label, value) => `
-  <td valign="middle" style="background:${bg};padding:6px 10px;border-radius:999px;font-family:-apple-system,BlinkMacSystemFont,Arial,Helvetica,sans-serif;">
+// Email-safe chip with optional hover tooltip via the `title` attribute.
+// Gmail strips <style> blocks, so CSS-only ::after tooltips don't render —
+// `title` produces a native browser tooltip on hover in webmail clients.
+// A small "?" badge inside the chip signals the tooltip is available.
+const chip = (bg, fg, lblColor, label, value, tip = "") => {
+  const titleAttr = tip ? ` title="${String(tip).replace(/"/g, "&quot;")}"` : "";
+  const infoBadge = tip
+    ? `<td valign="middle" align="center" style="padding:0 0 0 6px;vertical-align:middle;">
+         <span style="display:inline-block;width:16px;height:16px;border-radius:50%;background:${fg};opacity:0.55;color:#ffffff;font-size:11px;font-weight:800;text-align:center;line-height:16px;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;vertical-align:middle;">?</span>
+       </td>`
+    : "";
+  return `
+  <td valign="middle"${titleAttr} style="background:${bg};padding:6px 10px;border-radius:999px;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;${tip ? "cursor:help;" : ""}">
     <table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;">
       <tr>
         <td valign="middle" style="padding:0 8px 0 0;">
@@ -103,15 +114,22 @@ const chip = (bg, fg, lblColor, label, value) => `
         <td valign="middle" style="padding:0;">
           <span style="font-size:12.5px;font-weight:700;color:${fg};letter-spacing:-0.2px;">${value}</span>
         </td>
+        ${infoBadge}
       </tr>
     </table>
   </td>`;
+};
 
-const buildChipsRow = (ttlDays, score, { centered = false } = {}) => {
+const buildChipsRow = (ttlDays, avgTatHrs, { centered = false, score = null } = {}) => {
   const cells = [];
   const ttlStr = formatTtl(ttlDays);
-  if (ttlStr != null) cells.push(chip("#efeaff", "#5b3ce8", "#5b3ce8", "Time to Line", ttlStr));
-  if (score  != null) cells.push(chip("#eaf0ff", "#1a4ad6", "#1a4ad6", "Media Score",  Number(score).toFixed(1)));
+  const ttlTip = "Average Time taken from VIN received to VIN Live on lot";
+  const tatTip = "Average Time taken by Spyne to process and deliver VIN";
+  if (ttlStr != null)      cells.push(chip("#efeaff", "#5b3ce8", "#5b3ce8", "Time to Market", ttlStr,            ttlTip));
+  if (avgTatHrs != null)   cells.push(chip("#eaf0ff", "#1a4ad6", "#1a4ad6", "Avg TAT",        formatTat(avgTatHrs), tatTip));
+  // TODO: re-enable Media Score chip once scoring is finalized.
+  // if (score != null)    cells.push(chip("#eaf0ff", "#1a4ad6", "#1a4ad6", "Media Score",    Number(score).toFixed(1)));
+  void score;
   if (cells.length === 0) return "";
   const sep = `<td width="6" style="width:6px;font-size:0;line-height:0;">&nbsp;</td>`;
   const innerAlign = centered
@@ -123,6 +141,94 @@ const buildChipsRow = (ttlDays, score, { centered = false } = {}) => {
         ${innerAlign}
       </td></tr>
     </table>`;
+};
+
+// ─── "Vehicles needing attention" helpers ────────────────────────────────────
+
+// Red-tinted 44×32 thumb with an inline camera-slash SVG, used in the
+// "Vehicles needing attention" rows since these VINs have no photo yet.
+// Image is inlined as a data URI so it renders without any external fetch.
+const noPhotoThumb = () => {
+  const svg = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23dc2626' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect x='3' y='5' width='18' height='14' rx='2'/><circle cx='12' cy='12' r='3'/><line x1='3' y1='3' x2='21' y2='21'/></svg>`;
+  return `<div style="display:block;width:44px;height:32px;border-radius:6px;background:#fdecec;background-image:repeating-linear-gradient(135deg,#fdecec 0,#fdecec 6px,#fbe0e0 6px,#fbe0e0 12px);text-align:center;line-height:32px;font-size:0;">
+    <img src="data:image/svg+xml;utf8,${svg}" width="18" height="18" alt="" style="vertical-align:middle;border:0;outline:none;" />
+  </div>`;
+};
+
+// Builds the bottom "Vehicles needing attention" card for both templates.
+// Returns "" when there are no rows (hide-on-empty per design).
+//
+//   vins             : array of {vin, dealer_vin_id, stock_number, make, model,
+//                       year, trim, days_on_lot, rooftop_id, rooftop_name}
+//   vinUrl           : (dealerVinId, rooftopId) => href|null
+//   viewAllHref      : header "View all →" link target
+//   includeRooftopCol: true → 6-column layout with Rooftop column (group view)
+//   titleSuffix      : "" for rooftop, " (group)" for group
+const buildNeedsAttentionSection = ({ vins, vinUrl, viewAllHref, includeRooftopCol, titleSuffix = "" }) => {
+  if (!vins || vins.length === 0) return "";
+
+  const rowsHtml = vins.slice(0, 5).map((v) => {
+    const vehicleName = [clean(v.year), clean(v.make), clean(v.model)].filter(Boolean).join(" ") || "—";
+    const trimLine    = clean(v.trim);
+    const stockLine   = clean(v.stock_number);
+    const days        = v.days_on_lot != null ? Number(v.days_on_lot) : null;
+    const ageLabel    = days != null ? `${days} day${days === 1 ? "" : "s"}` : "—";
+    const vUrl        = (includeRooftopCol ? vinUrl(v.dealer_vin_id, v.rooftop_id) : vinUrl(v.dealer_vin_id)) || "#";
+    const rowBorder   = "border-top:1px solid #e7e9ee;";
+    const rooftopCell = includeRooftopCol
+      ? `<td style="padding:10px 10px 10px 0;vertical-align:middle;${rowBorder}font-size:11.5px;color:#5b6577;font-weight:500;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${v.rooftop_name || ""}</td>`
+      : "";
+    return `
+      <tr>
+        <td style="padding:10px 10px 10px 0;vertical-align:middle;${rowBorder}">${noPhotoThumb()}</td>
+        <td style="padding:10px 10px 10px 0;vertical-align:middle;${rowBorder}font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;overflow:hidden;">
+          <div style="font-size:12.5px;font-weight:600;color:#0c1322;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${vehicleName}${trimLine ? ` <span style="color:#98a0ad;font-weight:500;">&middot; ${trimLine}</span>` : ""}</div>
+          <div style="font-size:10.5px;color:#98a0ad;margin-top:1px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${v.vin || ""}${stockLine ? ` &middot; #${stockLine}` : ""}</div>
+        </td>
+        ${rooftopCell}
+        <td style="padding:10px 10px 10px 0;vertical-align:middle;${rowBorder}white-space:nowrap;">
+          <span style="display:inline-block;padding:3px 8px;border-radius:999px;background:#fdecec;color:#dc2626;font-size:11px;font-weight:700;letter-spacing:0.2px;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">${ageLabel}</span>
+        </td>
+        <td style="padding:10px 10px 10px 0;vertical-align:middle;${rowBorder}white-space:nowrap;">
+          <span style="display:inline-block;padding:3px 8px 3px 7px;border-radius:999px;background:#fdecec;color:#dc2626;font-size:11px;font-weight:700;letter-spacing:0.2px;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">&#9679;&nbsp;No photos</span>
+        </td>
+        <td style="padding:10px 0;vertical-align:middle;${rowBorder}text-align:right;white-space:nowrap;">
+          <a href="${vUrl}" style="font-size:11px;font-weight:600;color:#2f6bff;text-decoration:none;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">View &rarr;</a>
+        </td>
+      </tr>`;
+  }).join("\n");
+
+  // Colgroup widths: 56 (thumb) / flex (vehicle) / [28% rooftop, optional] / 90 (ageing) / 130 (status) / 60 (view)
+  const cols = includeRooftopCol
+    ? `<col style="width:56px;" /><col /><col style="width:28%;" /><col style="width:90px;" /><col style="width:130px;" /><col style="width:60px;" />`
+    : `<col style="width:56px;" /><col /><col style="width:90px;" /><col style="width:130px;" /><col style="width:60px;" />`;
+  const headerCells = `
+    <td style="padding:4px 10px 8px 0;border-bottom:1px solid #e7e9ee;"></td>
+    <td style="padding:4px 10px 8px 0;border-bottom:1px solid #e7e9ee;font-size:9.5px;letter-spacing:0.8px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">Vehicle</td>
+    ${includeRooftopCol ? `<td style="padding:4px 10px 8px 0;border-bottom:1px solid #e7e9ee;font-size:9.5px;letter-spacing:0.8px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">Rooftop</td>` : ""}
+    <td style="padding:4px 10px 8px 0;border-bottom:1px solid #e7e9ee;font-size:9.5px;letter-spacing:0.8px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">Ageing</td>
+    <td style="padding:4px 10px 8px 0;border-bottom:1px solid #e7e9ee;font-size:9.5px;letter-spacing:0.8px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">Status</td>
+    <td style="padding:4px 0 8px;border-bottom:1px solid #e7e9ee;"></td>`;
+
+  return `
+    <tr><td style="height:14px;font-size:0;line-height:0;">&nbsp;</td></tr>
+    <tr>
+      <td style="background:#FFFFFF;border:1px solid #e7e9ee;border-radius:14px;padding:14px 16px 8px;">
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;margin-bottom:8px;">
+          <tr>
+            <td valign="middle" style="vertical-align:middle;font-size:11px;letter-spacing:0.8px;text-transform:uppercase;color:#5b6577;font-weight:600;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">Vehicles Needing Attention &middot; Highest risk${titleSuffix}</td>
+            <td align="right" valign="middle" style="vertical-align:middle;text-align:right;">
+              <a href="${viewAllHref}" style="font-size:11px;font-weight:600;color:#2f6bff;text-decoration:none;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">View all &rarr;</a>
+            </td>
+          </tr>
+        </table>
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;table-layout:fixed;">
+          <colgroup>${cols}</colgroup>
+          <thead><tr>${headerCells}</tr></thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+      </td>
+    </tr>`;
 };
 
 // ─── Rooftop Report ───────────────────────────────────────────────────────────
@@ -143,6 +249,7 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
     newVins,
     vinsDelivered,
     vinsPending,
+    avgTtdHrs,
     avgTtlDaysYesterday,
     avgScoreYesterday,
     // Inventory totals (IMS-on) / inv90 fields populated when IMS-off
@@ -151,9 +258,11 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
     noImagesTotal,
     avgTtlDaysInventory,
     avgScoreInventory,
+    avgTatHrsInventory,
     // Tables
     recentVins,
     recentVinsTotal,
+    needsAttentionVins,
   } = data;
 
   const inventoryBaseUrl = `https://console.spyne.ai/inventory/v2/listings?enterprise_id=${enterpriseId || ""}${rooftopId ? `&team_id=${rooftopId}` : ""}`;
@@ -184,7 +293,7 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
 
   // ── Recent Vehicles rows ───────────────────────────────────────────────────
   const recentRowsHtml = recentVins.length === 0
-    ? `<tr><td colspan="5" style="padding:20px 0;text-align:center;font-size:12px;color:#9CA3AF;font-family:Arial,Helvetica,sans-serif;">No vehicles delivered in the last 90 days.</td></tr>`
+    ? `<tr><td colspan="5" style="padding:20px 0;text-align:center;font-size:12px;color:#9CA3AF;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">No vehicles delivered in the last 90 days.</td></tr>`
     : recentVins.slice(0, 5).map((v, i) => {
         const vehicleName = [clean(v.year), clean(v.make), clean(v.model)].filter(Boolean).join(" ") || "—";
         const trimLine    = clean(v.trim);
@@ -201,21 +310,31 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
         return `
         <tr>
           <td style="padding:10px 12px 10px 0;vertical-align:middle;${rowBorder}width:56px;">${thumb}</td>
-          <td style="padding:10px 12px 10px 0;vertical-align:middle;${rowBorder}font-family:-apple-system,BlinkMacSystemFont,Arial,Helvetica,sans-serif;">
+          <td style="padding:10px 12px 10px 0;vertical-align:middle;${rowBorder}font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">
             <div style="font-size:12.5px;font-weight:600;color:#0c1322;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${vehicleName}${trimLine ? ` <span style="color:#98a0ad;font-weight:500;">· ${trimLine}</span>` : ""}</div>
             <div style="font-size:10.5px;color:#98a0ad;margin-top:1px;line-height:1.25;">${v.vin || ""}${stockLine ? ` · Stock #${stockLine}` : ""}</div>
           </td>
           <td style="padding:10px 12px 10px 0;vertical-align:middle;${rowBorder}width:80px;white-space:nowrap;">
-            <span style="display:inline-block;padding:3px 8px;border-radius:999px;background:${tatBg};color:${tatFg};font-size:11px;font-weight:700;letter-spacing:0.2px;font-family:Arial,Helvetica,sans-serif;">${tatLabel}</span>
+            <span style="display:inline-block;padding:3px 8px;border-radius:999px;background:${tatBg};color:${tatFg};font-size:11px;font-weight:700;letter-spacing:0.2px;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">${tatLabel}</span>
           </td>
           <td style="padding:10px 12px 10px 0;vertical-align:middle;${rowBorder}width:110px;white-space:nowrap;">
-            <span style="display:inline-block;padding:3px 8px 3px 7px;border-radius:999px;background:#e7f7ee;color:#16a34a;font-size:11px;font-weight:700;letter-spacing:0.2px;font-family:Arial,Helvetica,sans-serif;">&#9679;&nbsp;Delivered</span>
+            <span style="display:inline-block;padding:3px 8px 3px 7px;border-radius:999px;background:#e7f7ee;color:#16a34a;font-size:11px;font-weight:700;letter-spacing:0.2px;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">&#9679;&nbsp;Delivered</span>
           </td>
           <td style="padding:10px 0 10px 0;vertical-align:middle;${rowBorder}width:50px;text-align:right;white-space:nowrap;">
-            <a href="${vUrl}" style="font-size:11px;font-weight:600;color:#2f6bff;text-decoration:none;font-family:Arial,Helvetica,sans-serif;">View &rarr;</a>
+            <a href="${vUrl}" style="font-size:11px;font-weight:600;color:#2f6bff;text-decoration:none;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">View &rarr;</a>
           </td>
         </tr>`;
       }).join("\n");
+
+  // ── Vehicles needing attention (top-5 no-photos VINs, oldest first) ────────
+  // Hidden when there are no such VINs (per design).
+  const needsAttentionUrl = `${inventoryBaseUrl}&filter=no-photos`;
+  const needsAttentionHtml = buildNeedsAttentionSection({
+    vins: needsAttentionVins,
+    vinUrl,
+    viewAllHref: needsAttentionUrl,
+    includeRooftopCol: false,
+  });
 
   // ── Card builder (Yesterday and Inventory share the same shell) ────────────
   // Layout per card: 2-column table (donut left, legend right). The donut is an
@@ -240,7 +359,7 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
     const widthAttr  = widthPct === "100%" ? ` width="100%"` : "";
     const widthStyle = widthPct === "auto" ? "" : `width:${widthPct};`;
     return `
-    <td valign="top" align="${centered ? "center" : "left"}"${widthAttr} style="${widthStyle}background:#FFFFFF;border:1px solid #e7e9ee;border-radius:14px;padding:14px 16px;font-family:-apple-system,BlinkMacSystemFont,Arial,Helvetica,sans-serif;text-align:${centered ? "center" : "left"};">
+    <td valign="top" align="${centered ? "center" : "left"}"${widthAttr} style="${widthStyle}background:#FFFFFF;border:1px solid #e7e9ee;border-radius:14px;padding:14px 16px;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;text-align:${centered ? "center" : "left"};">
       <div style="font-size:11px;letter-spacing:0.8px;text-transform:uppercase;color:#5b6577;font-weight:600;margin-bottom:6px;line-height:1.4;text-align:${centered ? "center" : "left"};">${title}</div>
       ${innerTable}
       ${chipsHtml}
@@ -271,7 +390,7 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
       ${legendRow("#16a34a", "Vehicles Shot",      n(newVins),       "")}
       ${legendRow("#16a34a", "Vehicles Delivered", n(vinsDelivered), "")}
     `.trim(),
-    chipsHtml: buildChipsRow(avgTtlDaysYesterday, avgScoreYesterday),
+    chipsHtml: buildChipsRow(avgTtlDaysYesterday, avgTtdHrs, { score: avgScoreYesterday }),
   });
 
   const inventoryCard = buildCard({
@@ -282,7 +401,7 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
       ${invPending > 0 ? legendRow("#2f6bff", "Pending", n(invPending), "") : ""}
       ${legendRow("#d97706", "No Photos", n(invNoPhotos),  "")}
     `.trim(),
-    chipsHtml: buildChipsRow(avgTtlDaysInventory, avgScoreInventory, { centered: quietDay }),
+    chipsHtml: buildChipsRow(avgTtlDaysInventory, avgTatHrsInventory, { centered: quietDay, score: avgScoreInventory }),
     widthPct: quietDay ? "auto" : "50%",
     centered: quietDay,
   });
@@ -304,7 +423,7 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>Studio AI Rooftop Report — ${rooftopName}</title>
 </head>
-<body style="margin:0;padding:0;background:#f4f5f7;font-family:-apple-system,BlinkMacSystemFont,Arial,Helvetica,sans-serif;color:#0c1322;">
+<body style="margin:0;padding:0;background:#f4f5f7;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;color:#0c1322;">
 <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;background:#f4f5f7;">
   <tr>
     <td align="center" style="padding:24px 16px 40px;">
@@ -337,7 +456,7 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
               <tr>
                 <td valign="middle" style="vertical-align:middle;">
                   <span style="font-size:20px;font-weight:700;color:#0c1322;letter-spacing:-0.2px;">Inventory</span>
-                  <span style="font-size:20px;font-weight:500;color:#5b6577;letter-spacing:-0.2px;">&nbsp;across the rooftop</span>
+                  <span style="font-size:20px;font-weight:500;color:#5b6577;letter-spacing:-0.2px;">&nbsp;across Rooftop</span>
                   <span style="display:inline-block;background:#e7f7ee;color:#16a34a;padding:4px 9px;border-radius:999px;font-size:11px;font-weight:600;margin-left:8px;vertical-align:middle;">&#9679;&nbsp;On track</span>
                 </td>
                 <td align="right" valign="middle" style="vertical-align:middle;text-align:right;font-size:12px;color:#5b6577;white-space:nowrap;">${dateLabel}</td>
@@ -358,26 +477,36 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
           <td style="background:#FFFFFF;border:1px solid #e7e9ee;border-radius:14px;padding:14px 16px 8px;">
             <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;margin-bottom:8px;">
               <tr>
-                <td valign="middle" style="vertical-align:middle;font-size:11px;letter-spacing:0.8px;text-transform:uppercase;color:#5b6577;font-weight:600;font-family:Arial,Helvetica,sans-serif;">Recent Vehicles &middot; Latest activity</td>
+                <td valign="middle" style="vertical-align:middle;font-size:11px;letter-spacing:0.8px;text-transform:uppercase;color:#5b6577;font-weight:600;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">Recent Vehicles &middot; Latest activity</td>
                 <td align="right" valign="middle" style="vertical-align:middle;text-align:right;">
-                  <a href="${inventoryBaseUrl}" style="font-size:11px;font-weight:600;color:#2f6bff;text-decoration:none;font-family:Arial,Helvetica,sans-serif;">View all &rarr;</a>
+                  <a href="${inventoryBaseUrl}" style="font-size:11px;font-weight:600;color:#2f6bff;text-decoration:none;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">View all &rarr;</a>
                 </td>
               </tr>
             </table>
-            <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;">
+            <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;table-layout:fixed;">
+              <colgroup>
+                <col style="width:56px;" />
+                <col />
+                <col style="width:90px;" />
+                <col style="width:130px;" />
+                <col style="width:60px;" />
+              </colgroup>
               <thead>
                 <tr>
-                  <th style="padding:4px 12px 8px 0;border-bottom:1px solid #e7e9ee;text-align:left;font-size:9.5px;letter-spacing:0.8px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:Arial,Helvetica,sans-serif;"></th>
-                  <th style="padding:4px 12px 8px 0;border-bottom:1px solid #e7e9ee;text-align:left;font-size:9.5px;letter-spacing:0.8px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:Arial,Helvetica,sans-serif;">Vehicle</th>
-                  <th style="padding:4px 12px 8px 0;border-bottom:1px solid #e7e9ee;text-align:left;font-size:9.5px;letter-spacing:0.8px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:Arial,Helvetica,sans-serif;">TAT</th>
-                  <th style="padding:4px 12px 8px 0;border-bottom:1px solid #e7e9ee;text-align:left;font-size:9.5px;letter-spacing:0.8px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:Arial,Helvetica,sans-serif;">Status</th>
-                  <th style="padding:4px 0 8px 0;border-bottom:1px solid #e7e9ee;text-align:right;font-size:9.5px;letter-spacing:0.8px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:Arial,Helvetica,sans-serif;"></th>
+                  <th style="padding:4px 12px 8px 0;border-bottom:1px solid #e7e9ee;text-align:left;font-size:9.5px;letter-spacing:0.8px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;"></th>
+                  <th style="padding:4px 12px 8px 0;border-bottom:1px solid #e7e9ee;text-align:left;font-size:9.5px;letter-spacing:0.8px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">Vehicle</th>
+                  <th style="padding:4px 12px 8px 0;border-bottom:1px solid #e7e9ee;text-align:left;font-size:9.5px;letter-spacing:0.8px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">TAT</th>
+                  <th style="padding:4px 12px 8px 0;border-bottom:1px solid #e7e9ee;text-align:left;font-size:9.5px;letter-spacing:0.8px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">Status</th>
+                  <th style="padding:4px 0 8px 0;border-bottom:1px solid #e7e9ee;text-align:right;font-size:9.5px;letter-spacing:0.8px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;"></th>
                 </tr>
               </thead>
               <tbody>${recentRowsHtml}</tbody>
             </table>
           </td>
         </tr>
+
+        <!-- ══ VEHICLES NEEDING ATTENTION ══════════════════════════════════════ -->
+        ${needsAttentionHtml}
 
         <tr><td style="height:16px;font-size:0;line-height:0;">&nbsp;</td></tr>
 
@@ -386,11 +515,11 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
           <td style="background:#FFFFFF;border:1px solid #e7e9ee;border-radius:14px;padding:14px 18px;">
             <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;">
               <tr>
-                <td valign="middle" style="vertical-align:middle;font-size:12.5px;color:#5b6577;line-height:1.5;font-family:-apple-system,BlinkMacSystemFont,Arial,Helvetica,sans-serif;">
+                <td valign="middle" style="vertical-align:middle;font-size:12.5px;color:#5b6577;line-height:1.5;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">
                   Want the full breakdown? <b style="color:#0c1322;">Vehicle-level history, photos &amp; all other info</b> live in the console.
                 </td>
                 <td align="right" valign="middle" style="vertical-align:middle;padding-left:16px;">
-                  <a href="${inventoryBaseUrl}" style="display:inline-block;background:#0c1322;color:#FFFFFF;font-size:12.5px;font-weight:600;padding:9px 14px;border-radius:9px;text-decoration:none;font-family:Arial,Helvetica,sans-serif;mso-padding-alt:9px 14px;">Open console &rarr;</a>
+                  <a href="${inventoryBaseUrl}" style="display:inline-block;background:#0c1322;color:#FFFFFF;font-size:12.5px;font-weight:600;padding:9px 14px;border-radius:9px;text-decoration:none;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;mso-padding-alt:9px 14px;">Open console &rarr;</a>
                 </td>
               </tr>
             </table>
@@ -419,11 +548,14 @@ export function buildGroupReportHtml(data, dateLabel) {
     inventoryByRooftop,
     processedVins,
     recentPublishedVins,
+    avgTtdHrs,
     avgTtlDaysYesterday,
     avgScoreYesterday,
     avgTtlDaysInventory,
     avgScoreInventory,
+    avgTatHrsInventory,
     noPhotosGroup,
+    needsAttentionVins,
   } = data;
 
   const quietDay = !newVins || newVins === 0;
@@ -468,7 +600,7 @@ export function buildGroupReportHtml(data, dateLabel) {
     const widthAttr  = widthPct === "100%" ? ` width="100%"` : "";
     const widthStyle = widthPct === "auto" ? "" : `width:${widthPct};`;
     return `
-    <td valign="top" align="${centered ? "center" : "left"}"${widthAttr} style="${widthStyle}background:#FFFFFF;border:1px solid #e7e9ee;border-radius:14px;padding:14px 16px;font-family:-apple-system,BlinkMacSystemFont,Arial,Helvetica,sans-serif;text-align:${centered ? "center" : "left"};">
+    <td valign="top" align="${centered ? "center" : "left"}"${widthAttr} style="${widthStyle}background:#FFFFFF;border:1px solid #e7e9ee;border-radius:14px;padding:14px 16px;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;text-align:${centered ? "center" : "left"};">
       <div style="font-size:11px;letter-spacing:0.8px;text-transform:uppercase;color:#5b6577;font-weight:600;margin-bottom:6px;line-height:1.4;text-align:${centered ? "center" : "left"};">${title}</div>
       ${innerTable}
       ${chipsHtml}
@@ -493,7 +625,7 @@ export function buildGroupReportHtml(data, dateLabel) {
     donut: donutImg({ green: vinsDelivered, amber: vinsPending || 0, total: Math.max(newVins, 1), center: yCenter, label: "DELIVERED" }),
     legend: legendRow("#16a34a", "Vehicles Shot",      String(newVins),      "") +
             legendRow("#16a34a", "Vehicles Delivered", String(vinsDelivered), ""),
-    chipsHtml: buildChipsRow(avgTtlDaysYesterday, avgScoreYesterday),
+    chipsHtml: buildChipsRow(avgTtlDaysYesterday, avgTtdHrs, { score: avgScoreYesterday }),
   });
 
   const inventoryCard = buildCard({
@@ -502,7 +634,7 @@ export function buildGroupReportHtml(data, dateLabel) {
     legend: legendRow("#16a34a", "Delivered",  String(invDelivered), `/${invWithPh}`) +
             (invPending > 0 ? legendRow("#2f6bff", "Pending", String(invPending), "") : "") +
             legendRow("#d97706", "No Photos",  String(invNoPhotos),  ""),
-    chipsHtml: buildChipsRow(avgTtlDaysInventory, avgScoreInventory, { centered: quietDay }),
+    chipsHtml: buildChipsRow(avgTtlDaysInventory, avgTatHrsInventory, { centered: quietDay, score: avgScoreInventory }),
     widthPct: quietDay ? "auto" : "50%",
     centered: quietDay,
   });
@@ -517,14 +649,15 @@ export function buildGroupReportHtml(data, dateLabel) {
   const BAR_W = 200;
   const tatChip = (hrs) => {
     if (hrs == null) return `<span style="font-size:13px;color:#98a0ad;font-weight:700;padding-left:4px;">&mdash;</span>`;
-    const slow = Number(hrs) > 4;
+    // Threshold: > 8 hrs → amber (slow); ≤ 8 hrs → green (on-track).
+    const slow = Number(hrs) > 8;
     const bg   = slow ? "#fff2dc" : "#e7f7ee";
     const fg   = slow ? "#d97706" : "#16a34a";
-    return `<span style="display:inline-block;padding:3px 8px;border-radius:999px;background:${bg};color:${fg};font-size:11px;font-weight:700;letter-spacing:0.2px;font-family:Arial,Helvetica,sans-serif;">${formatTat(hrs)}</span>`;
+    return `<span style="display:inline-block;padding:3px 8px;border-radius:999px;background:${bg};color:${fg};font-size:11px;font-weight:700;letter-spacing:0.2px;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">${formatTat(hrs)}</span>`;
   };
 
   const rooftopBarRows = !inventoryByRooftop || inventoryByRooftop.length === 0
-    ? `<tr><td colspan="4" style="padding:20px 0;text-align:center;font-size:12px;color:#9CA3AF;font-family:-apple-system,BlinkMacSystemFont,Arial,Helvetica,sans-serif;">No inventory data available.</td></tr>`
+    ? `<tr><td colspan="4" style="padding:20px 0;text-align:center;font-size:12px;color:#9CA3AF;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">No inventory data available.</td></tr>`
     : inventoryByRooftop.map((r) => {
         const rowTotal = allImsIntegrated
           ? (Number(r.total_active) || 0)
@@ -559,9 +692,9 @@ export function buildGroupReportHtml(data, dateLabel) {
         }).join("");
         return `<tr>
           <td style="padding:10px 10px 10px 0;${border}vertical-align:middle;">
-            <a href="${consoleUrl}" style="font-size:12.5px;font-weight:600;color:#0c1322;text-decoration:none;font-family:-apple-system,BlinkMacSystemFont,Arial,Helvetica,sans-serif;">${r.rooftop_name || r.rooftop_id}</a>
+            <a href="${consoleUrl}" style="font-size:12.5px;font-weight:600;color:#0c1322;text-decoration:none;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">${r.rooftop_name || r.rooftop_id}</a>
           </td>
-          <td style="padding:10px;${border}vertical-align:middle;white-space:nowrap;font-size:13px;font-weight:700;color:#0c1322;font-family:-apple-system,BlinkMacSystemFont,Arial,Helvetica,sans-serif;">
+          <td style="padding:10px;${border}vertical-align:middle;white-space:nowrap;font-size:13px;font-weight:700;color:#0c1322;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">
             ${n(rowTotal)} <span style="font-size:10.5px;color:#98a0ad;font-weight:500;">vehicles</span>
           </td>
           <td style="padding:10px;${border}vertical-align:middle;">
@@ -579,7 +712,7 @@ export function buildGroupReportHtml(data, dateLabel) {
     : (recentPublishedVins && recentPublishedVins.length > 0 ? recentPublishedVins : []);
 
   const recentRowsHtml = vinSource.length === 0
-    ? `<tr><td colspan="6" style="padding:20px 0;text-align:center;font-size:12px;color:#9CA3AF;font-family:Arial,Helvetica,sans-serif;">No vehicles delivered recently.</td></tr>`
+    ? `<tr><td colspan="6" style="padding:20px 0;text-align:center;font-size:12px;color:#9CA3AF;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">No vehicles delivered recently.</td></tr>`
     : vinSource.slice(0, 5).map((v) => {
         const vehicleName = [clean(v.year), clean(v.make), clean(v.model)].filter(Boolean).join(" ") || "—";
         const trimLine    = clean(v.trim);
@@ -596,22 +729,32 @@ export function buildGroupReportHtml(data, dateLabel) {
         return `
         <tr>
           <td style="padding:10px 10px 10px 0;vertical-align:middle;${rowBorder}">${thumb}</td>
-          <td style="padding:10px 10px 10px 0;vertical-align:middle;${rowBorder}font-family:-apple-system,BlinkMacSystemFont,Arial,Helvetica,sans-serif;overflow:hidden;">
+          <td style="padding:10px 10px 10px 0;vertical-align:middle;${rowBorder}font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;overflow:hidden;">
             <div style="font-size:12.5px;font-weight:600;color:#0c1322;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${vehicleName}${trimLine ? ` <span style="color:#98a0ad;font-weight:500;">&middot; ${trimLine}</span>` : ""}</div>
             <div style="font-size:10.5px;color:#98a0ad;margin-top:1px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${v.vin || ""}${stockLine ? ` &middot; Stock #${stockLine}` : ""}</div>
           </td>
-          <td style="padding:10px 10px 10px 0;vertical-align:middle;${rowBorder}font-size:11.5px;color:#5b6577;font-weight:500;font-family:-apple-system,BlinkMacSystemFont,Arial,Helvetica,sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${v.rooftop_name || ""}</td>
+          <td style="padding:10px 10px 10px 0;vertical-align:middle;${rowBorder}font-size:11.5px;color:#5b6577;font-weight:500;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${v.rooftop_name || ""}</td>
           <td style="padding:10px 10px 10px 0;vertical-align:middle;${rowBorder}white-space:nowrap;">
-            <span style="display:inline-block;padding:3px 8px;border-radius:999px;background:${tatBg};color:${tatFg};font-size:11px;font-weight:700;letter-spacing:0.2px;font-family:-apple-system,BlinkMacSystemFont,Arial,Helvetica,sans-serif;">${tatLabel}</span>
+            <span style="display:inline-block;padding:3px 8px;border-radius:999px;background:${tatBg};color:${tatFg};font-size:11px;font-weight:700;letter-spacing:0.2px;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">${tatLabel}</span>
           </td>
           <td style="padding:10px 10px 10px 0;vertical-align:middle;${rowBorder}white-space:nowrap;">
-            <span style="display:inline-block;padding:3px 8px 3px 7px;border-radius:999px;background:#e7f7ee;color:#16a34a;font-size:11px;font-weight:700;letter-spacing:0.2px;font-family:-apple-system,BlinkMacSystemFont,Arial,Helvetica,sans-serif;">&#9679;&nbsp;Delivered</span>
+            <span style="display:inline-block;padding:3px 8px 3px 7px;border-radius:999px;background:#e7f7ee;color:#16a34a;font-size:11px;font-weight:700;letter-spacing:0.2px;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">&#9679;&nbsp;Delivered</span>
           </td>
           <td style="padding:10px 0;vertical-align:middle;${rowBorder}text-align:right;white-space:nowrap;">
-            <a href="${vUrl}" style="font-size:11px;font-weight:600;color:#2f6bff;text-decoration:none;font-family:-apple-system,BlinkMacSystemFont,Arial,Helvetica,sans-serif;">View &rarr;</a>
+            <a href="${vUrl}" style="font-size:11px;font-weight:600;color:#2f6bff;text-decoration:none;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">View &rarr;</a>
           </td>
         </tr>`;
       }).join("\n");
+
+  // ── Vehicles needing attention (top-5 no-photos VINs across the group) ─────
+  const needsAttentionUrl = `${enterpriseConsoleUrl}&filter=no-photos`;
+  const needsAttentionHtml = buildNeedsAttentionSection({
+    vins: needsAttentionVins,
+    vinUrl,
+    viewAllHref: needsAttentionUrl,
+    includeRooftopCol: true,
+    titleSuffix: " (group)",
+  });
 
   // ── Full HTML ─────────────────────────────────────────────────────────────
   return `<!doctype html>
@@ -621,7 +764,7 @@ export function buildGroupReportHtml(data, dateLabel) {
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>Studio AI Dealer Report — ${enterpriseName}</title>
 </head>
-<body style="margin:0;padding:0;background:#f4f5f7;font-family:-apple-system,BlinkMacSystemFont,Arial,Helvetica,sans-serif;color:#0c1322;">
+<body style="margin:0;padding:0;background:#f4f5f7;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;color:#0c1322;">
 <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;background:#f4f5f7;">
   <tr>
     <td align="center" style="padding:24px 16px 40px;">
@@ -654,7 +797,7 @@ export function buildGroupReportHtml(data, dateLabel) {
               <tr>
                 <td valign="middle" style="vertical-align:middle;">
                   <span style="font-size:20px;font-weight:700;color:#0c1322;letter-spacing:-0.2px;">Inventory</span>
-                  <span style="font-size:20px;font-weight:500;color:#5b6577;letter-spacing:-0.2px;">&nbsp;across the group</span>
+                  <span style="font-size:20px;font-weight:500;color:#5b6577;letter-spacing:-0.2px;">&nbsp;across Group</span>
                   <span style="display:inline-block;background:#e7f7ee;color:#16a34a;padding:4px 9px;border-radius:999px;font-size:11px;font-weight:600;margin-left:8px;vertical-align:middle;">&#9679;&nbsp;On track</span>
                 </td>
                 <td align="right" valign="middle" style="vertical-align:middle;text-align:right;font-size:12px;color:#5b6577;white-space:nowrap;">${dateLabel}</td>
@@ -675,9 +818,9 @@ export function buildGroupReportHtml(data, dateLabel) {
           <td style="background:#FFFFFF;border:1px solid #e7e9ee;border-radius:14px;padding:14px 16px 8px;">
             <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;margin-bottom:8px;">
               <tr>
-                <td valign="middle" style="vertical-align:middle;font-size:11px;letter-spacing:0.8px;text-transform:uppercase;color:#5b6577;font-weight:600;font-family:Arial,Helvetica,sans-serif;">By Rooftop &middot; Inventory</td>
+                <td valign="middle" style="vertical-align:middle;font-size:11px;letter-spacing:0.8px;text-transform:uppercase;color:#5b6577;font-weight:600;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">By Rooftop &middot; Inventory</td>
                 <td align="right" valign="middle" style="vertical-align:middle;text-align:right;">
-                  <a href="${enterpriseConsoleUrl}" style="font-size:11px;font-weight:600;color:#2f6bff;text-decoration:none;font-family:Arial,Helvetica,sans-serif;">View all &rarr;</a>
+                  <a href="${enterpriseConsoleUrl}" style="font-size:11px;font-weight:600;color:#2f6bff;text-decoration:none;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">View all &rarr;</a>
                 </td>
               </tr>
             </table>
@@ -690,18 +833,18 @@ export function buildGroupReportHtml(data, dateLabel) {
               </colgroup>
               <thead>
                 <tr>
-                  <td style="padding:4px 10px 8px 0;border-bottom:1px solid #e7e9ee;font-size:9.5px;letter-spacing:0.8px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:-apple-system,BlinkMacSystemFont,Arial,Helvetica,sans-serif;">Rooftop</td>
-                  <td style="padding:4px 10px 8px;border-bottom:1px solid #e7e9ee;font-size:9.5px;letter-spacing:0.8px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:-apple-system,BlinkMacSystemFont,Arial,Helvetica,sans-serif;">Inventory</td>
+                  <td style="padding:4px 10px 8px 0;border-bottom:1px solid #e7e9ee;font-size:9.5px;letter-spacing:0.8px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">Rooftop</td>
+                  <td style="padding:4px 10px 8px;border-bottom:1px solid #e7e9ee;font-size:9.5px;letter-spacing:0.8px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">Inventory</td>
                   <td style="padding:4px 10px 8px;border-bottom:1px solid #e7e9ee;">
                     <table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;">
                       <tr>
-                        <td style="padding-right:10px;white-space:nowrap;font-size:9px;letter-spacing:0.5px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:-apple-system,BlinkMacSystemFont,Arial,Helvetica,sans-serif;"><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#16a34a;vertical-align:middle;margin-right:3px;"></span>Delivered</td>
-                        <td style="padding-right:10px;white-space:nowrap;font-size:9px;letter-spacing:0.5px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:-apple-system,BlinkMacSystemFont,Arial,Helvetica,sans-serif;"><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#2f6bff;vertical-align:middle;margin-right:3px;"></span>Pending</td>
-                        <td style="white-space:nowrap;font-size:9px;letter-spacing:0.5px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:-apple-system,BlinkMacSystemFont,Arial,Helvetica,sans-serif;"><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#d97706;vertical-align:middle;margin-right:3px;"></span>No Photos</td>
+                        <td style="padding-right:10px;white-space:nowrap;font-size:9px;letter-spacing:0.5px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;"><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#16a34a;vertical-align:middle;margin-right:3px;"></span>Delivered</td>
+                        <td style="padding-right:10px;white-space:nowrap;font-size:9px;letter-spacing:0.5px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;"><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#2f6bff;vertical-align:middle;margin-right:3px;"></span>Pending</td>
+                        <td style="white-space:nowrap;font-size:9px;letter-spacing:0.5px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;"><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#d97706;vertical-align:middle;margin-right:3px;"></span>No Photos</td>
                       </tr>
                     </table>
                   </td>
-                  <td style="padding:4px 0 8px 10px;border-bottom:1px solid #e7e9ee;text-align:right;font-size:9.5px;letter-spacing:0.8px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:-apple-system,BlinkMacSystemFont,Arial,Helvetica,sans-serif;white-space:nowrap;">Avg TAT</td>
+                  <td style="padding:4px 0 8px 10px;border-bottom:1px solid #e7e9ee;text-align:right;font-size:9.5px;letter-spacing:0.8px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;white-space:nowrap;">Avg TAT</td>
                 </tr>
               </thead>
               <tbody>
@@ -718,9 +861,9 @@ export function buildGroupReportHtml(data, dateLabel) {
           <td style="background:#FFFFFF;border:1px solid #e7e9ee;border-radius:14px;padding:14px 16px 8px;">
             <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;margin-bottom:8px;">
               <tr>
-                <td valign="middle" style="vertical-align:middle;font-size:11px;letter-spacing:0.8px;text-transform:uppercase;color:#5b6577;font-weight:600;font-family:Arial,Helvetica,sans-serif;">Recent Vehicles &middot; Latest activity (group)</td>
+                <td valign="middle" style="vertical-align:middle;font-size:11px;letter-spacing:0.8px;text-transform:uppercase;color:#5b6577;font-weight:600;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">Recent Vehicles &middot; Latest activity (group)</td>
                 <td align="right" valign="middle" style="vertical-align:middle;text-align:right;">
-                  <a href="${enterpriseConsoleUrl}" style="font-size:11px;font-weight:600;color:#2f6bff;text-decoration:none;font-family:Arial,Helvetica,sans-serif;">View all &rarr;</a>
+                  <a href="${enterpriseConsoleUrl}" style="font-size:11px;font-weight:600;color:#2f6bff;text-decoration:none;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">View all &rarr;</a>
                 </td>
               </tr>
             </table>
@@ -729,17 +872,17 @@ export function buildGroupReportHtml(data, dateLabel) {
                 <col style="width:56px;" />
                 <col />
                 <col style="width:28%;" />
-                <col style="width:78px;" />
-                <col style="width:110px;" />
+                <col style="width:90px;" />
+                <col style="width:130px;" />
                 <col style="width:60px;" />
               </colgroup>
               <thead>
                 <tr>
                   <td style="padding:4px 10px 8px 0;border-bottom:1px solid #e7e9ee;"></td>
-                  <td style="padding:4px 10px 8px 0;border-bottom:1px solid #e7e9ee;font-size:9.5px;letter-spacing:0.8px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:-apple-system,BlinkMacSystemFont,Arial,Helvetica,sans-serif;">Vehicle</td>
-                  <td style="padding:4px 10px 8px 0;border-bottom:1px solid #e7e9ee;font-size:9.5px;letter-spacing:0.8px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:-apple-system,BlinkMacSystemFont,Arial,Helvetica,sans-serif;">Rooftop</td>
-                  <td style="padding:4px 10px 8px 0;border-bottom:1px solid #e7e9ee;font-size:9.5px;letter-spacing:0.8px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:-apple-system,BlinkMacSystemFont,Arial,Helvetica,sans-serif;">TAT</td>
-                  <td style="padding:4px 10px 8px 0;border-bottom:1px solid #e7e9ee;font-size:9.5px;letter-spacing:0.8px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:-apple-system,BlinkMacSystemFont,Arial,Helvetica,sans-serif;">Status</td>
+                  <td style="padding:4px 10px 8px 0;border-bottom:1px solid #e7e9ee;font-size:9.5px;letter-spacing:0.8px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">Vehicle</td>
+                  <td style="padding:4px 10px 8px 0;border-bottom:1px solid #e7e9ee;font-size:9.5px;letter-spacing:0.8px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">Rooftop</td>
+                  <td style="padding:4px 10px 8px 0;border-bottom:1px solid #e7e9ee;font-size:9.5px;letter-spacing:0.8px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">TAT</td>
+                  <td style="padding:4px 10px 8px 0;border-bottom:1px solid #e7e9ee;font-size:9.5px;letter-spacing:0.8px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">Status</td>
                   <td style="padding:4px 0 8px;border-bottom:1px solid #e7e9ee;"></td>
                 </tr>
               </thead>
@@ -750,6 +893,9 @@ export function buildGroupReportHtml(data, dateLabel) {
           </td>
         </tr>
 
+        <!-- VEHICLES NEEDING ATTENTION -->
+        ${needsAttentionHtml}
+
         <tr><td style="height:14px;font-size:0;line-height:0;">&nbsp;</td></tr>
 
         <!-- FOOTER CTA -->
@@ -757,11 +903,11 @@ export function buildGroupReportHtml(data, dateLabel) {
           <td style="background:#FFFFFF;border:1px solid #e7e9ee;border-radius:14px;padding:14px 18px;">
             <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;">
               <tr>
-                <td valign="middle" style="vertical-align:middle;font-size:12.5px;color:#5b6577;font-family:-apple-system,BlinkMacSystemFont,Arial,Helvetica,sans-serif;line-height:1.5;">
+                <td valign="middle" style="vertical-align:middle;font-size:12.5px;color:#5b6577;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;line-height:1.5;">
                   Want the full breakdown? <strong style="color:#0c1322;">Vehicle-level history, photos &amp; all other info</strong> live in the console.
                 </td>
                 <td align="right" valign="middle" style="vertical-align:middle;padding-left:16px;white-space:nowrap;">
-                  <a href="${enterpriseConsoleUrl}" style="display:inline-block;background:#0c1322;color:#FFFFFF;font-size:12.5px;font-weight:600;padding:9px 14px;border-radius:9px;text-decoration:none;font-family:Arial,Helvetica,sans-serif;mso-padding-alt:9px 14px;">Open console &rarr;</a>
+                  <a href="${enterpriseConsoleUrl}" style="display:inline-block;background:#0c1322;color:#FFFFFF;font-size:12.5px;font-weight:600;padding:9px 14px;border-radius:9px;text-decoration:none;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;mso-padding-alt:9px 14px;">Open console &rarr;</a>
                 </td>
               </tr>
             </table>
