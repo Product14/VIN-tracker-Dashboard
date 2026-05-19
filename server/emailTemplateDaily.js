@@ -167,7 +167,7 @@ const buildQuietDayContent = (dateLabel) => {
       <tr><td align="center" style="padding:24px 16px 20px;text-align:center;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">
         ${quietDayCalendarIcon()}
         <div style="font-size:13.5px;font-weight:700;color:#0c1322;line-height:1.35;">No vehicles received yesterday</div>
-        <div style="font-size:11.5px;color:#98a0ad;line-height:1.45;margin:6px auto 0;max-width:280px;">Zero VIN intake on ${cleanDate}. Throughput metrics resume when new vehicles arrive.</div>
+        <div style="font-size:11.5px;color:#98a0ad;line-height:1.45;margin:6px auto 0;max-width:280px;">Zero vehicles shot &amp; received on ${cleanDate}. Daily report metrics resume when new vehicles arrive.</div>
       </td></tr>
     </table>`;
 };
