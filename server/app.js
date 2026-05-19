@@ -2445,16 +2445,61 @@ app.get("/api/donut.svg", (req, res) => {
   // Escape minimal XML chars for the user-supplied label/center text
   const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
+  // Center/label text colors adapt to the device's color scheme via a CSS
+  // @media query inside the SVG. iOS Mail, Apple Mail and Gmail's mobile
+  // WebView all honor `prefers-color-scheme` on SVG images loaded via <img>,
+  // so the dark text flips to a light shade automatically when the email is
+  // viewed in dark mode — without us having to flip the card background.
   const svg = `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${w}" viewBox="0 0 150 150">
+  <style>
+    .donut-center { fill: #0c1322; }
+    .donut-label  { fill: #98a0ad; }
+    @media (prefers-color-scheme: dark) {
+      .donut-center { fill: #f5f6f8; }
+      .donut-label  { fill: #c5cad3; }
+    }
+  </style>
   <g transform="rotate(-90 75 75)">
     <circle cx="75" cy="75" r="58" fill="none" stroke="#eef0f4" stroke-width="18"/>
     ${greenLen > 0 ? `<circle cx="75" cy="75" r="58" fill="none" stroke="#16a34a" stroke-width="18" stroke-dasharray="${greenLen.toFixed(2)} ${C.toFixed(2)}"/>` : ""}
     ${blueLen  > 0 ? `<circle cx="75" cy="75" r="58" fill="none" stroke="#2f6bff" stroke-width="18" stroke-dasharray="${blueLen.toFixed(2)} ${C.toFixed(2)}" stroke-dashoffset="${(-greenLen).toFixed(2)}"/>` : ""}
     ${amberLen > 0 ? `<circle cx="75" cy="75" r="58" fill="none" stroke="#d97706" stroke-width="18" stroke-dasharray="${amberLen.toFixed(2)} ${C.toFixed(2)}" stroke-dashoffset="${(-(greenLen + blueLen)).toFixed(2)}"/>` : ""}
   </g>
-  <text x="75" y="76" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif" font-size="28" font-weight="800" fill="#0c1322" letter-spacing="-0.8">${esc(center)}</text>
-  <text x="75" y="92" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif" font-size="9.5" font-weight="600" fill="#98a0ad" letter-spacing="0.8">${esc(label)}</text>
+  <text class="donut-center" x="75" y="76" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif" font-size="28" font-weight="800" letter-spacing="-0.8">${esc(center)}</text>
+  <text class="donut-label"  x="75" y="92" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif" font-size="9.5" font-weight="600" letter-spacing="0.8">${esc(label)}</text>
+</svg>`;
+
+  res.set("Content-Type", "image/svg+xml; charset=utf-8");
+  res.set("Cache-Control", "public, max-age=86400, immutable");
+  res.send(svg);
+});
+
+// Renders a small rounded square dot split diagonally into two colors. Used by
+// the daily-email legend to indicate a category that mixes two sub-categories
+// (e.g. "Vehicles Shot" = delivered + pending). Hosted like /api/donut.svg so
+// Gmail's image proxy can render it; inline <svg> would be stripped.
+//
+// Query params:
+//   a — top-right triangle fill color, 3 or 6 hex chars w/o "#" (default: 16a34a)
+//   b — bottom-left triangle fill color, 3 or 6 hex chars w/o "#" (default: 2f6bff)
+//   w — output width in px (default 30, capped to [8, 64])
+app.get("/api/split-dot.svg", (req, res) => {
+  const cleanColor = (s, fallback) => {
+    const v = String(s || "").replace(/^#/, "");
+    return /^[0-9a-fA-F]{3}$|^[0-9a-fA-F]{6}$/.test(v) ? `#${v}` : fallback;
+  };
+  const a = cleanColor(req.query.a, "#16a34a");
+  const b = cleanColor(req.query.b, "#2f6bff");
+  const w = Math.min(64, Math.max(8, Number(req.query.w) || 30));
+
+  const svg = `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${w}" viewBox="0 0 10 10">
+  <defs><clipPath id="r"><rect width="10" height="10" rx="3" ry="3"/></clipPath></defs>
+  <g clip-path="url(#r)">
+    <polygon points="0,0 10,0 10,10" fill="${a}"/>
+    <polygon points="0,0 0,10 10,10" fill="${b}"/>
+  </g>
 </svg>`;
 
   res.set("Content-Type", "image/svg+xml; charset=utf-8");

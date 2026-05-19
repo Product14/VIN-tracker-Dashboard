@@ -143,6 +143,68 @@ const buildChipsRow = (ttlDays, avgTatHrs, { centered = false, score = null } = 
     </table>`;
 };
 
+// ─── Quiet-day "No vehicles received yesterday" placeholders ─────────────────
+// Used inside the Yesterday card when no VINs arrived the previous day, so the
+// card stays side-by-side with the Inventory card instead of being hidden.
+
+// Calendar icon used in the empty state. Inline SVG via data URI (same pattern
+// as noPhotoThumb) — Gmail strips inline <svg> but renders <img src="data:...">.
+const quietDayCalendarIcon = () => {
+  const svg = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238b7cc8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect x='3' y='4' width='18' height='18' rx='2'/><path d='M16 2v4M8 2v4M3 10h18'/><line x1='9' y1='16' x2='15' y2='16'/></svg>`;
+  return `<table cellpadding="0" cellspacing="0" border="0" align="center" style="border-collapse:collapse;margin:0 auto 8px;">
+    <tr><td width="44" height="44" align="center" valign="middle" style="width:44px;height:44px;background:#f3f1fa;border-radius:22px;line-height:0;">
+      <img src="data:image/svg+xml;utf8,${svg}" width="20" height="20" alt="" style="display:block;border:0;outline:none;" />
+    </td></tr>
+  </table>`;
+};
+
+// Empty-state body for the Yesterday card. Caller supplies the dateLabel that's
+// already passed to the report; we strip a trailing "(TZ)" suffix for cleanliness.
+const buildQuietDayContent = (dateLabel) => {
+  const cleanDate = String(dateLabel || "").replace(/\s*\([^)]+\)\s*$/, "").trim() || "yesterday";
+  return `
+    <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;">
+      <tr><td align="center" style="padding:24px 16px 20px;text-align:center;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">
+        ${quietDayCalendarIcon()}
+        <div style="font-size:13.5px;font-weight:700;color:#0c1322;line-height:1.35;">No vehicles received yesterday</div>
+        <div style="font-size:11.5px;color:#98a0ad;line-height:1.45;margin:6px auto 0;max-width:280px;">Zero VIN intake on ${cleanDate}. Throughput metrics resume when new vehicles arrive.</div>
+      </td></tr>
+    </table>`;
+};
+
+// Disabled chip pair (Time to Line —, Media Score —) for the empty Yesterday
+// card. Mirrors the chip() / buildChipsRow() shape but with em-dash values and
+// dimmed styling so the row visually echoes the populated state. Labels match
+// the mockup; populated chips elsewhere keep their existing names.
+const buildQuietDayChips = () => {
+  const disabledChip = (bg, fg, label) => `
+    <td valign="middle" style="background:${bg};padding:6px 10px;border-radius:999px;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;opacity:0.55;">
+      <table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;">
+        <tr>
+          <td valign="middle" style="padding:0 8px 0 0;">
+            <span style="display:inline-block;font-size:9px;font-weight:700;letter-spacing:0.3px;text-transform:uppercase;color:${fg};opacity:0.85;">${label}</span>
+          </td>
+          <td valign="middle" style="padding:0;">
+            <span style="font-size:12.5px;font-weight:700;color:#98a0ad;letter-spacing:-0.2px;">&mdash;</span>
+          </td>
+        </tr>
+      </table>
+    </td>`;
+  const sep = `<td width="6" style="width:6px;font-size:0;line-height:0;">&nbsp;</td>`;
+  return `
+    <table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;margin-top:12px;border-top:1px solid #e7e9ee;padding-top:12px;width:100%;">
+      <tr><td align="left" style="padding:12px 0 0;text-align:left;">
+        <table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;">
+          <tr>
+            ${disabledChip("#efeaff", "#5b3ce8", "Time to Line")}
+            ${sep}
+            ${disabledChip("#eaf0ff", "#1a4ad6", "Media Score")}
+          </tr>
+        </table>
+      </td></tr>
+    </table>`;
+};
+
 // ─── "Vehicles needing attention" helpers ────────────────────────────────────
 
 // Red-tinted 44×32 thumb with an inline camera-slash SVG, used in the
@@ -342,20 +404,22 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
   // When `centered` is true, the inner donut+legend table is rendered as a
   // shrink-to-fit table with align="center" so the content sits in the middle
   // of the (now full-width) card. Chips below are also centered.
-  const buildCard = ({ title, donut, legend, chipsHtml, widthPct = "50%", centered = false }) => {
-    const innerTable = centered
-      ? `<table align="center" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;margin:0 auto;">
+  const buildCard = ({ title, donut, legend, content, chipsHtml, widthPct = "50%", centered = false }) => {
+    const innerTable = content !== undefined
+      ? content
+      : (centered
+        ? `<table align="center" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;margin:0 auto;">
            <tr>
              <td valign="middle" width="150" style="width:150px;padding-right:10px;">${donut}</td>
              <td valign="middle" style="border-left:1px solid #e7e9ee;padding-left:14px;">${legend}</td>
            </tr>
          </table>`
-      : `<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;">
+        : `<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;">
            <tr>
              <td valign="middle" width="150" style="width:150px;padding-right:10px;">${donut}</td>
              <td valign="middle" width="100%" style="width:100%;border-left:1px solid #e7e9ee;padding-left:14px;">${legend}</td>
            </tr>
-         </table>`;
+         </table>`);
     const widthAttr  = widthPct === "100%" ? ` width="100%"` : "";
     const widthStyle = widthPct === "auto" ? "" : `width:${widthPct};`;
     return `
@@ -366,11 +430,17 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
     </td>`;
   };
 
-  const legendRow = (dotColor, label, primary, secondary) => `
+  // dotColor accepts either a hex string (solid dot) or [colorA, colorB] (diagonal
+  // split dot, rendered via /api/split-dot.svg so Gmail's image proxy handles it).
+  const legendRow = (dotColor, label, primary, secondary) => {
+    const dotHtml = Array.isArray(dotColor)
+      ? `<img src="${DASHBOARD_URL}/api/split-dot.svg?a=${encodeURIComponent(String(dotColor[0]).replace(/^#/, ""))}&b=${encodeURIComponent(String(dotColor[1]).replace(/^#/, ""))}&w=30" width="10" height="10" alt="" style="display:block;width:10px;height:10px;border:0;outline:none;" />`
+      : `<div style="width:10px;height:10px;border-radius:3px;background:${dotColor};font-size:0;line-height:10px;">&nbsp;</div>`;
+    return `
     <table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;margin-bottom:12px;">
       <tr>
         <td valign="middle" style="padding-right:10px;">
-          <div style="width:10px;height:10px;border-radius:3px;background:${dotColor};font-size:0;line-height:10px;">&nbsp;</div>
+          ${dotHtml}
         </td>
         <td valign="middle">
           <div style="font-size:10.5px;color:#98a0ad;font-weight:700;letter-spacing:0.6px;text-transform:uppercase;line-height:1.3;white-space:nowrap;">${label}</div>
@@ -380,18 +450,26 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
         </td>
       </tr>
     </table>`;
+  };
 
-  // Yesterday card is hidden on quiet days (no vehicles received yesterday) —
-  // the Inventory card then expands to full width.
-  const yesterdayCard = quietDay ? "" : buildCard({
-    title: "Yesterday",
-    donut: donutImg({ green: vinsDelivered, amber: vinsPending || 0, total: Math.max(newVins, 1), center: yCenter, label: yLabel }),
-    legend: `
-      ${legendRow("#16a34a", "Vehicles Shot",      n(newVins),       "")}
-      ${legendRow("#16a34a", "Vehicles Delivered", n(vinsDelivered), "")}
-    `.trim(),
-    chipsHtml: buildChipsRow(avgTtlDaysYesterday, avgTtdHrs, { score: avgScoreYesterday }),
-  });
+  // Yesterday card stays side-by-side with the Inventory card even on quiet days
+  // — when no VINs arrived, we render an empty-state body (calendar icon +
+  // message + disabled chips) instead of the donut.
+  const yesterdayCard = quietDay
+    ? buildCard({
+        title: "Yesterday",
+        content: buildQuietDayContent(dateLabel),
+        chipsHtml: buildQuietDayChips(),
+      })
+    : buildCard({
+        title: "Yesterday",
+        donut: donutImg({ green: vinsDelivered, blue: vinsPending || 0, total: Math.max(newVins, 1), center: yCenter, label: yLabel }),
+        legend: `
+          ${legendRow(["#16a34a", "#2f6bff"], "Vehicles Shot",      n(newVins),       "")}
+          ${legendRow("#16a34a", "Vehicles Delivered", n(vinsDelivered), "")}
+        `.trim(),
+        chipsHtml: buildChipsRow(avgTtlDaysYesterday, avgTtdHrs, { score: avgScoreYesterday }),
+      });
 
   const inventoryCard = buildCard({
     title: "Inventory &middot; Till Yesterday",
@@ -401,16 +479,10 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
       ${invPending > 0 ? legendRow("#2f6bff", "Pending", n(invPending), "") : ""}
       ${legendRow("#d97706", "No Photos", n(invNoPhotos),  "")}
     `.trim(),
-    chipsHtml: buildChipsRow(avgTtlDaysInventory, avgTatHrsInventory, { centered: quietDay, score: avgScoreInventory }),
-    widthPct: quietDay ? "auto" : "50%",
-    centered: quietDay,
+    chipsHtml: buildChipsRow(avgTtlDaysInventory, avgTatHrsInventory, { score: avgScoreInventory }),
   });
 
-  // On quiet days we render only the inventory card as a shrink-to-fit, centered
-  // card so it hugs its content instead of spanning the full email width.
-  const cardsRow = quietDay
-    ? `<table align="center" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;margin:0 auto;"><tr>${inventoryCard}</tr></table>`
-    : `<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;"><tr>${yesterdayCard}<td width="14" style="width:14px;min-width:14px;font-size:0;line-height:0;">&nbsp;</td>${inventoryCard}</tr></table>`;
+  const cardsRow = `<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;"><tr>${yesterdayCard}<td width="14" style="width:14px;min-width:14px;font-size:0;line-height:0;">&nbsp;</td>${inventoryCard}</tr></table>`;
 
   // ── Full HTML ─────────────────────────────────────────────────────────────
   // Email-safe: 100% inline styles, table-based layout, hosted images for
@@ -583,20 +655,22 @@ export function buildGroupReportHtml(data, dateLabel) {
   // When `centered` is true, the inner donut+legend table is rendered as a
   // shrink-to-fit table aligned with align="center" so the content sits in
   // the middle of the (now full-width) card. Chips below are also centered.
-  const buildCard = ({ title, donut, legend, chipsHtml, widthPct = "50%", centered = false }) => {
-    const innerTable = centered
-      ? `<table align="center" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;margin:0 auto;">
+  const buildCard = ({ title, donut, legend, content, chipsHtml, widthPct = "50%", centered = false }) => {
+    const innerTable = content !== undefined
+      ? content
+      : (centered
+        ? `<table align="center" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;margin:0 auto;">
            <tr>
              <td valign="middle" width="150" style="width:150px;padding-right:10px;">${donut}</td>
              <td valign="middle" style="border-left:1px solid #e7e9ee;padding-left:14px;">${legend}</td>
            </tr>
          </table>`
-      : `<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;">
+        : `<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;">
            <tr>
              <td valign="middle" width="150" style="width:150px;padding-right:10px;">${donut}</td>
              <td valign="middle" width="100%" style="width:100%;border-left:1px solid #e7e9ee;padding-left:14px;">${legend}</td>
            </tr>
-         </table>`;
+         </table>`);
     const widthAttr  = widthPct === "100%" ? ` width="100%"` : "";
     const widthStyle = widthPct === "auto" ? "" : `width:${widthPct};`;
     return `
@@ -607,11 +681,17 @@ export function buildGroupReportHtml(data, dateLabel) {
     </td>`;
   };
 
-  const legendRow = (dotColor, label, primary, secondary) => `
+  // dotColor accepts either a hex string (solid dot) or [colorA, colorB] (diagonal
+  // split dot, rendered via /api/split-dot.svg so Gmail's image proxy handles it).
+  const legendRow = (dotColor, label, primary, secondary) => {
+    const dotHtml = Array.isArray(dotColor)
+      ? `<img src="${DASHBOARD_URL}/api/split-dot.svg?a=${encodeURIComponent(String(dotColor[0]).replace(/^#/, ""))}&b=${encodeURIComponent(String(dotColor[1]).replace(/^#/, ""))}&w=30" width="10" height="10" alt="" style="display:block;width:10px;height:10px;border:0;outline:none;" />`
+      : `<div style="width:10px;height:10px;border-radius:3px;background:${dotColor};font-size:0;line-height:10px;">&nbsp;</div>`;
+    return `
     <table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;margin-bottom:12px;">
       <tr>
         <td valign="middle" style="padding-right:10px;">
-          <div style="width:10px;height:10px;border-radius:3px;background:${dotColor};font-size:0;line-height:10px;">&nbsp;</div>
+          ${dotHtml}
         </td>
         <td valign="middle">
           <div style="font-size:10.5px;color:#98a0ad;font-weight:700;letter-spacing:0.6px;text-transform:uppercase;line-height:1.3;white-space:nowrap;">${label}</div>
@@ -619,14 +699,24 @@ export function buildGroupReportHtml(data, dateLabel) {
         </td>
       </tr>
     </table>`;
+  };
 
-  const yesterdayCard = quietDay ? "" : buildCard({
-    title: "Yesterday",
-    donut: donutImg({ green: vinsDelivered, amber: vinsPending || 0, total: Math.max(newVins, 1), center: yCenter, label: "DELIVERED" }),
-    legend: legendRow("#16a34a", "Vehicles Shot",      String(newVins),      "") +
-            legendRow("#16a34a", "Vehicles Delivered", String(vinsDelivered), ""),
-    chipsHtml: buildChipsRow(avgTtlDaysYesterday, avgTtdHrs, { score: avgScoreYesterday }),
-  });
+  // Yesterday card stays side-by-side with the Inventory card even on quiet days
+  // — when no VINs arrived, we render an empty-state body (calendar icon +
+  // message + disabled chips) instead of the donut.
+  const yesterdayCard = quietDay
+    ? buildCard({
+        title: "Yesterday",
+        content: buildQuietDayContent(dateLabel),
+        chipsHtml: buildQuietDayChips(),
+      })
+    : buildCard({
+        title: "Yesterday",
+        donut: donutImg({ green: vinsDelivered, blue: vinsPending || 0, total: Math.max(newVins, 1), center: yCenter, label: "DELIVERED" }),
+        legend: legendRow(["#16a34a", "#2f6bff"], "Vehicles Shot",      String(newVins),      "") +
+                legendRow("#16a34a", "Vehicles Delivered", String(vinsDelivered), ""),
+        chipsHtml: buildChipsRow(avgTtlDaysYesterday, avgTtdHrs, { score: avgScoreYesterday }),
+      });
 
   const inventoryCard = buildCard({
     title: "Inventory \xb7 Till Yesterday",
@@ -634,16 +724,10 @@ export function buildGroupReportHtml(data, dateLabel) {
     legend: legendRow("#16a34a", "Delivered",  String(invDelivered), `/${invWithPh}`) +
             (invPending > 0 ? legendRow("#2f6bff", "Pending", String(invPending), "") : "") +
             legendRow("#d97706", "No Photos",  String(invNoPhotos),  ""),
-    chipsHtml: buildChipsRow(avgTtlDaysInventory, avgTatHrsInventory, { centered: quietDay, score: avgScoreInventory }),
-    widthPct: quietDay ? "auto" : "50%",
-    centered: quietDay,
+    chipsHtml: buildChipsRow(avgTtlDaysInventory, avgTatHrsInventory, { score: avgScoreInventory }),
   });
 
-  // On quiet days we render only the inventory card as a shrink-to-fit, centered
-  // card so it hugs its content instead of spanning the full email width.
-  const cardsRow = quietDay
-    ? `<table align="center" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;margin:0 auto;"><tr>${inventoryCard}</tr></table>`
-    : `<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;"><tr>${yesterdayCard}<td width="14" style="width:14px;min-width:14px;font-size:0;line-height:0;">&nbsp;</td>${inventoryCard}</tr></table>`;
+  const cardsRow = `<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;"><tr>${yesterdayCard}<td width="14" style="width:14px;min-width:14px;font-size:0;line-height:0;">&nbsp;</td>${inventoryCard}</tr></table>`;
 
   // ── By Rooftop · Inventory bar chart ──────────────────────────────────────
   const BAR_W = 200;
