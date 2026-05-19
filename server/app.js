@@ -3545,7 +3545,7 @@ Reports are only archived for emails sent after this feature was deployed.</pre>
 <html><head><meta charset="UTF-8"><title>Report — ${date}</title>
 <style>
   body { margin:0; padding:0; background:#EBEBEB; }
-  iframe { display:block; width:600px; max-width:100%; margin:0 auto; border:none; background:#FFFFFF; }
+  iframe { display:block; width:720px; max-width:100%; margin:0 auto; border:none; background:#FFFFFF; }
 </style></head>
 <body>
   ${banners.join("")}
