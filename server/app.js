@@ -2445,20 +2445,11 @@ app.get("/api/donut.svg", (req, res) => {
   // Escape minimal XML chars for the user-supplied label/center text
   const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-  // Center/label text colors adapt to the device's color scheme via a CSS
-  // @media query inside the SVG. iOS Mail, Apple Mail and Gmail's mobile
-  // WebView all honor `prefers-color-scheme` on SVG images loaded via <img>,
-  // so the dark text flips to a light shade automatically when the email is
-  // viewed in dark mode — without us having to flip the card background.
   const svg = `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${w}" viewBox="0 0 150 150">
   <style>
     .donut-center { fill: #0c1322; }
-    .donut-label  { fill: #98a0ad; }
-    @media (prefers-color-scheme: dark) {
-      .donut-center { fill: #f5f6f8; }
-      .donut-label  { fill: #c5cad3; }
-    }
+    .donut-label  { fill: #6b7280; }
   </style>
   <g transform="rotate(-90 75 75)">
     <circle cx="75" cy="75" r="58" fill="none" stroke="#eef0f4" stroke-width="18"/>
@@ -2466,8 +2457,8 @@ app.get("/api/donut.svg", (req, res) => {
     ${blueLen  > 0 ? `<circle cx="75" cy="75" r="58" fill="none" stroke="#2f6bff" stroke-width="18" stroke-dasharray="${blueLen.toFixed(2)} ${C.toFixed(2)}" stroke-dashoffset="${(-greenLen).toFixed(2)}"/>` : ""}
     ${amberLen > 0 ? `<circle cx="75" cy="75" r="58" fill="none" stroke="#d97706" stroke-width="18" stroke-dasharray="${amberLen.toFixed(2)} ${C.toFixed(2)}" stroke-dashoffset="${(-(greenLen + blueLen)).toFixed(2)}"/>` : ""}
   </g>
-  <text class="donut-center" x="75" y="76" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif" font-size="28" font-weight="800" letter-spacing="-0.8">${esc(center)}</text>
-  <text class="donut-label"  x="75" y="92" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif" font-size="9.5" font-weight="600" letter-spacing="0.8">${esc(label)}</text>
+  <text class="donut-center" fill="#0c1322" x="75" y="76" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif" font-size="28" font-weight="800" letter-spacing="-0.8">${esc(center)}</text>
+  <text class="donut-label"  fill="#6b7280" x="75" y="92" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif" font-size="9.5" font-weight="600" letter-spacing="0.8">${esc(label)}</text>
 </svg>`;
 
   res.set("Content-Type", "image/svg+xml; charset=utf-8");
