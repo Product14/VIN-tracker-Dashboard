@@ -125,7 +125,7 @@ const buildChipsRow = (ttlDays, avgTatHrs, { centered = false, score = null } = 
   const ttlStr = formatTtl(ttlDays);
   const ttlTip = "Average Time taken from VIN received to VIN Live on lot";
   const tatTip = "Average Time taken by Spyne to process and deliver VIN";
-  if (ttlStr != null)      cells.push(chip("#efeaff", "#5b3ce8", "#5b3ce8", "Time to Market", ttlStr,            ttlTip));
+  if (ttlStr != null)      cells.push(chip("#efeaff", "#5b3ce8", "#5b3ce8", "Days to Frontline", ttlStr,            ttlTip));
   if (avgTatHrs != null)   cells.push(chip("#eaf0ff", "#1a4ad6", "#1a4ad6", "Avg TAT",        formatTat(avgTatHrs), tatTip));
   // TODO: re-enable Media Score chip once scoring is finalized.
   // if (score != null)    cells.push(chip("#eaf0ff", "#1a4ad6", "#1a4ad6", "Media Score",    Number(score).toFixed(1)));
@@ -196,7 +196,7 @@ const buildQuietDayChips = () => {
       <tr><td align="left" style="padding:12px 0 0;text-align:left;">
         <table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;">
           <tr>
-            ${disabledChip("#efeaff", "#5b3ce8", "Time to Line")}
+            ${disabledChip("#efeaff", "#5b3ce8", "Days to Frontline")}
             ${sep}
             ${disabledChip("#eaf0ff", "#1a4ad6", "Media Score")}
           </tr>
