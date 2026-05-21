@@ -34,14 +34,23 @@ function formatDt(iso, tz = "America/New_York") {
   } catch { return "—"; }
 }
 
-// "1h 56m"
+// Dynamic duration: "Xd Yh" once it crosses a day, else "Yh Zm", else "Zm".
+function formatHM(totalMins) {
+  const t = Math.max(0, Math.round(Number(totalMins)));
+  if (t < 60) return `${t}m`;
+  const h = Math.floor(t / 60);
+  if (h < 24) {
+    const m = t - h * 60;
+    return m === 0 ? `${h}h` : `${h}h ${m}m`;
+  }
+  const d = Math.floor(h / 24);
+  const rh = h - d * 24;
+  return rh === 0 ? `${d}d` : `${d}d ${rh}h`;
+}
+
 function formatTat(hrs) {
   if (hrs == null) return "—";
-  const h = Math.floor(Number(hrs));
-  const m = Math.round((Number(hrs) - h) * 60);
-  if (h === 0) return `${m}m`;
-  if (m === 0) return `${h}h`;
-  return `${h}h ${m}m`;
+  return formatHM(Number(hrs) * 60);
 }
 
 // ─── Shared snippets ──────────────────────────────────────────────────────────
@@ -81,16 +90,9 @@ const donutImg = ({ green = 0, blue = 0, amber = 0, total = 100, center = "", la
   return `<img src="${DASHBOARD_URL}/api/donut.svg?${qs}" width="${size}" height="${size}" alt="" style="display:block;width:${size}px;height:${size}px;border:0;outline:none;text-decoration:none;" />`;
 };
 
-// Format Time to Line as "Xd Yh" / "Yh" / "Zm" — never shows fractional days.
 const formatTtl = (days) => {
   if (days == null) return null;
-  const totalMins = Math.max(0, Math.round(Number(days) * 24 * 60));
-  if (totalMins < 60) return `${totalMins}m`;
-  const totalHrs = Math.round(totalMins / 60);
-  if (totalHrs < 24) return `${totalHrs}h`;
-  const d = Math.floor(totalHrs / 24);
-  const h = totalHrs - d * 24;
-  return h === 0 ? `${d}d` : `${d}d ${h}h`;
+  return formatHM(Number(days) * 24 * 60);
 };
 
 // Email-safe chip with optional hover tooltip via the `title` attribute.

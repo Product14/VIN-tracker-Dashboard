@@ -1621,7 +1621,7 @@ async function computeRooftopDailyReport(rooftopId, yesterday, timezone = "Ameri
       ROUND(AVG(
         EXTRACT(EPOCH FROM (processed_at::timestamptz - vin_creation::timestamptz)) / 86400.0
       ) FILTER (WHERE status = 'Delivered' AND COALESCE(has_photos, 0) = 1 AND DATE(received_at::timestamptz AT TIME ZONE $3) = $2::date
-                  AND processed_at IS NOT NULL AND vin_creation IS NOT NULL)::numeric, 1) AS avg_ttl_days_yday,
+                  AND processed_at IS NOT NULL AND vin_creation IS NOT NULL)::numeric, 4) AS avg_ttl_days_yday,
       -- Avg media score across yesterday-delivered VINs
       ROUND(AVG(vin_score) FILTER (WHERE status = 'Delivered' AND COALESCE(has_photos, 0) = 1 AND DATE(received_at::timestamptz AT TIME ZONE $3) = $2::date
                                      AND vin_score IS NOT NULL)::numeric, 1) AS avg_score_yday
@@ -1753,7 +1753,7 @@ async function computeRooftopDailyReport(rooftopId, yesterday, timezone = "Ameri
         ROUND(AVG(
           EXTRACT(EPOCH FROM (processed_at::timestamptz - vin_creation::timestamptz)) / 86400.0
         ) FILTER (WHERE status = 'Delivered' AND COALESCE(has_photos, 0) = 1
-                    AND processed_at IS NOT NULL AND vin_creation IS NOT NULL)::numeric, 1) AS avg_ttl_days_inv,
+                    AND processed_at IS NOT NULL AND vin_creation IS NOT NULL)::numeric, 4) AS avg_ttl_days_inv,
         ROUND(AVG(vin_score) FILTER (WHERE status = 'Delivered' AND COALESCE(has_photos, 0) = 1
                                        AND vin_score IS NOT NULL)::numeric, 1) AS avg_score_inv,
         ROUND(AVG(
@@ -1796,7 +1796,7 @@ async function computeRooftopDailyReport(rooftopId, yesterday, timezone = "Ameri
         ROUND(AVG(
           EXTRACT(EPOCH FROM (processed_at::timestamptz - vin_creation::timestamptz)) / 86400.0
         ) FILTER (WHERE status = 'Delivered'
-                    AND processed_at IS NOT NULL AND vin_creation IS NOT NULL)::numeric, 1) AS avg_ttl_days_inv,
+                    AND processed_at IS NOT NULL AND vin_creation IS NOT NULL)::numeric, 4) AS avg_ttl_days_inv,
         ROUND(AVG(vin_score) FILTER (WHERE status = 'Delivered'
                                        AND vin_score IS NOT NULL)::numeric, 1) AS avg_score_inv,
         ROUND(AVG(
@@ -1885,7 +1885,7 @@ async function computeGroupDailyReport(enterpriseId, yesterday, timezone = "Amer
       ) FILTER (WHERE status = 'Delivered' AND processed_at IS NOT NULL)::numeric, 1)   AS avg_ttd_hrs,
       ROUND(AVG(EXTRACT(EPOCH FROM (processed_at::timestamptz - vin_creation::timestamptz))/86400.0)
         FILTER (WHERE status='Delivered' AND COALESCE(has_photos,0)=1
-                AND vin_creation IS NOT NULL AND processed_at IS NOT NULL)::numeric, 1)  AS avg_ttl_days_yday,
+                AND vin_creation IS NOT NULL AND processed_at IS NOT NULL)::numeric, 4)  AS avg_ttl_days_yday,
       ROUND(AVG(vin_score) FILTER (WHERE status='Delivered' AND COALESCE(has_photos,0)=1
                 AND vin_score IS NOT NULL)::numeric, 1)                                  AS avg_score_yday
     FROM vins
@@ -2048,7 +2048,7 @@ async function computeGroupDailyReport(enterpriseId, yesterday, timezone = "Amer
         COUNT(*) FILTER (WHERE status != 'Delivered' AND COALESCE(has_photos, 0) = 1)   AS inv_pending,
         ROUND(AVG(EXTRACT(EPOCH FROM (processed_at::timestamptz - vin_creation::timestamptz))/86400.0)
           FILTER (WHERE status='Delivered' AND COALESCE(has_photos,0)=1
-                  AND vin_creation IS NOT NULL AND processed_at IS NOT NULL)::numeric, 1) AS avg_ttl_days_inv,
+                  AND vin_creation IS NOT NULL AND processed_at IS NOT NULL)::numeric, 4) AS avg_ttl_days_inv,
         ROUND(AVG(vin_score) FILTER (WHERE status='Delivered' AND COALESCE(has_photos,0)=1
                   AND vin_score IS NOT NULL)::numeric, 1)                                AS avg_score_inv,
         ROUND(AVG(EXTRACT(EPOCH FROM (processed_at::timestamptz - received_at::timestamptz))/3600.0)
@@ -2117,7 +2117,7 @@ async function computeGroupDailyReport(enterpriseId, yesterday, timezone = "Amer
         COUNT(*) FILTER (WHERE COALESCE(has_photos,0) = 0)  AS no_photos_total,
         ROUND(AVG(EXTRACT(EPOCH FROM (processed_at::timestamptz - vin_creation::timestamptz))/86400.0)
           FILTER (WHERE status='Delivered' AND vin_creation IS NOT NULL
-                  AND processed_at IS NOT NULL)::numeric, 1) AS avg_ttl_days_inv,
+                  AND processed_at IS NOT NULL)::numeric, 4) AS avg_ttl_days_inv,
         ROUND(AVG(vin_score) FILTER (WHERE status='Delivered'
                   AND vin_score IS NOT NULL)::numeric, 1)    AS avg_score_inv,
         ROUND(AVG(EXTRACT(EPOCH FROM (processed_at::timestamptz - received_at::timestamptz))/3600.0)
