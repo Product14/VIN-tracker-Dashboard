@@ -145,6 +145,8 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl, reportCovData =
   const buckets = [
     { label: "Upload Pending",     count: bucketMap["Upload Pending"]     ?? totals.bucketUploadPending,     color: "#2563eb" },
     { label: "Processing Pending", count: bucketMap["Processing Pending"] ?? totals.bucketProcessingPending, color: AMBER },
+    { label: "Missing VIN Name",   count: bucketMap["Missing VIN Name"]   ?? totals.bucketMissingVinName,    color: "#db2777" },
+    { label: "Scheduled Push",     count: bucketMap["Scheduled Push"]     ?? totals.bucketScheduledPush,     color: "#4f46e5" },
     { label: "Publishing Pending", count: bucketMap["Publishing Pending"] ?? totals.bucketPublishingPending, color: "#7c3aed" },
     { label: "QC Pending",         count: bucketMap["QC Pending"]         ?? totals.bucketQcPending,         color: "#0891b2" },
     { label: "QC Hold",            count: bucketMap["QC Hold"]            ?? 0,                              color: RED },

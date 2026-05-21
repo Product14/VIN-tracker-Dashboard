@@ -291,6 +291,8 @@ function downloadCSV(filename, headers, rows) {
 const BUCKETS = [
   { key: "bucketUploadPending",     label: "Upload Pending" },
   { key: "bucketProcessingPending", label: "Processing Pending" },
+  { key: "bucketMissingVinName",    label: "Missing VIN Name" },
+  { key: "bucketScheduledPush",     label: "Scheduled Push" },
   { key: "bucketPublishingPending", label: "Publishing Pending" },
   { key: "bucketQcPending",         label: "QC Pending" },
   { key: "bucketQcHold",            label: "QC Hold" },
@@ -1855,7 +1857,7 @@ const REPORT_FILTER_DISPLAY: Record<string, string> = Object.fromEntries(
 );
 
 const EMPTY_SUMMARY = {
-  totals:   { total: 0, enterpriseCount: 0, withPhotos: 0, deliveredWithPhotos: 0, pendingWithPhotos: 0, processed: 0, notProcessed: 0, processedAfter24: 0, notProcessedAfter24: 0, bucketProcessingPending: 0, bucketPublishingPending: 0, bucketQcPending: 0, bucketSold: 0, bucketOthers: 0 },
+  totals:   { total: 0, enterpriseCount: 0, withPhotos: 0, deliveredWithPhotos: 0, pendingWithPhotos: 0, processed: 0, notProcessed: 0, processedAfter24: 0, notProcessedAfter24: 0, bucketProcessingPending: 0, bucketMissingVinName: 0, bucketScheduledPush: 0, bucketPublishingPending: 0, bucketQcPending: 0, bucketSold: 0, bucketOthers: 0 },
   byCSM:    [],
   byType:   [],
   byBucket: [],

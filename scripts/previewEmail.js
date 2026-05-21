@@ -19,6 +19,8 @@ const mockSummary = {
     notProcessed: 956,
     notProcessedAfter24: 489,
     bucketProcessingPending: 178,
+    bucketMissingVinName: 21,
+    bucketScheduledPush: 53,
     bucketPublishingPending: 134,
     bucketQcPending: 89,
     bucketSold: 62,
@@ -26,6 +28,8 @@ const mockSummary = {
   },
   byBucket: [
     { label: "Processing Pending", count: 178 },
+    { label: "Missing VIN Name",   count: 21  },
+    { label: "Scheduled Push",     count: 53  },
     { label: "Publishing Pending", count: 134 },
     { label: "QC Pending",         count: 89  },
     { label: "QC Hold",            count: 45  },
@@ -46,7 +50,7 @@ const mockSummary = {
       processed: 612, processedAfter24: 245, notProcessed: 281, notProcessedAfter24: 142,
       withPhotos: 410, deliveredWithPhotos: 320, pendingWithPhotos: 90,
       avgWebsiteScore: 72.4, missingWebsiteCount: 2, integratedCount: 3, publishingCount: 1,
-      bucketProcessingPending: 68, bucketPublishingPending: 41, bucketQcPending: 22, bucketQcHold: 11, bucketSold: 0, bucketOthers: 0,
+      bucketProcessingPending: 68, bucketMissingVinName: 8, bucketScheduledPush: 19, bucketPublishingPending: 41, bucketQcPending: 22, bucketQcHold: 11, bucketSold: 0, bucketOthers: 0,
     },
     {
       name: "priya.mehta@spyne.ai", label: "priya.mehta@spyne.ai",
@@ -54,7 +58,7 @@ const mockSummary = {
       processed: 498, processedAfter24: 198, notProcessed: 243, notProcessedAfter24: 121,
       withPhotos: 332, deliveredWithPhotos: 258, pendingWithPhotos: 74,
       avgWebsiteScore: 68.1, missingWebsiteCount: 3, integratedCount: 2, publishingCount: 2,
-      bucketProcessingPending: 54, bucketPublishingPending: 38, bucketQcPending: 21, bucketQcHold: 8, bucketSold: 0, bucketOthers: 0,
+      bucketProcessingPending: 54, bucketMissingVinName: 6, bucketScheduledPush: 14, bucketPublishingPending: 38, bucketQcPending: 21, bucketQcHold: 8, bucketSold: 0, bucketOthers: 0,
     },
     {
       name: "rahul.verma@spyne.ai", label: "rahul.verma@spyne.ai",
@@ -62,7 +66,7 @@ const mockSummary = {
       processed: 401, processedAfter24: 167, notProcessed: 211, notProcessedAfter24: 98,
       withPhotos: 278, deliveredWithPhotos: 201, pendingWithPhotos: 77,
       avgWebsiteScore: 64.7, missingWebsiteCount: 1, integratedCount: 4, publishingCount: 3,
-      bucketProcessingPending: 40, bucketPublishingPending: 31, bucketQcPending: 18, bucketQcHold: 9, bucketSold: 0, bucketOthers: 0,
+      bucketProcessingPending: 40, bucketMissingVinName: 4, bucketScheduledPush: 12, bucketPublishingPending: 31, bucketQcPending: 18, bucketQcHold: 9, bucketSold: 0, bucketOthers: 0,
     },
     {
       name: null, label: null,
@@ -70,7 +74,7 @@ const mockSummary = {
       processed: 380, processedAfter24: 133, notProcessed: 221, notProcessedAfter24: 128,
       withPhotos: 183, deliveredWithPhotos: 112, pendingWithPhotos: 71,
       avgWebsiteScore: null, missingWebsiteCount: 6, integratedCount: 5, publishingCount: 4,
-      bucketProcessingPending: 16, bucketPublishingPending: 24, bucketQcPending: 28, bucketQcHold: 17, bucketSold: 62, bucketOthers: 26,
+      bucketProcessingPending: 16, bucketMissingVinName: 3, bucketScheduledPush: 8, bucketPublishingPending: 24, bucketQcPending: 28, bucketQcHold: 17, bucketSold: 62, bucketOthers: 26,
     },
   ],
 };

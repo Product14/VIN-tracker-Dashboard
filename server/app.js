@@ -402,6 +402,8 @@ function toTotals(r) {
     notProcessedAfter24:     r.not_processed_after_24h,
     bucketUploadPending:     r.bucket_upload_pending,
     bucketProcessingPending: r.bucket_processing_pending,
+    bucketMissingVinName:    r.bucket_missing_vin_name,
+    bucketScheduledPush:     r.bucket_scheduled_push,
     bucketPublishingPending: r.bucket_publishing_pending,
     bucketQcPending:         r.bucket_qc_pending,
     bucketSold:              r.bucket_sold,
@@ -492,6 +494,8 @@ function toRooftopRow(r) {
     avgInventoryScore:        r.avg_inventory_score ?? null,
     bucketUploadPending:      r.bucket_upload_pending,
     bucketProcessingPending:  r.bucket_processing_pending,
+    bucketMissingVinName:     r.bucket_missing_vin_name,
+    bucketScheduledPush:      r.bucket_scheduled_push,
     bucketPublishingPending:  r.bucket_publishing_pending,
     bucketQcPending:          r.bucket_qc_pending,
     bucketQcHold:             r.bucket_qc_hold,
@@ -523,6 +527,8 @@ function toEnterpriseRow(r) {
     accountType:              r.account_type ?? null,
     bucketUploadPending:      r.bucket_upload_pending,
     bucketProcessingPending:  r.bucket_processing_pending,
+    bucketMissingVinName:     r.bucket_missing_vin_name,
+    bucketScheduledPush:      r.bucket_scheduled_push,
     bucketPublishingPending:  r.bucket_publishing_pending,
     bucketQcPending:          r.bucket_qc_pending,
     bucketQcHold:             r.bucket_qc_hold,
@@ -557,6 +563,8 @@ function toCsmRow(r) {
     publishingCount:          r.publishing_count ?? 0,
     bucketUploadPending:      r.bucket_upload_pending,
     bucketProcessingPending:  r.bucket_processing_pending,
+    bucketMissingVinName:     r.bucket_missing_vin_name,
+    bucketScheduledPush:      r.bucket_scheduled_push,
     bucketPublishingPending:  r.bucket_publishing_pending,
     bucketQcPending:          r.bucket_qc_pending,
     bucketQcHold:             r.bucket_qc_hold,
@@ -585,6 +593,8 @@ function toTypeRow(r) {
     publishingCount:          r.publishing_count ?? 0,
     bucketUploadPending:      r.bucket_upload_pending,
     bucketProcessingPending:  r.bucket_processing_pending,
+    bucketMissingVinName:     r.bucket_missing_vin_name,
+    bucketScheduledPush:      r.bucket_scheduled_push,
     bucketPublishingPending:  r.bucket_publishing_pending,
     bucketQcPending:          r.bucket_qc_pending,
     bucketQcHold:             r.bucket_qc_hold,
@@ -635,6 +645,8 @@ function buildRooftopSource(dateFilter) {
         ROUND(AVG(v.vin_score)::numeric, 2) AS avg_inventory_score,
         SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Upload Pending'      AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_upload_pending,
         SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Processing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
+        SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Missing VIN Name'   AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_missing_vin_name,
+        SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Scheduled Push'     AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_scheduled_push,
         SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Publishing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
         SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'QC Pending'         AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
         SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'QC Hold'            AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_hold,
@@ -713,6 +725,8 @@ function buildEnterpriseSource(dateFilter) {
         MAX(ed.type)                          AS account_type,
         SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Upload Pending'      AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_upload_pending,
         SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Processing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
+        SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Missing VIN Name'   AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_missing_vin_name,
+        SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Scheduled Push'     AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_scheduled_push,
         SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'Publishing Pending' AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
         SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'QC Pending'         AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
         SUM(CASE WHEN v.status != 'Delivered' AND v.reason_bucket = 'QC Hold'            AND COALESCE(v.after_24h,0)=1 THEN 1 ELSE 0 END)::int AS bucket_qc_hold,
@@ -896,6 +910,8 @@ async function computeSummary(dateFilter) {
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int AS not_processed_after_24h,
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Upload Pending'      AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int AS bucket_upload_pending,
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Processing Pending' AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Missing VIN Name'   AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int AS bucket_missing_vin_name,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Scheduled Push'     AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int AS bucket_scheduled_push,
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Publishing Pending' AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'QC Pending'         AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'QC Hold'            AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int AS bucket_qc_hold,
@@ -923,6 +939,8 @@ async function computeSummary(dateFilter) {
           COUNT(DISTINCT CASE WHEN publishing_status = 'false' THEN rooftop_id END)::int                                           AS publishing_count,
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Upload Pending'      AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int AS bucket_upload_pending,
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Processing Pending' AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Missing VIN Name'   AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int AS bucket_missing_vin_name,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Scheduled Push'     AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int AS bucket_scheduled_push,
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Publishing Pending' AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'QC Pending'         AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'QC Hold'            AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int AS bucket_qc_hold,
@@ -951,6 +969,8 @@ async function computeSummary(dateFilter) {
           COUNT(DISTINCT CASE WHEN publishing_status = 'false' THEN rooftop_id END)::int                                           AS publishing_count,
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Upload Pending'      AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int AS bucket_upload_pending,
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Processing Pending' AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Missing VIN Name'   AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int AS bucket_missing_vin_name,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Scheduled Push'     AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int AS bucket_scheduled_push,
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Publishing Pending' AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'QC Pending'         AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'QC Hold'            AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int AS bucket_qc_hold,
@@ -977,6 +997,8 @@ async function computeSummary(dateFilter) {
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND ${pendencyPredicate12h('')} THEN 1 ELSE 0 END)::int                            AS pending_after_24h,
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND ${pendencyPredicate12h('')} AND reason_bucket = 'Upload Pending'      THEN 1 ELSE 0 END)::int AS bucket_upload_pending,
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND ${pendencyPredicate12h('')} AND reason_bucket = 'Processing Pending' THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND ${pendencyPredicate12h('')} AND reason_bucket = 'Missing VIN Name'   THEN 1 ELSE 0 END)::int AS bucket_missing_vin_name,
+          SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND ${pendencyPredicate12h('')} AND reason_bucket = 'Scheduled Push'     THEN 1 ELSE 0 END)::int AS bucket_scheduled_push,
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND ${pendencyPredicate12h('')} AND reason_bucket = 'Publishing Pending' THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND ${pendencyPredicate12h('')} AND reason_bucket = 'QC Pending'         THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND ${pendencyPredicate12h('')} AND reason_bucket = 'QC Hold'            THEN 1 ELSE 0 END)::int AS bucket_qc_hold,
@@ -1014,10 +1036,13 @@ async function computeSummary(dateFilter) {
           CASE b.label
             WHEN 'Upload Pending'      THEN 1
             WHEN 'Processing Pending'  THEN 2
-            WHEN 'Publishing Pending'  THEN 3
-            WHEN 'QC Pending'          THEN 4
-            WHEN 'Sold'                THEN 5
-            ELSE 6
+            WHEN 'Missing VIN Name'    THEN 3
+            WHEN 'Scheduled Push'      THEN 4
+            WHEN 'Publishing Pending'  THEN 5
+            WHEN 'QC Pending'          THEN 6
+            WHEN 'QC Hold'             THEN 7
+            WHEN 'Sold'                THEN 8
+            ELSE 9
           END, b.label)
        FROM by_bucket b)                            AS by_bucket_json,
       (SELECT json_agg(r ORDER BY r.pending_after_24h DESC)
@@ -1051,6 +1076,8 @@ function toByRooftopRow(r) {
     pendingAfter24:          r.pending_after_24h ?? 0,
     bucketUploadPending:     r.bucket_upload_pending ?? 0,
     bucketProcessingPending: r.bucket_processing_pending ?? 0,
+    bucketMissingVinName:    r.bucket_missing_vin_name ?? 0,
+    bucketScheduledPush:     r.bucket_scheduled_push ?? 0,
     bucketPublishingPending: r.bucket_publishing_pending ?? 0,
     bucketQcPending:         r.bucket_qc_pending ?? 0,
     bucketQcHold:            r.bucket_qc_hold ?? 0,
@@ -1115,6 +1142,8 @@ async function computeFilterOptions() {
       SELECT
         BOOL_OR(bucket_upload_pending      > 0) AS bucket_upload_pending,
         BOOL_OR(bucket_processing_pending  > 0) AS bucket_processing_pending,
+        BOOL_OR(bucket_missing_vin_name    > 0) AS bucket_missing_vin_name,
+        BOOL_OR(bucket_scheduled_push      > 0) AS bucket_scheduled_push,
         BOOL_OR(bucket_publishing_pending  > 0) AS bucket_publishing_pending,
         BOOL_OR(bucket_qc_pending          > 0) AS bucket_qc_pending,
         BOOL_OR(bucket_qc_hold             > 0) AS bucket_qc_hold,
@@ -1141,6 +1170,8 @@ async function computeFilterOptions() {
     bucketFlags: {
       bucketUploadPending:     bf.bucket_upload_pending     ?? false,
       bucketProcessingPending: bf.bucket_processing_pending ?? false,
+      bucketMissingVinName:    bf.bucket_missing_vin_name   ?? false,
+      bucketScheduledPush:     bf.bucket_scheduled_push     ?? false,
       bucketPublishingPending: bf.bucket_publishing_pending ?? false,
       bucketQcPending:         bf.bucket_qc_pending         ?? false,
       bucketQcHold:            bf.bucket_qc_hold            ?? false,
@@ -1237,6 +1268,8 @@ const ROOFTOP_SORT_MAP = {
   rate:                    "not_processed_after_24h", // proxy: sort by count as approximation
   bucketUploadPending:     "bucket_upload_pending",
   bucketProcessingPending: "bucket_processing_pending",
+  bucketMissingVinName:    "bucket_missing_vin_name",
+  bucketScheduledPush:     "bucket_scheduled_push",
   bucketPublishingPending: "bucket_publishing_pending",
   bucketQcPending:         "bucket_qc_pending",
   bucketQcHold:            "bucket_qc_hold",
@@ -1394,6 +1427,8 @@ const ENTERPRISE_SORT_MAP = {
   publishingDisabledCount: "publishing_disabled_count",
   bucketUploadPending:     "bucket_upload_pending",
   bucketProcessingPending: "bucket_processing_pending",
+  bucketMissingVinName:    "bucket_missing_vin_name",
+  bucketScheduledPush:     "bucket_scheduled_push",
   bucketPublishingPending: "bucket_publishing_pending",
   bucketQcPending:         "bucket_qc_pending",
   bucketQcHold:            "bucket_qc_hold",
