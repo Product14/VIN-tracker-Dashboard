@@ -110,6 +110,7 @@ const REPORT_REASON_LABEL_MAP: Record<string, string> = {
   no_vehicles_90_days: "Zero VINs (90d)",
   pending_vins:        "Pending VINs",
   negative_tat:        "Negative TAT",
+  ttl_data_invalid:    "Negative TAT",
   low_photo_coverage:  "Low Photo Coverage",
   already_sent:        "Already Sent",
   timed_out:           "Timed Out",
