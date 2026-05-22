@@ -7,7 +7,7 @@
   ],
   "functions": {
     "api/index.js": {
-      "maxDuration": 300
+      "maxDuration": 600
     }
   },
   "crons": [

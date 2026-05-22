@@ -2179,10 +2179,10 @@ async function computeGroupDailyReport(enterpriseId, yesterday, timezone = "Amer
   } else {
     const { rows: [inv] } = await query(`
       SELECT
-        COUNT(*)                                              AS received,
-        COUNT(*) FILTER (WHERE status = 'Delivered')         AS inv_delivered,
-        COUNT(*) FILTER (WHERE status != 'Delivered')        AS inv_pending,
-        COUNT(*) FILTER (WHERE COALESCE(has_photos,0) = 0)  AS no_photos_total,
+        COUNT(*) FILTER (WHERE COALESCE(has_photos,0) = 1)                            AS received,
+        COUNT(*) FILTER (WHERE status = 'Delivered'  AND COALESCE(has_photos,0) = 1)  AS inv_delivered,
+        COUNT(*) FILTER (WHERE status != 'Delivered' AND COALESCE(has_photos,0) = 1)  AS inv_pending,
+        COUNT(*) FILTER (WHERE COALESCE(has_photos,0) = 0)                            AS no_photos_total,
         ROUND(AVG(EXTRACT(EPOCH FROM (processed_at::timestamptz - vin_creation::timestamptz))/86400.0)
           FILTER (WHERE status='Delivered' AND vin_creation IS NOT NULL
                   AND processed_at IS NOT NULL)::numeric, 4) AS avg_ttl_days_inv,
@@ -2620,6 +2620,57 @@ app.get("/api/send-daily-report", async (req, res) => {
   const testTo   = req.query.to ? String(req.query.to).split(",").map(s => s.trim()).filter(Boolean) : null;
   const testCc   = req.query.cc ? String(req.query.cc).split(",").map(s => s.trim()).filter(Boolean) : null;
   const testMode = testTo !== null;
+
+  // ── Sync Metabase before queuing ───────────────────────────────────────────
+  // The skip gates (pending_vins, negative_tat, etc.) read `vins` directly. The
+  // prior scheduled-report sync runs at 06:30 UTC; without a fresh pull here,
+  // the queue evaluates against ~5–6h stale data and trips false-positive skips
+  // for VINs delivered since. If another sync is already in progress, wait for
+  // it to finish (its result is what we want anyway). On transient Metabase
+  // failure we retry once, then fall through to queueing with cached data so a
+  // Metabase outage doesn't block customer reports entirely. Pass
+  // ?skip-sync=true to bypass.
+  const skipSync = req.query["skip-sync"] === "true";
+  if (!skipSync) {
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const result = await runSync();
+        if (result.skipped) {
+          // Another sync is in flight — poll until it releases the lock AND
+          // stamps a new completed_at (success). A bare running=false flip can
+          // also happen on the in-flight sync's failure, so we need both.
+          console.warn(`[daily-report] sync already running (attempt ${attempt}) — waiting for it to complete`);
+          const beforeRow = await query(`SELECT completed_at FROM sync_state WHERE id = 'global'`);
+          const beforeCompletedAt = beforeRow.rows[0]?.completed_at ?? null;
+          const deadline = Date.now() + 300_000; // 5 min cap
+          let done = false;
+          while (Date.now() < deadline) {
+            await new Promise(r => setTimeout(r, 3_000));
+            const { rows: [s] } = await query(`SELECT running, completed_at FROM sync_state WHERE id = 'global'`);
+            if (!s?.running && s?.completed_at && (beforeCompletedAt === null || s.completed_at > beforeCompletedAt)) {
+              done = true;
+              break;
+            }
+          }
+          if (done) {
+            console.log("[daily-report] in-flight sync finished successfully — queuing with fresh data");
+            break;
+          }
+          console.warn(`[daily-report] in-flight sync did not finish successfully within 5 min (attempt ${attempt})`);
+          // Fall through to retry on next loop iteration.
+        } else {
+          console.log(`[daily-report] sync complete on attempt ${attempt} — queuing with fresh data`);
+          break;
+        }
+      } catch (err) {
+        if (attempt < 2) {
+          console.warn(`[daily-report] sync attempt ${attempt} failed, retrying: ${err?.message}`);
+        } else {
+          console.error(`[daily-report] sync failed after ${attempt} attempts — queuing with cached data: ${err?.message}`);
+        }
+      }
+    }
+  }
 
   const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const runAt = new Date().toISOString();
