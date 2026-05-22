@@ -1126,11 +1126,15 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
   );
 }
 
-function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = false, hasPublishingDisabled = false, bucketFlags = {}, rows, total, page, pageCount, loading, onPageChange, onDrillDown, filters = DEFAULT_ENTERPRISE_FILTERS, setFilters = (_f) => {}, sortCol, sortDir, onSortChange }) {
+function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = false, hasPublishingDisabled = false, bucketFlags = {}, rows, total, page, pageCount, loading, onPageChange, onDrillDown, filters = DEFAULT_ENTERPRISE_FILTERS, setFilters = (_f) => {}, sortCol, sortDir, onSortChange, reportDates = [] }: any) {
   const [downloading, setDownloading] = useState(false);
+  const [reportDatesExpanded, setReportDatesExpanded] = useState(false);
   const row1Ref = useRef<HTMLTableRowElement>(null);
   const [row1H, setRow1H] = useState(0);
   useEffect(() => { if (row1Ref.current) setRow1H(row1Ref.current.getBoundingClientRect().height); });
+
+  const visibleDates: string[] = reportDatesExpanded ? reportDates : reportDates.slice(0, 1);
+  const showDateToggle = reportDates.length > 1;
 
   const tdStyle = { padding: "10px 14px", borderBottom: "1px solid #f3f4f6" };
 
@@ -1184,10 +1188,15 @@ function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = f
       const res = await fetch(`${API_BASE}/api/enterprises/export?${params}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const { data } = await res.json();
-      const headers = ["Enterprise ID", "Enterprise Name", "Account Type", "CSM", "Rooftops", ...(showNotIntegrated ? ["Not Integrated"] : []), ...(showPublishingDisabled ? ["Publishing Disabled"] : []), "Total Inventory", "With Photos", "Delivered", "Pending", "Pending VINs >12h", "Pending VINs >12h %", "Avg Website Score", "Avg Inventory Score", ...activeBuckets.map(b => b.label), "Report Status"];
+      const headers = ["Enterprise ID", "Enterprise Name", "Account Type", "CSM", "Rooftops", ...(showNotIntegrated ? ["Not Integrated"] : []), ...(showPublishingDisabled ? ["Publishing Disabled"] : []), "Total Inventory", "With Photos", "Delivered", "Pending", "Pending VINs >12h", "Pending VINs >12h %", "Avg Website Score", "Avg Inventory Score", ...activeBuckets.map(b => b.label), ...reportDates.map((d: string) => fmtReportDayLabel(d))];
       const csvRows = data.map((r: any) => {
-        const reportStatusLabel = r.reportStatus === "sent" ? "Sent" : (fmtSkipReason(r.reportReason) ?? "Not Sent");
-        return [r.id, r.name, r.accountType ?? "", r.csm ?? "", r.rooftopCount ?? 0, ...(showNotIntegrated ? [r.notIntegratedCount ?? 0] : []), ...(showPublishingDisabled ? [r.publishingDisabledCount ?? 0] : []), r.total, r.withPhotos ?? 0, r.deliveredWithPhotos ?? 0, r.pendingWithPhotos ?? 0, r.notProcessedAfter24, (r.pendingWithPhotos ?? 0) === 0 ? 0 : ((r.notProcessedAfter24 / r.pendingWithPhotos) * 100).toFixed(0), r.avgWebsiteScore !== null && r.avgWebsiteScore !== undefined ? Number(r.avgWebsiteScore).toFixed(1) : "", r.avgInventoryScore != null ? Number(r.avgInventoryScore).toFixed(1) : "", ...activeBuckets.map(b => r[b.key] ?? 0), reportStatusLabel];
+        const reportCols = reportDates.map((d: string) => {
+          const entry = (r.groupReportHistory ?? []).find((h: any) => h.date === d);
+          if (!entry) return "—";
+          if (entry.status === "sent") return "Sent";
+          return fmtSkipReason(entry.reason) ?? entry.reason ?? "Not Sent";
+        });
+        return [r.id, r.name, r.accountType ?? "", r.csm ?? "", r.rooftopCount ?? 0, ...(showNotIntegrated ? [r.notIntegratedCount ?? 0] : []), ...(showPublishingDisabled ? [r.publishingDisabledCount ?? 0] : []), r.total, r.withPhotos ?? 0, r.deliveredWithPhotos ?? 0, r.pendingWithPhotos ?? 0, r.notProcessedAfter24, (r.pendingWithPhotos ?? 0) === 0 ? 0 : ((r.notProcessedAfter24 / r.pendingWithPhotos) * 100).toFixed(0), r.avgWebsiteScore !== null && r.avgWebsiteScore !== undefined ? Number(r.avgWebsiteScore).toFixed(1) : "", r.avgInventoryScore != null ? Number(r.avgInventoryScore).toFixed(1) : "", ...activeBuckets.map(b => r[b.key] ?? 0), ...reportCols];
       });
       downloadCSV("enterprise-view.csv", headers, csvRows);
     } catch (err) {
@@ -1310,9 +1319,18 @@ function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = f
                   {c.label} {sortCol === c.key ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
                 </th>
               ))}
-              <th rowSpan={2} onClick={() => handleSort("reportStatus")} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "nowrap", cursor: "pointer", userSelect: "none", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2 }}>
-                Report Status {sortCol === "reportStatus" ? (sortDir === "asc" ? "↑" : "↓") : <span style={{ color: "#d1d5db" }}>↕</span>}
-              </th>
+              {visibleDates.map((d: string) => (
+                <th key={d} rowSpan={2} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#374151", borderBottom: "2px solid #e5e7eb", whiteSpace: "nowrap", cursor: "default", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2, minWidth: 80 }}>
+                  {fmtReportDayLabel(d)}
+                </th>
+              ))}
+              {showDateToggle && (
+                <th rowSpan={2} onClick={() => setReportDatesExpanded(v => !v)}
+                  title={reportDatesExpanded ? "Collapse report history" : "Expand report history"}
+                  style={{ padding: "4px 8px", textAlign: "center", fontWeight: 700, color: "#6b7280", borderBottom: "2px solid #e5e7eb", whiteSpace: "nowrap", cursor: "pointer", background: "#f9fafb", position: "sticky", top: 0, zIndex: 2, fontSize: 16, userSelect: "none" }}>
+                  {reportDatesExpanded ? "−" : "+"}
+                </th>
+              )}
             </tr>
             {/* Row 2 — pendency sub-headers */}
             <tr style={{ background: "#fffbeb" }}>
@@ -1327,9 +1345,9 @@ function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = f
             </tr>
           </thead>
           <tbody className={loading && rows.length > 0 ? "tbody-loading" : ""}>
-            {loading && rows.length === 0 && <TableShimmer cols={cols.length + 1} />}
+            {loading && rows.length === 0 && <TableShimmer cols={cols.length + 1 + visibleDates.length + (showDateToggle ? 1 : 0)} />}
             {!loading && rows.length === 0 && (
-              <tr><td colSpan={cols.length + 1} style={{ padding: 40, textAlign: "center", color: "#9ca3af", fontSize: 14 }}>No records match the current filters.</td></tr>
+              <tr><td colSpan={cols.length + 1 + visibleDates.length + (showDateToggle ? 1 : 0)} style={{ padding: 40, textAlign: "center", color: "#9ca3af", fontSize: 14 }}>No records match the current filters.</td></tr>
             )}
             {rows.map((r, i) => {
               const rate = (r.pendingWithPhotos ?? 0) === 0 ? 0 : (r.notProcessedAfter24 / r.pendingWithPhotos) * 100;
@@ -1409,9 +1427,37 @@ function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = f
                         : <span style={{ color: "#9ca3af" }}>0</span>}
                     </td>
                   )}
-                  <td style={{ ...tdStyle, textAlign: "center" }}>
-                    <ReportStatusCell status={r.reportStatus} reason={r.reportReason} lastSentAt={r.lastSentAt} dateLabel={fmtReportDate(r.lastReportDate, r.timezone)} />
-                  </td>
+                  {visibleDates.map((d: string) => {
+                    const entry = (r.groupReportHistory ?? []).find((h: any) => h.date === d);
+                    if (!entry) return <td key={d} style={{ ...tdStyle, textAlign: "center", color: "#9ca3af" }}>—</td>;
+                    if (entry.status === "sent") {
+                      const badgeStyle = { background: "#dcfce7", color: "#166534", borderRadius: 4, padding: "2px 7px", fontSize: 12, fontWeight: 500 };
+                      if (entry.has_html) return (
+                        <td key={d} style={{ ...tdStyle, textAlign: "center" }}>
+                          <a
+                            href={`${API_BASE}/api/enterprise-report?enterpriseId=${encodeURIComponent(r.id)}&date=${d}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            title="Open the group report that was emailed on this day"
+                            style={{ ...badgeStyle, textDecoration: "none", cursor: "pointer" }}
+                          >Sent</a>
+                        </td>
+                      );
+                      return (
+                        <td key={d} style={{ ...tdStyle, textAlign: "center" }}>
+                          <span style={badgeStyle} title="Archived HTML not available for this date">Sent</span>
+                        </td>
+                      );
+                    }
+                    return (
+                      <td key={d} style={{ ...tdStyle, textAlign: "center" }}>
+                        <span style={{ background: "#fef3c7", color: "#92400e", borderRadius: 4, padding: "2px 7px", fontSize: 12, fontWeight: 500 }}>
+                          {fmtSkipReason(entry.reason) ?? entry.reason ?? "Not Sent"}
+                        </span>
+                      </td>
+                    );
+                  })}
+                  {showDateToggle && <td style={{ ...tdStyle }} />}
                 </tr>
               );
             })}
@@ -2318,8 +2364,9 @@ export default function Dashboard() {
     params.set("dateFilter", df);
     fetch(`${API_BASE}/api/enterprises?${params}`)
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
-      .then(({ data, total, pageCount }) => {
+      .then(({ data, total, pageCount, reportDates: dates }) => {
         setEnterpriseRows(data); setEnterpriseTotal(total); setEnterprisePageCount(pageCount); setEnterprisePage(page);
+        if (dates) setReportDates(dates);
         setEnterpriseLoading(false);
       })
       .catch(err => { setFetchError(err.message); setEnterpriseLoading(false); });
@@ -2636,6 +2683,7 @@ export default function Dashboard() {
               sortCol={enterpriseSortCol}
               sortDir={enterpriseSortDir}
               onSortChange={handleEnterpriseSort}
+              reportDates={reportDates}
             />
           )}
           {tab === "VIN Data" && (

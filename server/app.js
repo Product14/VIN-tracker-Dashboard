@@ -449,6 +449,7 @@ const ENTERPRISE_STATUS_CTES = `
       gsl.last_sent_at,
       gsl.report_date AS last_report_date,
       COALESCE(ed.timezone, 'America/New_York') AS timezone,
+      (rg.enterprise_id IS NOT NULL) AS has_group_recipient,
       CASE
         WHEN (gsl.report_date AT TIME ZONE COALESCE(ed.timezone, 'America/New_York'))::date = (NOW() AT TIME ZONE COALESCE(ed.timezone, 'America/New_York'))::date - 1
         THEN 'sent'
@@ -539,6 +540,8 @@ function toEnterpriseRow(r) {
     lastSentAt:               r.last_sent_at     ?? null,
     lastReportDate:           r.last_report_date ?? null,
     timezone:                 r.timezone         ?? null,
+    hasGroupRecipient:        r.has_group_recipient ?? false,
+    groupReportHistory:       r.group_report_history ?? [],
   };
 }
 
@@ -743,9 +746,59 @@ function buildEnterpriseSource(dateFilter) {
   } else {
     invSource = 'v_by_enterprise';
   }
-  const prefix = `WITH ${invCte}${ENTERPRISE_STATUS_CTES}`;
-  const from = `(SELECT inv.*, es.last_sent_at, es.last_report_date, es.timezone, es.report_status, es.report_reason
-                 FROM ${invSource} inv LEFT JOIN es ON es.enterprise_id = inv.id) combined`;
+  // Per-enterprise group-report timeline: one JSON_AGG per enterprise over the
+  // same 7 days the Rooftop View uses, so the date columns line up. Status is
+  // derived from the latest report_queue Group row per (enterprise, report_day),
+  // with has_html taken from daily_report_emails.
+  //
+  // NOTE: report_queue.report_date is a TIMESTAMPTZ (end-of-yesterday in the
+  // entity's local tz, stored as UTC), while rooftop_report_status_daily.report_day
+  // is a DATE. The snapshot writer derives report_day as (report_date::date - 1)
+  // — we use the same formula here so the two sources line up.
+  const groupHistoryCte = `,
+  top7_dates_ent AS (
+    SELECT DISTINCT report_day FROM rooftop_report_status_daily ORDER BY report_day DESC LIMIT 7
+  ),
+  group_queue_per_day AS (
+    SELECT DISTINCT ON (rq.enterprise_id, (rq.report_date::date - 1))
+      rq.enterprise_id,
+      (rq.report_date::date - 1) AS report_day,
+      rq.status,
+      rq.error_reason
+    FROM report_queue rq
+    JOIN daily_report_runs dr ON dr.run_id = rq.run_id
+    WHERE dr.test_mode = false
+      AND rq.report_type = 'Group'
+      AND (rq.report_date::date - 1) IN (SELECT report_day FROM top7_dates_ent)
+    ORDER BY rq.enterprise_id, (rq.report_date::date - 1),
+             rq.processed_at DESC NULLS LAST, rq.created_at DESC
+  ),
+  group_report_history AS (
+    SELECT
+      gqd.enterprise_id,
+      JSON_AGG(
+        JSON_BUILD_OBJECT(
+          'date',     TO_CHAR(gqd.report_day, 'YYYY-MM-DD'),
+          'status',   gqd.status,
+          'reason',   gqd.error_reason,
+          'has_html', (dre.enterprise_id IS NOT NULL)
+        ) ORDER BY gqd.report_day DESC
+      ) AS group_report_history
+    FROM group_queue_per_day gqd
+    LEFT JOIN daily_report_emails dre
+      ON dre.report_type   = 'Group'
+     AND dre.enterprise_id = gqd.enterprise_id
+     AND dre.report_day    = gqd.report_day
+     AND dre.is_test       = FALSE
+    GROUP BY gqd.enterprise_id
+  )`;
+  const prefix = `WITH ${invCte}${ENTERPRISE_STATUS_CTES}${groupHistoryCte}`;
+  const from = `(SELECT inv.*, es.last_sent_at, es.last_report_date, es.timezone,
+                        es.report_status, es.report_reason, es.has_group_recipient,
+                        grh.group_report_history
+                 FROM ${invSource} inv
+                 LEFT JOIN es  ON es.enterprise_id  = inv.id
+                 LEFT JOIN group_report_history grh ON grh.enterprise_id = inv.id) combined`;
   return { prefix, from };
 }
 
@@ -1279,6 +1332,16 @@ const ROOFTOP_SORT_MAP = {
   avgInventoryScore:       "avg_inventory_score",
 };
 
+// Expand a report-reason filter code into the underlying error_reason values
+// stored in the snapshot. Keeps display buckets in sync with REPORT_REASON_LABEL_MAP
+// on the client — e.g. 'ttl_data_invalid' is shown under the "Negative TAT" bucket.
+const REPORT_REASON_SYNONYMS = {
+  negative_tat: ['negative_tat', 'ttl_data_invalid'],
+};
+function expandReasonCode(code) {
+  return REPORT_REASON_SYNONYMS[code] || [code];
+}
+
 function buildRooftopFilters(queryParams) {
   const conditions = [];
   const params = [];
@@ -1333,9 +1396,11 @@ function buildRooftopFilters(queryParams) {
         WHERE report_day = ${day}
       )`);
     } else {
+      const reasonCodes = expandReasonCode(queryParams.reportReason);
+      const reasonList = reasonCodes.map(c => p(c)).join(", ");
       conditions.push(`rooftop_id IN (
         SELECT rooftop_id FROM rooftop_report_status_daily
-        WHERE report_day = ${day} AND error_reason = ${p(queryParams.reportReason)}
+        WHERE report_day = ${day} AND error_reason IN (${reasonList})
       )`);
     }
   }
@@ -1468,13 +1533,17 @@ function buildEnterpriseFilters(queryParams) {
     conditions.push(`report_status = ${p(queryParams.reportStatus)}`);
   }
   if (queryParams.reportReason && queryParams.reportDay) {
+    const reasonCodes = expandReasonCode(queryParams.reportReason);
+    const reasonList = reasonCodes.map(c => p(c)).join(", ");
     conditions.push(`enterprise_id IN (
       SELECT DISTINCT enterprise_id FROM rooftop_report_status_daily
       WHERE report_day = ${p(queryParams.reportDay)}
-        AND error_reason = ${p(queryParams.reportReason)}
+        AND error_reason IN (${reasonList})
     )`);
   } else if (queryParams.reportReason) {
-    conditions.push(`report_reason = ${p(queryParams.reportReason)}`);
+    const reasonCodes = expandReasonCode(queryParams.reportReason);
+    const reasonList = reasonCodes.map(c => p(c)).join(", ");
+    conditions.push(`report_reason IN (${reasonList})`);
   }
 
   return { where: conditions.length ? `WHERE ${conditions.join(" AND ")}` : "", params };
@@ -1491,16 +1560,19 @@ app.get("/api/enterprises", async (req, res) => {
   const sortDir = req.query.sortDir === "asc" ? "ASC" : "DESC";
   const orderBy = `ORDER BY ${sortCol} ${sortDir} NULLS LAST`;
 
-  const [countRes, rowsRes] = await Promise.all([
+  const [countRes, rowsRes, datesRes] = await Promise.all([
     query(`${prefix} SELECT COUNT(*)::int AS n FROM ${from} ${where}`, params),
     query(`${prefix} SELECT * FROM ${from} ${where} ${orderBy} LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
       [...params, pageSize, offset]),
+    query(`SELECT DISTINCT TO_CHAR(report_day, 'YYYY-MM-DD') AS d
+           FROM rooftop_report_status_daily ORDER BY d DESC LIMIT 7`),
   ]);
 
-  const total = countRes.rows[0].n;
-  const data  = rowsRes.rows.map(r => toEnterpriseRow(r));
+  const total       = countRes.rows[0].n;
+  const data        = rowsRes.rows.map(r => toEnterpriseRow(r));
+  const reportDates = datesRes.rows.map(r => r.d);
 
-  res.json({ data, total, page, pageSize, pageCount: Math.ceil(total / pageSize) });
+  res.json({ data, total, page, pageSize, pageCount: Math.ceil(total / pageSize), reportDates });
 });
 
 app.get("/api/enterprises/export", async (req, res) => {
@@ -1736,9 +1808,10 @@ async function computeRooftopDailyReport(rooftopId, yesterday, timezone = "Ameri
       FROM vins
       WHERE rooftop_id = $1
         AND COALESCE(has_photos, 0) = 0
+        AND (received_at IS NULL OR DATE(received_at::timestamptz AT TIME ZONE $3) <= $2::date)
       ORDER BY received_at ASC NULLS LAST
       LIMIT 5
-    `, [rooftopId]);
+    `, [rooftopId, yesterday, timezone]);
     noImageVins = noImageVinsRowsAll;
   }
 
@@ -1765,20 +1838,15 @@ async function computeRooftopDailyReport(rooftopId, yesterday, timezone = "Ameri
         AND (received_at IS NULL OR DATE(received_at::timestamptz AT TIME ZONE $3) <= $2::date)
     `, [rooftopId, yesterday, timezone]);
 
-    // noImageVins is populated above (runs for every rooftop, IMS on or off).
-    // Here we only need the total count for the inventory donut.
-    const { rows: [noImageCount] } = await query(`
-      SELECT COUNT(*)::int AS total
-      FROM vins
-      WHERE rooftop_id = $1
-        AND COALESCE(has_photos, 0) = 0
-    `, [rooftopId]);
-
-    noImagesTotal  = Number(noImageCount.total) || 0;
     totalActive    = Number(totals.total_active)    || 0;
     totalDelivered = Number(totals.total_delivered)  || 0;
     totalPending   = Number(totals.total_pending)    || 0;
     withPhotos     = Number(totals.with_photos)      || 0;
+    // Derive no-photos as the residual of totalActive so the donut buckets
+    // (delivered + pending + no-photos) reconcile to totalActive. Querying
+    // no-photos separately without the yesterday cutoff would include VINs
+    // received today and break the donut math.
+    noImagesTotal  = Math.max(0, totalActive - withPhotos);
     deliveryPct    = totalActive > 0 ? Math.round(totalDelivered / totalActive * 1000) / 10 : 0;
     pendingPct     = totalActive > 0 ? Math.round(totalPending   / totalActive * 1000) / 10 : 0;
     withPhotosPct  = totalActive > 0 ? Math.round(withPhotos     / totalActive * 1000) / 10 : 0;
@@ -2194,9 +2262,10 @@ async function computeGroupDailyReport(enterpriseId, yesterday, timezone = "Amer
     LEFT JOIN rooftop_details rd ON rd.team_id = v.rooftop_id
     WHERE v.enterprise_id = $1
       AND COALESCE(v.has_photos, 0) = 0
+      AND (v.received_at IS NULL OR DATE(v.received_at::timestamptz AT TIME ZONE $3) <= $2::date)
     ORDER BY v.received_at ASC NULLS LAST
     LIMIT 5
-  `, [enterpriseId]);
+  `, [enterpriseId, yesterday, timezone]);
 
   return {
     enterpriseId,
@@ -3412,7 +3481,7 @@ async function computeReportCoverage() {
         COUNT(*) FILTER (WHERE s.error_reason = 'no_active_inventory')::int                            AS "reasonNoActiveInventory",
         COUNT(*) FILTER (WHERE s.error_reason = 'no_vehicles_90_days')::int                            AS "reasonNoVehicles90Days",
         COUNT(*) FILTER (WHERE s.error_reason = 'pending_vins')::int                                   AS "reasonPendingVins",
-        COUNT(*) FILTER (WHERE s.error_reason = 'negative_tat')::int                                   AS "reasonNegativeTat",
+        COUNT(*) FILTER (WHERE s.error_reason IN ('negative_tat','ttl_data_invalid'))::int             AS "reasonNegativeTat",
         COUNT(*) FILTER (WHERE s.error_reason = 'already_sent')::int                                   AS "reasonAlreadySent",
         COUNT(*) FILTER (WHERE s.error_reason = 'timed_out')::int                                      AS "reasonTimedOut"
       FROM dates d
@@ -3679,6 +3748,83 @@ async function resolveArchivedReport(rooftopId, date, isTest) {
         AND report_day = $2::date AND is_test = $3`,
     [entId, date, isTest]
   ));
+  return rows[0] || null;
+}
+
+// ─── GET /api/enterprise-report ──────────────────────────────────────────────
+// Serves the archived Group-type email HTML for (enterpriseId, date). Same
+// wrapper + iframe pattern as /api/rooftop-report.
+app.get("/api/enterprise-report", async (req, res) => {
+  const enterpriseId = String(req.query.enterpriseId || "").trim();
+  const date         = String(req.query.date || "").trim();
+  const isTest       = req.query.test === "true";
+  if (!enterpriseId || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return res.status(400).send("<pre>Missing or invalid enterpriseId / date (YYYY-MM-DD)</pre>");
+  }
+  try {
+    const meta = await resolveArchivedGroupReport(enterpriseId, date, isTest);
+    if (!meta) {
+      return res.status(404).send(
+        `<pre>No ${isTest ? "test" : "production"} group report archived for enterprise ${enterpriseId} on ${date}.
+Reports are only archived for emails sent after this feature was deployed.</pre>`
+      );
+    }
+    const rawSrc  = `/api/enterprise-report/raw?enterpriseId=${encodeURIComponent(enterpriseId)}&date=${date}${isTest ? "&test=true" : ""}`;
+    const to      = (meta.to_emails || []).join(", ") || "(none)";
+    const subject = meta.subject || "";
+    const sentAt  = new Date(meta.sent_at).toISOString();
+    const banners = [];
+    if (isTest) {
+      banners.push(`<div style="background:#fef3c7;color:#92400e;padding:8px 14px;font:14px -apple-system,sans-serif;border-bottom:2px solid #f59e0b">⚠ TEST SEND — sent_at ${sentAt} · to ${to} · subject "${subject}"</div>`);
+    }
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    return res.send(`<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Group Report — ${date}</title>
+<style>
+  body { margin:0; padding:0; background:#EBEBEB; }
+  iframe { display:block; width:800px; max-width:100%; margin:0 auto; border:none; background:#FFFFFF; }
+</style></head>
+<body>
+  ${banners.join("")}
+  <iframe src="${rawSrc}" id="f" scrolling="no"></iframe>
+  <script>
+    const f = document.getElementById("f");
+    function resize() { try { f.style.height = f.contentDocument.body.scrollHeight + "px"; } catch (e) {} }
+    f.addEventListener("load", resize);
+  </script>
+</body></html>`);
+  } catch (e) {
+    console.error("[enterprise-report] error:", e?.message);
+    return res.status(500).send(`<pre>Error: ${e?.message}</pre>`);
+  }
+});
+
+app.get("/api/enterprise-report/raw", async (req, res) => {
+  const enterpriseId = String(req.query.enterpriseId || "").trim();
+  const date         = String(req.query.date || "").trim();
+  const isTest       = req.query.test === "true";
+  if (!enterpriseId || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return res.status(400).send("<pre>Missing or invalid enterpriseId / date (YYYY-MM-DD)</pre>");
+  }
+  try {
+    const row = await resolveArchivedGroupReport(enterpriseId, date, isTest);
+    if (!row) return res.status(404).send("<pre>Not found</pre>");
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    return res.send(row.html);
+  } catch (e) {
+    console.error("[enterprise-report/raw] error:", e?.message);
+    return res.status(500).send(`<pre>Error: ${e?.message}</pre>`);
+  }
+});
+
+async function resolveArchivedGroupReport(enterpriseId, date, isTest) {
+  const { rows } = await query(
+    `SELECT html, to_emails, subject, sent_at, entity_name
+       FROM daily_report_emails
+      WHERE report_type = 'Group' AND enterprise_id = $1
+        AND report_day = $2::date AND is_test = $3`,
+    [enterpriseId, date, isTest]
+  );
   return rows[0] || null;
 }
 
