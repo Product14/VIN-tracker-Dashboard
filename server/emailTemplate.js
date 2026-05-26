@@ -169,7 +169,7 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl, reportCovData =
               <table width="100%" cellpadding="0" cellspacing="0" border="0">
                 <tr>
                   <td valign="middle" style="white-space:nowrap; padding-right:24px; border-right:1px solid #fde68a; width:1%;">
-                    <div style="font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:#92400e; margin-bottom:4px;">Pending VINs &gt; 12hr</div>
+                    <div style="font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:#92400e; margin-bottom:4px;">Pending VINs &gt; 6hr</div>
                     <div style="font-size:32px; font-weight:700; color:${RED}; line-height:1;">${fmt(totals.notProcessedAfter24)}</div>
                   </td>
                   <td valign="middle" style="padding-left:20px;">
@@ -209,14 +209,14 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl, reportCovData =
   const LAVENDER_TEXT  = "#6d28d9";
 
   // ── By Rooftop Type table ─────────────────────────────────────────────────
-  // Dedicated header/row builders: 5 columns (no "Pending >12hr %") with a
+  // Dedicated header/row builders: 5 columns (no "Pending >6hr %") with a
   // 2px vertical divider between the pending group and the score group.
   const typeDivider = `border-right:2px solid ${BORDER_COLOR};`;
   const typeThBase = `padding:9px 12px; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; color:${TEXT_MUTED}; white-space:nowrap; border-bottom:2px solid ${BORDER_COLOR};`;
   const typeThScore = `padding:9px 12px; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; color:${LAVENDER_TEXT}; white-space:nowrap; border-bottom:2px solid ${BORDER_COLOR}; background:${LAVENDER_BG};`;
   const typeHeaders = `<tr style="background:${GRAY_BG};">
     <th style="${typeThBase} text-align:left;">Type</th>
-    <th style="${typeThBase} text-align:right;">Pending &gt;12hr</th>
+    <th style="${typeThBase} text-align:right;">Pending &gt;6hr</th>
     <th style="${typeThBase} text-align:right; ${typeDivider}">Total Pending</th>
     <th style="${typeThScore} text-align:right;">Website Score</th>
     <th style="${typeThScore} text-align:right;">Inventory Score</th>
@@ -240,7 +240,7 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl, reportCovData =
   }).join("");
 
   // ── By CSM table ──────────────────────────────────────────────────────────
-  // Same shape as the "By Rooftop Type" table: 5 columns (no "Pending >12hr %"),
+  // Same shape as the "By Rooftop Type" table: 5 columns (no "Pending >6hr %"),
   // a 2px divider between the pending group and the score group, lavender wash
   // on the two score header cells.
   const csmDivider = `border-right:2px solid ${BORDER_COLOR};`;
@@ -248,7 +248,7 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl, reportCovData =
   const csmThScore = `padding:9px 12px; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; color:${LAVENDER_TEXT}; white-space:nowrap; border-bottom:2px solid ${BORDER_COLOR}; background:${LAVENDER_BG};`;
   const csmHeaders = `<tr style="background:${GRAY_BG};">
     <th style="${csmThBase} text-align:left;">CSM</th>
-    <th style="${csmThBase} text-align:right;">Pending &gt;12hr</th>
+    <th style="${csmThBase} text-align:right;">Pending &gt;6hr</th>
     <th style="${csmThBase} text-align:right; ${csmDivider}">Total Pending</th>
     <th style="${csmThScore} text-align:right;">Website Score</th>
     <th style="${csmThScore} text-align:right;">Inventory Score</th>
@@ -259,7 +259,7 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl, reportCovData =
     const fw = color ? "font-weight:600;" : "";
     return `<td style="padding:9px 12px; font-size:13px; color:${c}; ${fw} text-align:${align}; border-bottom:1px solid ${BORDER_COLOR}; white-space:nowrap; ${extra}">${value}</td>`;
   };
-  // Only show CSMs with Pending >12hr > 0; sort by that count desc.
+  // Only show CSMs with Pending >6hr > 0; sort by that count desc.
   const sortedByCSM = (byCSM || [])
     .filter(r => (r.notProcessedAfter24 ?? 0) > 0)
     .sort((a, b) => (b.notProcessedAfter24 ?? 0) - (a.notProcessedAfter24 ?? 0));
@@ -274,8 +274,8 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl, reportCovData =
     </tr>`;
   }).join("");
 
-  // ── By Rooftop table (pending >12hr, sorted desc, max 20, >0 only) ───────
-  // Columns: # | Rooftop (with inline Console + Website icons) | CSM | Pending >12h | Website Score | Inventory Score
+  // ── By Rooftop table (pending >6hr, sorted desc, max 20, >0 only) ───────
+  // Columns: # | Rooftop (with inline Console + Website icons) | CSM | Pending >6h | Website Score | Inventory Score
   const rooftopData = byRooftop || [];
 
   const thFixed = `padding:9px 12px; text-align:left; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; color:${TEXT_MUTED}; white-space:nowrap; border-bottom:2px solid ${BORDER_COLOR}; background:${GRAY_BG}; vertical-align:bottom;`;
@@ -288,7 +288,7 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl, reportCovData =
     <th style="${thSNo}">#</th>
     <th style="${thFixed}">Rooftop</th>
     <th style="${thFixed} ${rooftopDivider}">CSM</th>
-    <th style="${thCount} ${rooftopDivider}">Pending &gt;12h</th>
+    <th style="${thCount} ${rooftopDivider}">Pending &gt;6h</th>
     <th style="${thScore}">Website Score</th>
     <th style="${thScore}">Inventory Score</th>
   </tr>`;
@@ -330,7 +330,7 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl, reportCovData =
   }).join("");
 
   // ── Top 20 Rooftops with Lowest Inventory Score ──────────────────────────
-  // Same row shape and icons as the table above, minus the Pending >12h column.
+  // Same row shape and icons as the table above, minus the Pending >6h column.
   const lowInvHeaders = `<tr style="background:${GRAY_BG};">
     <th style="${thSNo}">#</th>
     <th style="${thFixed}">Rooftop</th>
@@ -478,7 +478,7 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl, reportCovData =
             <td style="padding:24px 32px 32px;">
               <table width="100%" cellpadding="0" cellspacing="0" border="0">
 
-                <!-- Pending >12hr + reason buckets -->
+                <!-- Pending >6hr + reason buckets -->
                 ${pendingRow}
 
                 <!-- KPI row -->
@@ -515,12 +515,12 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl, reportCovData =
                 </td></tr>
 
                 <!-- By Rooftop section -->
-                ${sectionTitle("Pending >12hr by Rooftop")}
+                ${sectionTitle("Pending >6hr by Rooftop")}
                 <tr><td>
                   <table width="100%" cellpadding="0" cellspacing="0" border="0"
                          style="border:1px solid ${BORDER_COLOR}; border-radius:8px; overflow:hidden; border-collapse:separate; border-spacing:0;">
                     ${rooftopHeaders}
-                    ${rooftopRows || `<tr><td colspan="6" style="padding:16px; text-align:center; color:${TEXT_MUTED}; font-size:13px;">No rooftops with pending >12hr</td></tr>`}
+                    ${rooftopRows || `<tr><td colspan="6" style="padding:16px; text-align:center; color:${TEXT_MUTED}; font-size:13px;">No rooftops with pending >6hr</td></tr>`}
                   </table>
                 </td></tr>
 
@@ -530,7 +530,7 @@ export function buildEmailHtml(summary, timeLabel, dashboardUrl, reportCovData =
                   <table width="100%" cellpadding="0" cellspacing="0" border="0"
                          style="border:1px solid ${BORDER_COLOR}; border-radius:8px; overflow:hidden; border-collapse:separate; border-spacing:0;">
                     ${csmHeaders}
-                    ${csmRows || `<tr><td colspan="5" style="padding:16px; text-align:center; color:${TEXT_MUTED}; font-size:13px;">No CSMs with pending &gt;12hr</td></tr>`}
+                    ${csmRows || `<tr><td colspan="5" style="padding:16px; text-align:center; color:${TEXT_MUTED}; font-size:13px;">No CSMs with pending &gt;6hr</td></tr>`}
                   </table>
                 </td></tr>
 

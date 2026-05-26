@@ -47,14 +47,14 @@ const SAMPLE_DATA = [
 
 const NOW = new Date("2026-04-07T12:00:00");
 // Pendency threshold. Identifier names like `after24h`, `notProcessedAfter24`
-// were originally tied to a 24h Metabase flag; the threshold is now 12h,
+// were originally tied to a 24h Metabase flag; the threshold is now 6h,
 // computed from receivedAt/processedAt — names retained for backwards
 // compatibility with API contract / sort keys.
-const H12 = 12 * 60 * 60 * 1000;
+const H6 = 6 * 60 * 60 * 1000;
 
-function isAfter12h(item) {
-  if (item.status === "Delivered") return (new Date(item.processedAt).getTime() - new Date(item.receivedAt).getTime()) >= H12;
-  return (NOW.getTime() - new Date(item.receivedAt).getTime()) >= H12;
+function isAfter6h(item) {
+  if (item.status === "Delivered") return (new Date(item.processedAt).getTime() - new Date(item.receivedAt).getTime()) >= H6;
+  return (NOW.getTime() - new Date(item.receivedAt).getTime()) >= H6;
 }
 
 function applyRawFilters(data, filters) {
@@ -63,8 +63,8 @@ function applyRawFilters(data, filters) {
     if (filters.rooftopType && d.rooftopType !== filters.rooftopType) return false;
     if (filters.csm && d.csm !== filters.csm) return false;
     if (filters.status && d.status !== filters.status) return false;
-    if (filters.after24h === true && !isAfter12h(d)) return false;
-    if (filters.after24h === false && isAfter12h(d)) return false;
+    if (filters.after24h === true && !isAfter6h(d)) return false;
+    if (filters.after24h === false && isAfter6h(d)) return false;
     if (filters.search) {
       const s = filters.search.toLowerCase();
       if (!d.vin.toLowerCase().includes(s) && !d.rooftop.toLowerCase().includes(s) && !d.csm.toLowerCase().includes(s)) return false;
@@ -536,10 +536,10 @@ function FilterBar({ filters, setFilters, rooftopOptions = [], typeOptions = [],
           placeholder="All Statuses"
         />
         <SearchableSelect
-          value={filters.after24h === null ? null : filters.after24h ? "After 12h" : "Within 12h"}
-          onChange={v => setFilters(f => ({ ...f, after24h: v === null ? null : v === "After 12h" }))}
-          options={["After 12h", "Within 12h"]}
-          placeholder="12h: Any"
+          value={filters.after24h === null ? null : filters.after24h ? "After 6h" : "Within 6h"}
+          onChange={v => setFilters(f => ({ ...f, after24h: v === null ? null : v === "After 6h" }))}
+          options={["After 6h", "Within 6h"]}
+          placeholder="6h: Any"
         />
         <SearchableSelect
           value={filters.hasPhotos === null || filters.hasPhotos === undefined ? null : filters.hasPhotos ? "Has Photos" : "No Photos"}
@@ -579,7 +579,7 @@ function FilterBar({ filters, setFilters, rooftopOptions = [], typeOptions = [],
           {filters.rooftopType && <Badge label={`Type: ${filters.rooftopType}`} color="blue" />}
           {filters.csm && <Badge label={`CSM: ${filters.csm}`} color="blue" />}
           {filters.status && <Badge label={`Status: ${filters.status}`} color={filters.status === "Delivered" ? "green" : "red"} />}
-          {filters.after24h !== null && <Badge label={filters.after24h ? "After 12h" : "Within 12h"} color="amber" />}
+          {filters.after24h !== null && <Badge label={filters.after24h ? "After 6h" : "Within 6h"} color="amber" />}
           {filters.hasPhotos !== null && filters.hasPhotos !== undefined && <Badge label={filters.hasPhotos ? "Has Photos" : "No Photos"} color="blue" />}
           {filters.hasVin !== null && filters.hasVin !== undefined && <Badge label={filters.hasVin ? "Has VIN" : "No VIN"} color="blue" />}
           {filters.reasonBucket && <Badge label={`Bucket: ${filters.reasonBucket}`} color="amber" />}
@@ -625,7 +625,7 @@ function RawTab({ data, loading, filters, setFilters, total, page, pageCount, on
     { key: "dealerVinId", label: "Dealer VIN ID", numeric: true },
     { key: "hasPhotos",   label: "Has Photos",    numeric: true },
     { key: "status",      label: "Status" },
-    { key: "after24h",    label: "After 12h?", numeric: true },
+    { key: "after24h",    label: "After 6h?", numeric: true },
     { key: "receivedAt",  label: "Received" },
     { key: "processedAt",  label: "Delivered" },
     { key: "reasonBucket", label: "Reason Bucket" },
@@ -652,8 +652,8 @@ function RawTab({ data, loading, filters, setFilters, total, page, pageCount, on
       const res = await fetch(`${API_BASE}/api/vins/export?${params}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const { data } = await res.json();
-      const headers = ["Enterprise ID", "Enterprise Name", "Team ID", "Rooftop Name", "Type", "CSM", "VIN", "Dealer VIN ID", "Has Photos", "Status", "After 12h?", "Received", "Delivered", "Reason Bucket", "Hold Reason", "VIN Score"];
-      const rows = data.map(d => [d.enterpriseId, d.enterprise, d.rooftopId, d.rooftop, d.rooftopType, d.csm, d.vin, d.dealerVinId ?? "", d.hasPhotos ? "Yes" : "No", d.status, isAfter12h(d) ? "Yes" : "No", d.receivedAt ? new Date(d.receivedAt).toLocaleString() : "", d.processedAt ? new Date(d.processedAt).toLocaleString() : "", d.reasonBucket || "", d.holdReason || "", d.vinScore != null ? Number(d.vinScore).toFixed(1) : ""]);
+      const headers = ["Enterprise ID", "Enterprise Name", "Team ID", "Rooftop Name", "Type", "CSM", "VIN", "Dealer VIN ID", "Has Photos", "Status", "After 6h?", "Received", "Delivered", "Reason Bucket", "Hold Reason", "VIN Score"];
+      const rows = data.map(d => [d.enterpriseId, d.enterprise, d.rooftopId, d.rooftop, d.rooftopType, d.csm, d.vin, d.dealerVinId ?? "", d.hasPhotos ? "Yes" : "No", d.status, isAfter6h(d) ? "Yes" : "No", d.receivedAt ? new Date(d.receivedAt).toLocaleString() : "", d.processedAt ? new Date(d.processedAt).toLocaleString() : "", d.reasonBucket || "", d.holdReason || "", d.vinScore != null ? Number(d.vinScore).toFixed(1) : ""]);
       downloadCSV("vin-data.csv", headers, rows);
     } catch (err) {
       console.error("Export failed:", err);
@@ -726,7 +726,7 @@ function RawTab({ data, loading, filters, setFilters, total, page, pageCount, on
                 </td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6", textAlign: "center" }}>{d.hasPhotos ? <Badge label="Yes" color="green" /> : <Badge label="No" color="gray" />}</td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}><Badge label={d.status} color={d.status === "Delivered" ? "green" : "red"} /></td>
-                <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6", textAlign: "center" }}>{isAfter12h(d) ? <Badge label="Yes" color="amber" /> : <Badge label="No" color="green" />}</td>
+                <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6", textAlign: "center" }}>{isAfter6h(d) ? <Badge label="Yes" color="amber" /> : <Badge label="No" color="green" />}</td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6", whiteSpace: "nowrap", fontSize: 12 }}>{new Date(d.receivedAt).toLocaleString()}</td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6", whiteSpace: "nowrap", fontSize: 12 }}>{d.processedAt ? new Date(d.processedAt).toLocaleString() : "—"}</td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}>{d.reasonBucket ? <Badge label={d.reasonBucket} color="amber" /> : <span style={{ color: "#9ca3af" }}>—</span>}</td>
@@ -792,7 +792,7 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
     { key: "withPhotos",             label: "With Photos",      numeric: true },
     { key: "deliveredWithPhotos",    label: "Delivered",        numeric: true },
     { key: "pendingWithPhotos",      label: "Pending",          numeric: true },
-    { key: "notProcessedAfter24",    label: "Pending VINs >12h",   numeric: true },
+    { key: "notProcessedAfter24",    label: "Pending VINs >6h",   numeric: true },
     ...activeBuckets.map(b => ({ key: b.key, label: b.label, numeric: true })),
     { key: "imsIntegrationStatus",   label: "IMS Integration",  numeric: true, noSort: true },
     { key: "publishingStatus",       label: "Publishing",       numeric: true, noSort: true },
@@ -820,7 +820,7 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
       const res = await fetch(`${API_BASE}/api/rooftops/export?${params}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const { data } = await res.json();
-      const headers = ["Enterprise ID", "Enterprise Name", "Team ID", "Rooftop Name", "Type", "CSM", "IMS Integration", "Publishing", "Total Inventory", "With Photos", "Delivered", "Pending", "Pending VINs >12h", "Pending VINs >12h %", "Website Score", "Inventory Score", ...activeBuckets.map(b => b.label), ...reportDates.map((d: string) => fmtReportDayLabel(d))];
+      const headers = ["Enterprise ID", "Enterprise Name", "Team ID", "Rooftop Name", "Type", "CSM", "IMS Integration", "Publishing", "Total Inventory", "With Photos", "Delivered", "Pending", "Pending VINs >6h", "Pending VINs >6h %", "Website Score", "Inventory Score", ...activeBuckets.map(b => b.label), ...reportDates.map((d: string) => fmtReportDayLabel(d))];
       const csvRows = data.map(r => {
         const rate = (r.pendingWithPhotos ?? 0) === 0 ? 0 : ((r.notProcessedAfter24 / r.pendingWithPhotos) * 100).toFixed(0);
         const reportCols = reportDates.map((d: string) => {
@@ -966,7 +966,7 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
               ))}
               {/* Pendency group header */}
               <th colSpan={pendencyColSpan} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#92400e", background: "#fffbeb", position: "sticky", top: 0, zIndex: 2, borderLeft: "2px solid #fcd34d", borderRight: "2px solid #fcd34d", boxShadow: "inset 0 -1px 0 #fde68a", whiteSpace: "nowrap" }}>
-                Pendency &gt;12h
+                Pendency &gt;6h
               </th>
               {[
                 { key: "imsIntegrationStatus", label: "IMS Integration" },
@@ -1158,7 +1158,7 @@ function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = f
     { key: "withPhotos",          label: "With Photos",         numeric: true },
     { key: "deliveredWithPhotos", label: "Delivered",           numeric: true },
     { key: "pendingWithPhotos",   label: "Pending",             numeric: true },
-    { key: "notProcessedAfter24", label: "Pending VINs >12h",   numeric: true },
+    { key: "notProcessedAfter24", label: "Pending VINs >6h",   numeric: true },
     ...activeBuckets.map(b => ({ key: b.key, label: b.label, numeric: true })),
     { key: "avgWebsiteScore",     label: "Avg Website Score",   numeric: true },
     { key: "avgInventoryScore",   label: "Avg Inventory Score", numeric: true },
@@ -1188,7 +1188,7 @@ function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = f
       const res = await fetch(`${API_BASE}/api/enterprises/export?${params}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const { data } = await res.json();
-      const headers = ["Enterprise ID", "Enterprise Name", "Account Type", "CSM", "Rooftops", ...(showNotIntegrated ? ["Not Integrated"] : []), ...(showPublishingDisabled ? ["Publishing Disabled"] : []), "Total Inventory", "With Photos", "Delivered", "Pending", "Pending VINs >12h", "Pending VINs >12h %", "Avg Website Score", "Avg Inventory Score", ...activeBuckets.map(b => b.label), ...reportDates.map((d: string) => fmtReportDayLabel(d))];
+      const headers = ["Enterprise ID", "Enterprise Name", "Account Type", "CSM", "Rooftops", ...(showNotIntegrated ? ["Not Integrated"] : []), ...(showPublishingDisabled ? ["Publishing Disabled"] : []), "Total Inventory", "With Photos", "Delivered", "Pending", "Pending VINs >6h", "Pending VINs >6h %", "Avg Website Score", "Avg Inventory Score", ...activeBuckets.map(b => b.label), ...reportDates.map((d: string) => fmtReportDayLabel(d))];
       const csvRows = data.map((r: any) => {
         const reportCols = reportDates.map((d: string) => {
           const entry = (r.groupReportHistory ?? []).find((h: any) => h.date === d);
@@ -1308,7 +1308,7 @@ function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = f
               ))}
               {/* Pendency group header */}
               <th colSpan={pendencyColSpan} style={{ padding: "10px 14px", textAlign: "center", fontWeight: 600, color: "#92400e", background: "#fffbeb", position: "sticky", top: 0, zIndex: 2, borderLeft: "2px solid #fcd34d", borderRight: "2px solid #fcd34d", boxShadow: "inset 0 -1px 0 #fde68a", whiteSpace: "nowrap" }}>
-                Pendency &gt;12h
+                Pendency &gt;6h
               </th>
               {[
                 { key: "rooftopCount", label: "Rooftops" },
@@ -1502,12 +1502,12 @@ function CSMTab({ csms, onDrillDown }) {
   const activeCount = [imsFilter, pubFilter].filter(Boolean).length;
 
   const handleDownload = () => {
-    const headers = ["CSM Name", "Not Integrated Rooftops", "Publishing Disabled Rooftops", "Total Inventory", "VIN Delivered", "Delivered VINs >12h", "Pending VINs", "Pending VINs >12h", "Pending VINs >12h %", ...activeBuckets.map(b => b.label)];
+    const headers = ["CSM Name", "Not Integrated Rooftops", "Publishing Disabled Rooftops", "Total Inventory", "VIN Delivered", "Delivered VINs >6h", "Pending VINs", "Pending VINs >6h", "Pending VINs >6h %", ...activeBuckets.map(b => b.label)];
     const rows = filtered.map(r => [r.name, r.integratedCount ?? 0, r.publishingCount ?? 0, r.total, r.processed, r.processedAfter24, r.notProcessed, r.notProcessedAfter24, (r.pendingWithPhotos ?? 0) === 0 ? 0 : ((r.notProcessedAfter24 / r.pendingWithPhotos) * 100).toFixed(0), ...activeBuckets.map(b => r[b.key] ?? 0)]);
     downloadCSV("csm-view.csv", headers, rows);
   };
 
-  const baseHeaders = ["CSM Name", "Not Integrated", "Publishing Disabled", "Total Inventory", "VIN Delivered", "Delivered VINs >12h", "Pending VINs", "Pending VINs >12h", "Pending VINs >12h %"];
+  const baseHeaders = ["CSM Name", "Not Integrated", "Publishing Disabled", "Total Inventory", "VIN Delivered", "Delivered VINs >6h", "Pending VINs", "Pending VINs >6h", "Pending VINs >6h %"];
   const allHeaders = [...baseHeaders, ...activeBuckets.map(b => b.label)];
 
   return (
@@ -1655,7 +1655,7 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
           {title}
         </h3>
         <DownloadButton onClick={() => {
-          const headers = [nameCol, "Enterprises", "Rooftops", "Inventory", "With Photos", "Delivered", "Pending", "Pending VINs >12h", "Pending VINs >12h %", "Avg Website Score", "Avg Inventory Score", ...activeBuckets.map(b => b.label), ...(showPublishing ? ["Publishing Disabled"] : []), "Missing Website", ...(showIntegrated ? ["Not Integrated"] : [])];
+          const headers = [nameCol, "Enterprises", "Rooftops", "Inventory", "With Photos", "Delivered", "Pending", "Pending VINs >6h", "Pending VINs >6h %", "Avg Website Score", "Avg Inventory Score", ...activeBuckets.map(b => b.label), ...(showPublishing ? ["Publishing Disabled"] : []), "Missing Website", ...(showIntegrated ? ["Not Integrated"] : [])];
           const csvRows = sorted.map(r => [r.label, r.enterpriseCount ?? 0, r.rooftopCount, r.total, r.withPhotos ?? 0, r.deliveredWithPhotos ?? 0, r.pendingWithPhotos ?? 0, r.notProcessedAfter24, (r.pendingWithPhotos ?? 0) === 0 ? 0 : ((r.notProcessedAfter24 / r.pendingWithPhotos) * 100).toFixed(0), r.avgWebsiteScore !== null && r.avgWebsiteScore !== undefined ? Number(r.avgWebsiteScore).toFixed(1) : "", r.avgInventoryScore != null ? Number(r.avgInventoryScore).toFixed(1) : "", ...activeBuckets.map(b => r[b.key] ?? 0), ...(showPublishing ? [r.publishingCount ?? 0] : []), r.missingWebsiteCount ?? 0, ...(showIntegrated ? [r.integratedCount ?? 0] : [])]);
           downloadCSV(`overview-${filterKey}.csv`, headers, csvRows);
         }} />
@@ -1668,19 +1668,19 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
               <tr ref={row1Ref} style={{ background: "#f9fafb" }}>
                 <th rowSpan={2} style={{ ...thBase, textAlign: "center", width: 36 }}>#</th>
                 <th rowSpan={2} style={{ ...thBase, textAlign: "left", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("label")}>{nameCol}{si("label")}</th>
-                <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("notProcessedAfter24")}>Pending &gt;12h{si("notProcessedAfter24")}</th>
+                <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("notProcessedAfter24")}>Pending &gt;6h{si("notProcessedAfter24")}</th>
                 <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("enterpriseCount")}>Enterprises{si("enterpriseCount")}</th>
                 <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("rooftopCount")}>Rooftops{si("rooftopCount")}</th>
                 <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("total")}>Inventory{si("total")}</th>
                 <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("withPhotos")}>With Photos{si("withPhotos")}</th>
                 <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("deliveredWithPhotos")}>Delivered{si("deliveredWithPhotos")}</th>
                 <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("pendingWithPhotos")}>Pending{si("pendingWithPhotos")}</th>
-                <th rowSpan={2} style={{ ...thBase, textAlign: "center" }}>Pending &gt;12h %</th>
+                <th rowSpan={2} style={{ ...thBase, textAlign: "center" }}>Pending &gt;6h %</th>
                 <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("avgWebsiteScore")}>Avg Website Score{si("avgWebsiteScore")}</th>
                 <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("avgInventoryScore")}>Avg Inventory Score{si("avgInventoryScore")}</th>
                 {activeBuckets.length > 0 && (
                   <th colSpan={pendencyColSpan} style={{ ...thBase, textAlign: "center", background: "#fffbeb", color: "#92400e", boxShadow: "inset 0 -1px 0 #fde68a", borderLeft: "2px solid #fcd34d", borderRight: "2px solid #fcd34d" }}>
-                    Pending &gt;12h Breakdown
+                    Pending &gt;6h Breakdown
                   </th>
                 )}
                 {showPublishing && <th rowSpan={2} style={{ ...thBase, textAlign: "center", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("publishingCount")}>Pub. Disabled{si("publishingCount")}</th>}
@@ -1724,7 +1724,7 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
                         {filterKey === "csm" ? fmtCsm(r.label) : r.label}
                       </span>
                     </td>
-                    {/* Standalone: Pending >12h count */}
+                    {/* Standalone: Pending >6h count */}
                     <td style={{ ...td, textAlign: "center" }}>
                       {r.notProcessedAfter24 > 0
                         ? <span onClick={() => onDrillDown({ ...base, status: "Not Delivered", after24h: true, hasPhotos: true })} style={{ cursor: "pointer" }}><Badge label={r.notProcessedAfter24} color="red" /></span>
@@ -1736,7 +1736,7 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
                     <td style={{ ...td, textAlign: "center" }}><ClickableNum value={r.withPhotos ?? 0} color="#0ea5e9" onClick={() => onDrillDown({ ...base, hasPhotos: true })} /></td>
                     <td style={{ ...td, textAlign: "center" }}><ClickableNum value={r.deliveredWithPhotos ?? 0} color="#166534" onClick={() => onDrillDown({ ...base, status: "Delivered", hasPhotos: true })} /></td>
                     <td style={{ ...td, textAlign: "center" }}><ClickableNum value={r.pendingWithPhotos ?? 0} color="#991b1b" onClick={() => onDrillDown({ ...base, status: "Not Delivered", hasPhotos: true })} /></td>
-                    {/* Standalone: Pending >12h % */}
+                    {/* Standalone: Pending >6h % */}
                     <td style={{ ...td, textAlign: "center", color: "#6b7280", fontSize: 12 }}>{rate.toFixed(0)}%</td>
                     {/* Avg Website Score */}
                     <td style={{ ...td, textAlign: "center" }}>
@@ -1789,7 +1789,7 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
               <tr>
                 <td style={{ ...totTd }} />
                 <td style={{ ...totTd }}>Total</td>
-                {/* Standalone: Pending >12h total count */}
+                {/* Standalone: Pending >6h total count */}
                 <td style={{ ...totTd, textAlign: "center" }}>
                   {totRow.notProcessedAfter24 > 0
                     ? <span onClick={() => onDrillDown({ status: "Not Delivered", after24h: true, hasPhotos: true })} style={{ cursor: "pointer" }}><Badge label={totRow.notProcessedAfter24} color="red" /></span>
@@ -1801,7 +1801,7 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
                 <td style={{ ...totTd, textAlign: "center" }}><ClickableNum value={totRow.withPhotos ?? 0} color="#0ea5e9" onClick={() => onDrillDown({ hasPhotos: true })} /></td>
                 <td style={{ ...totTd, textAlign: "center" }}><ClickableNum value={totRow.deliveredWithPhotos ?? 0} color="#166534" onClick={() => onDrillDown({ status: "Delivered", hasPhotos: true })} /></td>
                 <td style={{ ...totTd, textAlign: "center" }}><ClickableNum value={totRow.pendingWithPhotos ?? 0} color="#991b1b" onClick={() => onDrillDown({ status: "Not Delivered", hasPhotos: true })} /></td>
-                {/* Standalone: Pending >12h % */}
+                {/* Standalone: Pending >6h % */}
                 <td style={{ ...totTd, textAlign: "center", color: "#6b7280", fontSize: 12 }}>{totRate.toFixed(0)}%</td>
                 {/* Avg Website Score */}
                 <td style={{ ...totTd, textAlign: "center", color: "#9ca3af" }}>—</td>
@@ -1830,13 +1830,13 @@ function OverviewTab({ totals, byType, byCSM, byBucket = [], onDrillDown, onRoof
   return (
     <div>
       <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 28 }}>
-        {/* Row 1: Pending >12h card with pills directly below */}
+        {/* Row 1: Pending >6h card with pills directly below */}
         <div style={{ display: "inline-flex", flexDirection: "column", gap: 8, background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 12, padding: "10px 16px" }}>
           <div onClick={!loading ? () => onDrillDown({ status: "Not Delivered", after24h: true, hasPhotos: true }) : undefined}
             style={{ display: "inline-flex", alignItems: "center", gap: 10, background: "#fff", borderRadius: 10, padding: "10px 16px", border: "1px solid #e5e7eb", boxShadow: "0 1px 3px rgba(0,0,0,0.08)", cursor: loading ? "default" : "pointer", transition: "all 0.15s" }}
             onMouseEnter={e => { if (!loading) { e.currentTarget.style.boxShadow = "0 4px 12px rgba(0,0,0,0.12)"; e.currentTarget.style.transform = "translateY(-2px)"; } }}
             onMouseLeave={e => { if (!loading) { e.currentTarget.style.boxShadow = "0 1px 3px rgba(0,0,0,0.08)"; e.currentTarget.style.transform = "translateY(0)"; } }}>
-            <div style={{ fontSize: 15, fontWeight: 600, color: "#374151" }}>Pending VINs &gt;12h</div>
+            <div style={{ fontSize: 15, fontWeight: 600, color: "#374151" }}>Pending VINs &gt;6h</div>
             {loading
               ? <div className="shimmer-cell" style={{ height: 28, width: 50, borderRadius: 6 }} />
               : <div style={{ display: "flex", alignItems: "center", gap: 4 }}>

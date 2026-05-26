@@ -226,20 +226,20 @@ export async function initSchema() {
   await pool.query(`DROP VIEW IF EXISTS v_by_rooftop, v_by_enterprise`).catch(() => {});
   await pool.query(`DROP MATERIALIZED VIEW IF EXISTS v_by_rooftop, v_by_enterprise`);
 
-  // Pendency threshold: VIN counts as ">12h pending" when either it's still
-  // unprocessed and was received more than 12 hours ago, or it was eventually
-  // processed but took 12+ hours from receipt to processing. Mirrors the legacy
-  // Metabase `after_24_hrs` shape with the interval flipped to 12 hours; columns
+  // Pendency threshold: VIN counts as ">6h pending" when either it's still
+  // unprocessed and was received more than 6 hours ago, or it was eventually
+  // processed but took 6+ hours from receipt to processing. Mirrors the legacy
+  // Metabase `after_24_hrs` shape with the interval flipped to 6 hours; columns
   // / aggregates downstream still use the legacy `*_after_24h` names.
   const PENDENCY_PREDICATE = `(
     (
       (v.processed_at IS NULL OR v.processed_at = '')
       AND v.received_at IS NOT NULL AND v.received_at <> ''
-      AND v.received_at::timestamptz + INTERVAL '12 hours' <= NOW()
+      AND v.received_at::timestamptz + INTERVAL '6 hours' <= NOW()
     ) OR (
       v.processed_at IS NOT NULL AND v.processed_at <> ''
       AND v.received_at IS NOT NULL AND v.received_at <> ''
-      AND v.processed_at::timestamptz >= v.received_at::timestamptz + INTERVAL '12 hours'
+      AND v.processed_at::timestamptz >= v.received_at::timestamptz + INTERVAL '6 hours'
     )
   )`;
 
