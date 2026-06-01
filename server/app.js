@@ -94,7 +94,7 @@ async function syncVins() {
   const statuses = [], after24hs = [], receivedAts = [], processedAts = [];
   const reasonBuckets = [], holdReasons = [], hasPhotosArr = [];
   const outputImageCounts = [], thumbnailUrls = [], vdpUrls = [], vehiclePrices = [], syncedAts = [];
-  const makes = [], models = [], years = [], trims = [], stockNumbers = [], vinScores = [], vinCreations = [];
+  const makes = [], models = [], years = [], trims = [], stockNumbers = [], vinScores = [], vinCreations = [], conditions = [];
 
   for (const row of deduped) {
     vins.push(row.vinName ?? "");
@@ -119,6 +119,7 @@ async function syncVins() {
     stockNumbers.push(row.stockNumber ?? null);
     vinScores.push(row.vin_score != null ? Number(row.vin_score) : null);
     vinCreations.push(cleanDate(row.vinCreation));
+    conditions.push(row.condition ?? null);
     syncedAts.push(syncedAt);
   }
 
@@ -145,14 +146,15 @@ async function syncVins() {
     INSERT INTO vins
       (dealer_vin_id, vin, enterprise_id, rooftop_id, status, after_24h, received_at, processed_at,
        reason_bucket, hold_reason, has_photos, output_image_count, thumbnail_url, vdp_url, vehicle_price,
-       make, model, year, trim, stock_number, vin_score, synced_at, vin_creation)
+       make, model, year, trim, stock_number, vin_score, synced_at, vin_creation, condition)
     SELECT
       UNNEST($1::text[]),    UNNEST($2::text[]),     UNNEST($3::text[]),     UNNEST($4::text[]),
       UNNEST($5::text[]),    UNNEST($6::smallint[]), UNNEST($7::text[]),     UNNEST($8::text[]),
       UNNEST($9::text[]),    UNNEST($10::text[]),    UNNEST($11::smallint[]),UNNEST($12::int[]),
       UNNEST($13::text[]),   UNNEST($14::text[]),    UNNEST($15::real[]),
       UNNEST($16::text[]),   UNNEST($17::text[]),   UNNEST($18::text[]),    UNNEST($19::text[]),
-      UNNEST($20::text[]),   UNNEST($21::real[]),   UNNEST($22::text[]),    UNNEST($23::text[])
+      UNNEST($20::text[]),   UNNEST($21::real[]),   UNNEST($22::text[]),    UNNEST($23::text[]),
+      UNNEST($24::text[])
   `;
 
   const batchStarts = [];
@@ -173,6 +175,7 @@ async function syncVins() {
           slice(thumbnailUrls), slice(vdpUrls), slice(vehiclePrices),
           slice(makes), slice(models), slice(years), slice(trims),
           slice(stockNumbers), slice(vinScores), slice(syncedAts), slice(vinCreations),
+          slice(conditions),
         ]);
         console.log(`[sync:VIN_DETAILS] batch ${batchNum} done (rows ${i + 1}–${Math.min(i + BATCH_SIZE, deduped.length)})`);
       } finally {
@@ -386,6 +389,7 @@ function toApiRow(r) {
     syncedAt:     r.synced_at,
     vinScore:     r.vin_score ?? null,
     vdpUrl:       r.vdp_url ?? null,
+    condition:    r.condition ?? null,
   };
 }
 
@@ -1473,14 +1477,16 @@ app.get("/api/rooftops/:rooftopId/report-history", async (req, res) => {
   }
 });
 
-// ─── GET /api/report-coverage ─────────────────────────────────────────────────
-// 30-day report coverage across all rooftops + groups. For each enqueued report,
-// returns whether we sent it and — if not — the stored reason. Sourced entirely
-// from report_queue (joined to daily_report_runs to exclude test runs).
+// ─── GET /api/report-tracking ─────────────────────────────────────────────────
+// Standalone 30-day report tracking across all rooftops + groups. For each
+// enqueued report, returns whether we sent it and — if not — the stored reason.
+// Sourced entirely from report_queue (joined to daily_report_runs to exclude
+// test runs). Independent of the dashboard's Report Status tab, which uses the
+// separate /api/report-coverage (7-day) endpoint.
 const COVERAGE_REPORT_TYPES = new Set(["Rooftop", "Group"]);
 const COVERAGE_STATUSES = new Set(["sent", "skipped", "error", "pending", "processing"]);
 
-app.get("/api/report-coverage", async (req, res) => {
+app.get("/api/report-tracking", async (req, res) => {
   const days     = Math.min(90, Math.max(1, parseInt(req.query.days) || 30));
   const page     = Math.max(1, parseInt(req.query.page) || 1);
   const pageSize = Math.min(500, Math.max(10, parseInt(req.query.pageSize) || 100));
@@ -1547,7 +1553,7 @@ app.get("/api/report-coverage", async (req, res) => {
       days,
     });
   } catch (e) {
-    console.error("[report-coverage] DB error:", e?.message);
+    console.error("[report-tracking] DB error:", e?.message);
     res.status(500).json({ error: "DB error" });
   }
 });
@@ -1790,7 +1796,7 @@ async function computeRooftopDailyReport(rooftopId, yesterday, timezone = "Ameri
   }
 
   const { rows: [rooftop] } = await query(`
-    SELECT team_name, enterprise_id FROM rooftop_details WHERE team_id = $1
+    SELECT team_name, enterprise_id, website_score FROM rooftop_details WHERE team_id = $1
   `, [rooftopId]);
 
   // Delivered VINs published yesterday — per-VIN table (max 5 for email) + total count
@@ -1843,7 +1849,7 @@ async function computeRooftopDailyReport(rooftopId, yesterday, timezone = "Ameri
     query(`
       SELECT
         vin, dealer_vin_id, stock_number, thumbnail_url,
-        make, model, year, trim,
+        make, model, year, trim, condition,
         received_at, processed_at,
         ROUND(EXTRACT(EPOCH FROM (processed_at::timestamptz - received_at::timestamptz)) / 3600.0 ::numeric, 2) AS ttd_hrs
       FROM vins
@@ -1857,7 +1863,12 @@ async function computeRooftopDailyReport(rooftopId, yesterday, timezone = "Ameri
       LIMIT 5
     `, [rooftopId, yesterday, timezone]),
     query(`
-      SELECT COUNT(*)::int AS total FROM vins
+      SELECT
+        COUNT(*)::int AS total,
+        ROUND(AVG(
+          EXTRACT(EPOCH FROM (processed_at::timestamptz - received_at::timestamptz)) / 3600.0
+        ) FILTER (WHERE processed_at IS NOT NULL AND received_at IS NOT NULL)::numeric, 2) AS avg_ttd_hrs
+      FROM vins
        WHERE rooftop_id = $1
          AND status = 'Delivered'
          AND COALESCE(has_photos, 0) = 1
@@ -1866,12 +1877,14 @@ async function computeRooftopDailyReport(rooftopId, yesterday, timezone = "Ameri
          AND DATE(received_at::timestamptz AT TIME ZONE $3) >= ($2::date - INTERVAL '90 days')
     `, [rooftopId, yesterday, timezone]),
   ]);
-  let recentVins      = recentVinsRows;
-  let recentVinsTotal = Number(recentVinsCount.total) || 0;
+  let recentVins       = recentVinsRows;
+  let recentVinsTotal  = Number(recentVinsCount.total) || 0;
+  const avgRecentTatHrs = recentVinsCount.avg_ttd_hrs != null ? Number(recentVinsCount.avg_ttd_hrs) : null;
 
   // Top-5 no-photos VINs (oldest received_at first). Runs for every rooftop
   // regardless of IMS status so the "Vehicles needing attention" section is
   // populated even on IMS-off rooftops (which previously only got the count).
+  let avgAgeingNoPhotos = null;
   {
     const { rows: noImageVinsRowsAll } = await query(`
       SELECT
@@ -1882,6 +1895,7 @@ async function computeRooftopDailyReport(rooftopId, yesterday, timezone = "Ameri
         model,
         year,
         trim,
+        condition,
         received_at,
         EXTRACT(day FROM NOW() - received_at::timestamptz)::int AS days_on_lot
       FROM vins
@@ -1892,6 +1906,18 @@ async function computeRooftopDailyReport(rooftopId, yesterday, timezone = "Ameri
       LIMIT 5
     `, [rooftopId, yesterday, timezone]);
     noImageVins = noImageVinsRowsAll;
+
+    // Avg ageing (days on lot) across the FULL no-photos cohort — drives the
+    // "Avg ageing" pill in the Vehicles Needing Attention header.
+    const { rows: [ageing] } = await query(`
+      SELECT ROUND(AVG(EXTRACT(day FROM NOW() - received_at::timestamptz))::numeric, 0) AS avg_days
+      FROM vins
+      WHERE rooftop_id = $1
+        AND COALESCE(has_photos, 0) = 0
+        AND received_at IS NOT NULL
+        AND DATE(received_at::timestamptz AT TIME ZONE $3) <= $2::date
+    `, [rooftopId, yesterday, timezone]);
+    avgAgeingNoPhotos = ageing.avg_days != null ? Number(ageing.avg_days) : null;
   }
 
   if (!imsOff) {
@@ -1976,10 +2002,49 @@ async function computeRooftopDailyReport(rooftopId, yesterday, timezone = "Ameri
 
   }
 
+  // ── Inventory split by vehicle condition (New / Used / Unmarked) ────────────
+  // Three mutually-exclusive buckets that partition the cohort and reconcile to
+  // the donut total. Cohort matches the card's scope: full inventory when IMS is
+  // on, rolling 90-day activity when IMS is off (Spyne only sees VINs it touched).
+  const condCohort = imsOff
+    ? `DATE(received_at::timestamptz AT TIME ZONE $3) <= $2::date
+       AND DATE(received_at::timestamptz AT TIME ZONE $3) >= ($2::date - INTERVAL '90 days')`
+    : `(received_at IS NULL OR DATE(received_at::timestamptz AT TIME ZONE $3) <= $2::date)`;
+  const { rows: condRows } = await query(`
+    SELECT
+      CASE WHEN lower(condition) = 'new'  THEN 'New'
+           WHEN lower(condition) = 'used' THEN 'Used'
+           ELSE 'Unmarked' END                                                       AS cond,
+      COUNT(*) FILTER (WHERE status = 'Delivered' AND COALESCE(has_photos, 0) = 1)   AS with_photos,
+      COUNT(*) FILTER (WHERE COALESCE(has_photos, 0) = 1 AND status != 'Delivered')  AS pending,
+      COUNT(*) FILTER (WHERE COALESCE(has_photos, 0) = 0)                            AS no_photos
+    FROM vins
+    WHERE rooftop_id = $1
+      AND ${condCohort}
+    GROUP BY 1
+  `, [rooftopId, yesterday, timezone]);
+
+  const inventoryByCondition = {
+    withPhotos: { New: 0, Used: 0, Unmarked: 0 },
+    pending:    { New: 0, Used: 0, Unmarked: 0 },
+    noPhotos:   { New: 0, Used: 0, Unmarked: 0 },
+  };
+  for (const r of condRows) {
+    const c = r.cond;
+    inventoryByCondition.withPhotos[c] = Number(r.with_photos) || 0;
+    inventoryByCondition.pending[c]    = Number(r.pending)     || 0;
+    inventoryByCondition.noPhotos[c]   = Number(r.no_photos)   || 0;
+  }
+  const hasUnmarked =
+    inventoryByCondition.withPhotos.Unmarked > 0 ||
+    inventoryByCondition.pending.Unmarked    > 0 ||
+    inventoryByCondition.noPhotos.Unmarked   > 0;
+
   return {
     rooftopId,
     enterpriseId:    rooftop?.enterprise_id ?? null,
     rooftopName:     rooftop?.team_name ?? rooftopId,
+    websiteScore:    rooftop?.website_score != null ? Number(rooftop.website_score) : null,
     imsOff,
     // Yesterday KPIs
     newVins:         Number(kpi.new_vins)        || 0,
@@ -2015,6 +2080,11 @@ async function computeRooftopDailyReport(rooftopId, yesterday, timezone = "Ameri
     needsAttentionVins: noImageVins,
     recentVins,
     recentVinsTotal,
+    // New email design (rooftop): condition split, header averages, scores.
+    inventoryByCondition,
+    hasUnmarked,
+    avgAgeingNoPhotos,
+    avgRecentTatHrs,
   };
 }
 
@@ -2674,6 +2744,105 @@ app.get("/api/split-dot.svg", (req, res) => {
     <polygon points="0,0 10,0 10,10" fill="${a}"/>
     <polygon points="0,0 0,10 10,10" fill="${b}"/>
   </g>
+</svg>`;
+
+  res.set("Content-Type", "image/svg+xml; charset=utf-8");
+  res.set("Cache-Control", "public, max-age=86400, immutable");
+  res.send(svg);
+});
+
+// Renders a half-circle (180°) gauge with three colored zones, a thumb marker at
+// the value's position, a center value string, and up to four scale labels.
+// Hosted like /api/donut.svg so Gmail's image proxy can render it; inline <svg>
+// would be stripped. Drives the "Time to Market" and "Photo Score" KPI cards in
+// the rooftop daily email.
+//
+// Geometry: semicircle of radius 60 centered at (75,88), arc from (15,88) over
+// the top to (135,88). Fraction f∈[0,1] maps left→right; θ = 180°(1−f);
+// point = (75 + 60·cosθ, 88 − 60·sinθ). Arc length L = π·60 ≈ 188.5.
+//
+// Query params:
+//   value — current value (clamped to [min,max]); omit/blank → no thumb
+//   min   — left end value (default 0)
+//   max   — right end value (default 100; must be > min)
+//   t1,t2 — zone boundary values (min ≤ t1 ≤ t2 ≤ max)
+//   dir   — "asc" (higher=better: red→amber→green) or "desc" (lower=better:
+//           green→amber→red). Default "asc".
+//   center— pre-formatted center text, e.g. "7d 13h" or "7.4"
+//   scale — comma-separated labels placed at [min, t1, t2, max], e.g. "0d,7d,12d,20d"
+//   w     — output width in px (default 150, clamped [60,600]); height keeps 150:118 ratio
+app.get("/api/gauge.svg", (req, res) => {
+  const min = Number(req.query.min) || 0;
+  let   max = Number(req.query.max);
+  if (!isFinite(max) || max <= min) max = min + 100;
+  const span = max - min;
+  const clampN = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  const frac = (v) => clampN((Number(v) - min) / span, 0, 1);
+
+  const t1v = isFinite(Number(req.query.t1)) ? Number(req.query.t1) : min + span / 3;
+  const t2v = isFinite(Number(req.query.t2)) ? Number(req.query.t2) : min + (2 * span) / 3;
+  const dir = req.query.dir === "desc" ? "desc" : "asc";
+  const center = String(req.query.center || "").slice(0, 12);
+  const scale  = String(req.query.scale || "").split(",").slice(0, 4).map((s) => s.slice(0, 6));
+  const w      = Math.min(600, Math.max(60, Number(req.query.w) || 150));
+  const h      = Math.round((w * 118) / 150);
+
+  const rawValue = req.query.value;
+  const hasValue = rawValue != null && String(rawValue).trim() !== "" && isFinite(Number(rawValue));
+  const valueNum = hasValue ? Number(rawValue) : null;
+
+  const f1 = frac(t1v);
+  const f2 = frac(t2v);
+  const L  = Math.PI * 60;
+  const seg1 = f1 * L;
+  const seg2 = Math.max(0, (f2 - f1)) * L;
+  const seg3 = Math.max(0, (1 - f2)) * L;
+
+  // Saturated + pastel pairs, indexed [0,1,2] in draw order (left→right).
+  const SAT = dir === "desc" ? ["#16a34a", "#d97706", "#dc2626"] : ["#dc2626", "#d97706", "#16a34a"];
+  const PAS = dir === "desc" ? ["#c2e9c8", "#f7e0a8", "#f4c7c7"] : ["#f4c7c7", "#f7e0a8", "#c2e9c8"];
+  // Active zone = the one the value falls in (only the active zone is saturated).
+  let active = -1;
+  if (hasValue) active = valueNum < t1v ? 0 : (valueNum < t2v ? 1 : 2);
+  const zoneColor = (i) => (i === active ? SAT[i] : PAS[i]);
+
+  // Thumb position
+  const fv = hasValue ? frac(valueNum) : 0;
+  const theta = (Math.PI * (1 - fv));
+  const tx = 75 + 60 * Math.cos(theta);
+  const ty = 88 - 60 * Math.sin(theta);
+  const thumbStroke = active >= 0 ? SAT[active] : "#98a0ad";
+
+  // Scale label positions: ends sit below the baseline; inner labels sit just
+  // outside the arc at their boundary fractions.
+  const labelFracs = [0, f1, f2, 1];
+  const labelXml = scale.map((txt, i) => {
+    if (!txt) return "";
+    const lf = labelFracs[i] ?? 0;
+    let lx, ly, anchor;
+    if (i === 0)            { lx = 6;   ly = 100; anchor = "middle"; }
+    else if (i === 3)       { lx = 144; ly = 100; anchor = "middle"; }
+    else {
+      const th = Math.PI * (1 - lf);
+      lx = 75 + 67 * Math.cos(th);
+      ly = 88 - 67 * Math.sin(th) - 3;
+      anchor = "middle";
+    }
+    const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    return `<text x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" text-anchor="${anchor}" font-family="-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif" font-size="9.5" font-weight="700" fill="#98a0ad" letter-spacing="0.2">${esc(txt)}</text>`;
+  }).join("\n  ");
+
+  const arc = `M 15,88 A 60,60 0 0 1 135,88`;
+  const escC = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+  const svg = `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 150 118">
+  ${seg1 > 0 ? `<path d="${arc}" stroke="${zoneColor(0)}" stroke-width="14" fill="none" stroke-linecap="butt" stroke-dasharray="${seg1.toFixed(2)} ${L.toFixed(2)}"/>` : ""}
+  ${seg2 > 0 ? `<path d="${arc}" stroke="${zoneColor(1)}" stroke-width="14" fill="none" stroke-linecap="butt" stroke-dasharray="${seg2.toFixed(2)} ${L.toFixed(2)}" stroke-dashoffset="${(-seg1).toFixed(2)}"/>` : ""}
+  ${seg3 > 0 ? `<path d="${arc}" stroke="${zoneColor(2)}" stroke-width="14" fill="none" stroke-linecap="butt" stroke-dasharray="${seg3.toFixed(2)} ${L.toFixed(2)}" stroke-dashoffset="${(-(seg1 + seg2)).toFixed(2)}"/>` : ""}
+  ${hasValue ? `<circle cx="${tx.toFixed(2)}" cy="${ty.toFixed(2)}" r="8" fill="#ffffff" stroke="${thumbStroke}" stroke-width="3.5"/>` : ""}
+  <text x="75" y="80" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif" font-size="26" font-weight="800" fill="#0c1322" letter-spacing="-0.6">${escC(center)}</text>
+  ${labelXml}
 </svg>`;
 
   res.set("Content-Type", "image/svg+xml; charset=utf-8");
