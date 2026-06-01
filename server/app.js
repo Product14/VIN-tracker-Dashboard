@@ -1473,6 +1473,85 @@ app.get("/api/rooftops/:rooftopId/report-history", async (req, res) => {
   }
 });
 
+// ─── GET /api/report-coverage ─────────────────────────────────────────────────
+// 30-day report coverage across all rooftops + groups. For each enqueued report,
+// returns whether we sent it and — if not — the stored reason. Sourced entirely
+// from report_queue (joined to daily_report_runs to exclude test runs).
+const COVERAGE_REPORT_TYPES = new Set(["Rooftop", "Group"]);
+const COVERAGE_STATUSES = new Set(["sent", "skipped", "error", "pending", "processing"]);
+
+app.get("/api/report-coverage", async (req, res) => {
+  const days     = Math.min(90, Math.max(1, parseInt(req.query.days) || 30));
+  const page     = Math.max(1, parseInt(req.query.page) || 1);
+  const pageSize = Math.min(500, Math.max(10, parseInt(req.query.pageSize) || 100));
+  const offset   = (page - 1) * pageSize;
+
+  // Build filters as positional params. $1 is always the lookback window.
+  const where  = [
+    "dr.test_mode = false",
+    "rq.report_date >= NOW() - ($1 || ' days')::interval",
+  ];
+  const params = [String(days)];
+
+  if (req.query.teamId) {
+    params.push(String(req.query.teamId));
+    where.push(`rq.rooftop_id = $${params.length}`);
+  }
+  if (req.query.enterpriseId) {
+    params.push(String(req.query.enterpriseId));
+    where.push(`rq.enterprise_id = $${params.length}`);
+  }
+  if (req.query.reportType && COVERAGE_REPORT_TYPES.has(req.query.reportType)) {
+    params.push(req.query.reportType);
+    where.push(`rq.report_type = $${params.length}`);
+  }
+  if (req.query.status && COVERAGE_STATUSES.has(req.query.status)) {
+    params.push(req.query.status);
+    where.push(`rq.status = $${params.length}`);
+  }
+
+  const whereSql = `WHERE ${where.join("\n          AND ")}`;
+
+  try {
+    const [countRes, rowsRes] = await Promise.all([
+      query(
+        `SELECT COUNT(*)::int AS n
+           FROM report_queue rq
+           JOIN daily_report_runs dr ON dr.run_id = rq.run_id
+          ${whereSql}`,
+        params
+      ),
+      query(
+        `SELECT TO_CHAR(rq.report_date, 'YYYY-MM-DD') AS date,
+                rq.rooftop_id    AS team_id,
+                rq.enterprise_id AS enterprise_id,
+                rq.report_type   AS report_type,
+                rq.status        AS status,
+                rq.error_reason  AS reason
+           FROM report_queue rq
+           JOIN daily_report_runs dr ON dr.run_id = rq.run_id
+          ${whereSql}
+          ORDER BY rq.report_date DESC, rq.report_type, rq.rooftop_id
+          LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+        [...params, pageSize, offset]
+      ),
+    ]);
+
+    const total = countRes.rows[0].n;
+    res.json({
+      data: rowsRes.rows,
+      total,
+      page,
+      pageSize,
+      pageCount: Math.ceil(total / pageSize),
+      days,
+    });
+  } catch (e) {
+    console.error("[report-coverage] DB error:", e?.message);
+    res.status(500).json({ error: "DB error" });
+  }
+});
+
 // ─── GET /api/enterprises ─────────────────────────────────────────────────────
 
 const ENTERPRISE_SORT_MAP = {
