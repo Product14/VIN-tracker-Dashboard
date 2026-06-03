@@ -157,17 +157,17 @@ const buildNeedsAttentionSection = ({ vins, vinUrl, viewAllHref, includeRooftopC
       : "";
     return `
       <tr>
-        <td style="padding:10px 10px 10px 0;vertical-align:middle;${rowBorder}">${noPhotoThumb()}</td>
-        <td style="padding:10px 10px 10px 0;vertical-align:middle;${rowBorder}font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;overflow:hidden;">
-          <div style="font-size:12.5px;font-weight:600;color:#0c1322;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${vehicleName}${trimLine ? ` <span style="color:#98a0ad;font-weight:500;">&middot; ${trimLine}</span>` : ""}</div>
-          <div style="font-size:10.5px;color:#98a0ad;margin-top:1px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${v.vin || ""}${stockLine ? ` &middot; #${stockLine}` : ""}</div>
+        <td class="rv-cell" style="padding:10px 10px 10px 0;vertical-align:middle;${rowBorder}">${noPhotoThumb()}</td>
+        <td class="rv-cell" style="padding:10px 10px 10px 0;vertical-align:middle;${rowBorder}font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;overflow:hidden;">
+          <div class="rv-name" style="font-size:12.5px;font-weight:600;color:#0c1322;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${vehicleName}${trimLine ? ` <span style="color:#98a0ad;font-weight:500;">&middot; ${trimLine}</span>` : ""}</div>
+          <div class="rv-sub" style="font-size:10.5px;color:#98a0ad;margin-top:1px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${v.vin || ""}${stockLine ? ` &middot; #${stockLine}` : ""}</div>
         </td>
         ${rooftopCell}
-        <td style="padding:10px 10px 10px 0;vertical-align:middle;${rowBorder}white-space:nowrap;">
-          <span style="display:inline-block;padding:3px 8px;border-radius:999px;background:#fdecec;color:#dc2626;font-size:11px;font-weight:700;letter-spacing:0.2px;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">${ageLabel}</span>
+        <td class="rv-cell" style="padding:10px 10px 10px 0;vertical-align:middle;${rowBorder}white-space:nowrap;">
+          <span class="rv-pill" style="display:inline-block;padding:3px 8px;border-radius:999px;background:#fdecec;color:#dc2626;font-size:11px;font-weight:700;letter-spacing:0.2px;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">${ageLabel}</span>
         </td>
-        <td style="padding:10px 10px 10px 0;vertical-align:middle;${rowBorder}white-space:nowrap;">
-          <span style="display:inline-block;padding:3px 8px 3px 7px;border-radius:999px;background:#fdecec;color:#dc2626;font-size:11px;font-weight:700;letter-spacing:0.2px;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">&#9679;&nbsp;No photos</span>
+        <td class="rv-cell" style="padding:10px 10px 10px 0;vertical-align:middle;${rowBorder}white-space:nowrap;">
+          <span class="rv-pill" style="display:inline-block;padding:3px 8px 3px 7px;border-radius:999px;background:#fdecec;color:#dc2626;font-size:11px;font-weight:700;letter-spacing:0.2px;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">&#9679;&nbsp;No photos</span>
         </td>
         <td style="padding:10px 0;vertical-align:middle;${rowBorder}text-align:right;white-space:nowrap;">
           <a href="${vUrl}" style="font-size:11px;font-weight:600;color:#2f6bff;text-decoration:none;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">View &rarr;</a>
@@ -175,17 +175,21 @@ const buildNeedsAttentionSection = ({ vins, vinUrl, viewAllHref, includeRooftopC
       </tr>`;
   }).join("\n");
 
-  // Colgroup widths: 56 (thumb) / flex (vehicle) / [28% rooftop, optional] / 90 (ageing) / 130 (status) / 60 (view)
+  // Column widths live on the header cells (not the colgroup) so the mobile @media
+  // can shrink the metric columns reliably (Gmail honors cell-width overrides; it
+  // renders <col>-width overrides unreliably). With table-layout:fixed the first
+  // row's cell widths define the columns, so desktop is unchanged.
   const cols = includeRooftopCol
-    ? `<col style="width:56px;" /><col /><col style="width:28%;" /><col style="width:90px;" /><col style="width:130px;" /><col style="width:60px;" />`
-    : `<col style="width:56px;" /><col /><col style="width:90px;" /><col style="width:130px;" /><col style="width:60px;" />`;
+    ? `<col /><col /><col /><col /><col /><col />`
+    : `<col /><col /><col /><col /><col />`;
+  const HFONT = "font-size:9.5px;letter-spacing:0.8px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;";
   const headerCells = `
-    <td style="padding:4px 10px 8px 0;border-bottom:1px solid #e7e9ee;"></td>
-    <td style="padding:4px 10px 8px 0;border-bottom:1px solid #e7e9ee;font-size:9.5px;letter-spacing:0.8px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">Vehicle</td>
-    ${includeRooftopCol ? `<td style="padding:4px 10px 8px 0;border-bottom:1px solid #e7e9ee;font-size:9.5px;letter-spacing:0.8px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">Rooftop</td>` : ""}
-    <td style="padding:4px 10px 8px 0;border-bottom:1px solid #e7e9ee;font-size:9.5px;letter-spacing:0.8px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">Ageing</td>
-    <td style="padding:4px 10px 8px 0;border-bottom:1px solid #e7e9ee;font-size:9.5px;letter-spacing:0.8px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;">Status</td>
-    <td style="padding:4px 0 8px;border-bottom:1px solid #e7e9ee;"></td>`;
+    <td class="rv-th-thumb" style="width:56px;padding:4px 10px 8px 0;border-bottom:1px solid #e7e9ee;"></td>
+    <td class="rv-hdr" style="padding:4px 10px 8px 0;border-bottom:1px solid #e7e9ee;${HFONT}">Vehicle</td>
+    ${includeRooftopCol ? `<td class="rv-hdr" style="width:24%;padding:4px 10px 8px 0;border-bottom:1px solid #e7e9ee;${HFONT}">Rooftop</td>` : ""}
+    <td class="rv-hdr rv-th-age" style="width:90px;padding:4px 10px 8px 0;border-bottom:1px solid #e7e9ee;${HFONT}">Ageing</td>
+    <td class="rv-hdr rv-th-status" style="width:130px;padding:4px 10px 8px 0;border-bottom:1px solid #e7e9ee;${HFONT}">Status</td>
+    <td class="rv-th-view" style="width:60px;padding:4px 0 8px;border-bottom:1px solid #e7e9ee;"></td>`;
 
   return `
     <tr><td style="height:14px;font-size:0;line-height:0;">&nbsp;</td></tr>
@@ -219,6 +223,40 @@ const buildNeedsAttentionSection = ({ vins, vinUrl, viewAllHref, includeRooftopC
 // ─── KPI cards + glossary (shared by rooftop + group templates) ──────────────
 const FONT = "-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif";
 
+// Mobile-responsive <style> injected into both report heads. Desktop is never
+// affected — every rule lives inside the max-width:600px media query, so on
+// laptops/desktops the original inline/table layout renders unchanged. On phones:
+// the 3 KPI cells stack full-width, and the By Location table compacts (incl.
+// abbreviated headers). Kept simple (class selectors + one media query) so Gmail
+// keeps the block. NOTE: these mobile tweaks require the client to honor <style>
+// (Apple Mail, iOS Mail, Outlook mobile, Gmail for Google-Workspace accounts).
+const RESPONSIVE_STYLE = `<style type="text/css">
+@media only screen and (max-width:600px) {
+  .kpi-cell { display:block !important; width:100% !important; box-sizing:border-box !important; margin:0 0 14px !important; }
+  .kpi-gap  { display:none !important; }
+  .body-pad { padding:14px 4px 24px !important; }
+  /* Group By Location — shrink hard so all 7 columns fit a phone */
+  .byloc-card { padding:12px 4px 8px !important; }
+  .byloc-hdr  { padding:4px 0 6px !important; font-size:7.5px !important; letter-spacing:0 !important; }
+  .byloc-cell { padding:6px 0 !important; }
+  .byloc-name { font-size:10px !important; }
+  .byloc-total{ font-size:10px !important; min-width:16px !important; padding:2px 3px !important; }
+  .byloc-chip { width:15px !important; font-size:9px !important; padding:4px 0 !important; }
+  .byloc-pill { font-size:8px !important; padding:1px 3px !important; letter-spacing:0 !important; }
+  /* Rooftop Recent + Needs — shrink the metric header columns so the flex Vehicle column widens */
+  .rv-hdr  { font-size:8px !important; letter-spacing:0 !important; padding:4px 4px 6px 0 !important; }
+  .rv-cell { padding:8px 4px 8px 0 !important; }
+  .rv-name { font-size:11px !important; }
+  .rv-sub  { font-size:9.5px !important; }
+  .rv-pill { font-size:9px !important; padding:2px 5px !important; letter-spacing:0 !important; }
+  .rv-th-thumb  { width:44px !important; }
+  .rv-th-spyne  { width:56px !important; }
+  .rv-th-status { width:80px !important; }
+  .rv-th-age    { width:60px !important; }
+  .rv-th-view   { width:38px !important; }
+}
+</style>`;
+
 const centerImg = (img) =>
   `<table align="center" cellpadding="0" cellspacing="0" border="0" style="margin:0 auto;border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;"><tr><td>${img}</td></tr></table>`;
 const sup = (sym) => `<sup style="color:#6d4aff;font-weight:700;font-size:0.7em;vertical-align:super;">${sym}</sup>`;
@@ -238,8 +276,11 @@ const CHIP_STYLE = {
 };
 
 // KPI card shell — title + pill (centered), graphic, then a body block.
+// Desktop keeps the original fixed 3-column table (unchanged). The `kpi-cell`
+// class lets the media query flip the cells to full-width stacked blocks on
+// phones; desktop is never touched because that rule only fires ≤600px.
 const kpiCard = ({ title, marker, pill, graphic, body }) => `
-    <td valign="top" width="33%" style="width:33%;background:#FFFFFF;border:1px solid #e7e9ee;border-radius:14px;padding:12px 14px;font-family:${FONT};">
+    <td class="kpi-cell" valign="top" width="33%" style="width:33%;background:#FFFFFF;border:1px solid #e7e9ee;border-radius:14px;padding:12px 14px;font-family:${FONT};">
       <div style="text-align:center;font-size:11px;letter-spacing:0.7px;text-transform:uppercase;color:#5b6577;font-weight:700;line-height:1.3;">${title}${marker ? sup(marker) : ""}</div>
       <div style="text-align:center;padding:5px 0 0;">${pill}</div>
       <div style="padding:6px 0 2px;">${centerImg(graphic)}</div>
@@ -316,7 +357,7 @@ function buildKpiCardsRow({ inventoryByCondition, hasUnmarked, avgTtlDaysInvento
   const ttmCard = kpiCard({
     title: "Time to Market",
     marker: "*",
-    pill: zonePill(ttmZone, { g: "On track", a: "Good", r: "Needs work", n: "No data" }),
+    pill: zonePill(ttmZone, { g: "Excellent", a: "Good", r: "Poor", n: "No data" }),
     graphic: gaugeImg({ value: ttmDays, min: 0, max: 20, t1: 7, t2: 12, dir: "desc", center: ttmCenter, scale: "0d,7d,12d,20d" }, 150),
     body: subRow("#16a34a", "Spyne Processing Time", "†", sptVal),
   });
@@ -327,12 +368,14 @@ function buildKpiCardsRow({ inventoryByCondition, hasUnmarked, avgTtlDaysInvento
   const photoCard = kpiCard({
     title: "Photo Score",
     marker: "‡",
-    pill: zonePill(scoreZone, { g: "Excellent", a: "Good", r: "Needs work", n: "No data" }),
+    pill: zonePill(scoreZone, { g: "Excellent", a: "Good", r: "Poor", n: "No data" }),
     graphic: gaugeImg({ value: photoScore, min: 0, max: 10, t1: 6, t2: 8, dir: "asc", center: formatScore(photoScore), scale: "0,6,8,10" }, 150),
     body: subRow(scoreColor(websiteScore), "Website Score", "§", `${formatScore(websiteScore)}<span style="color:#98a0ad;font-weight:600;font-size:10.5px;">/10</span>`),
   });
 
-  const spacerCell = `<td width="14" style="width:14px;min-width:14px;font-size:0;line-height:0;">&nbsp;</td>`;
+  // Original fixed 3-column row (desktop unchanged). On mobile the media query
+  // turns .kpi-cell into full-width blocks and hides the .kpi-gap spacers.
+  const spacerCell = `<td class="kpi-gap" width="14" style="width:14px;min-width:14px;font-size:0;line-height:0;">&nbsp;</td>`;
   return `<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;table-layout:fixed;"><tr>${inventoryCard}${spacerCell}${ttmCard}${spacerCell}${photoCard}</tr></table>`;
 }
 
@@ -351,8 +394,8 @@ function buildGlossaryCard() {
         <div style="font-size:11px;letter-spacing:0.8px;text-transform:uppercase;color:#5b6577;font-weight:600;font-family:${FONT};margin-bottom:4px;">Glossary &middot; How to read this report</div>
         <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;table-layout:fixed;">
           <tr>
-            ${glossItem("*", "Time to Market",        "Days from IMS/DMS entry to photos published.", "&lt; 5d")}
-            ${glossItem("†", "Spyne Processing Time",  "Spyne turnaround from photo capture to publish.", "&lt; 6h")}
+            ${glossItem("*", "Time to Market (TTM)",        "Days from IMS/DMS entry to photos published.", "&lt; 5d")}
+            ${glossItem("†", "Spyne Processing Time (PT)",  "Spyne turnaround from photo capture to publish.", "&lt; 6h")}
           </tr>
           <tr>
             ${glossItem("‡", "Photo Score",   "Photo quality 0&ndash;10. Dealers at 8+ sell 2&times; faster.", "8+")}
@@ -406,18 +449,18 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
         const rowBorder = i === 0 ? "" : "border-top:1px solid #e7e9ee;";
         return `
         <tr>
-          <td style="padding:10px 12px 10px 0;vertical-align:middle;${rowBorder}width:56px;">${thumb}</td>
-          <td style="padding:10px 12px 10px 0;vertical-align:middle;${rowBorder}font-family:${FONT};">
-            <div style="font-size:12.5px;font-weight:600;color:#0c1322;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${vehicleName}${condLine ? ` <span style="color:#98a0ad;font-weight:500;">&middot; ${condLine}</span>` : ""}</div>
-            <div style="font-size:10.5px;color:#98a0ad;margin-top:1px;line-height:1.25;">${v.vin || ""}${stockLine ? ` &middot; Stock #${stockLine}` : ""}</div>
+          <td class="rv-cell" style="padding:10px 12px 10px 0;vertical-align:middle;${rowBorder}">${thumb}</td>
+          <td class="rv-cell" style="padding:10px 12px 10px 0;vertical-align:middle;${rowBorder}font-family:${FONT};overflow:hidden;">
+            <div class="rv-name" style="font-size:12.5px;font-weight:600;color:#0c1322;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${vehicleName}${condLine ? ` <span style="color:#98a0ad;font-weight:500;">&middot; ${condLine}</span>` : ""}</div>
+            <div class="rv-sub" style="font-size:10.5px;color:#98a0ad;margin-top:1px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${v.vin || ""}${stockLine ? ` &middot; Stock #${stockLine}` : ""}</div>
           </td>
-          <td style="padding:10px 12px 10px 0;vertical-align:middle;${rowBorder}width:90px;white-space:nowrap;">
-            <span style="display:inline-block;padding:3px 8px;border-radius:999px;background:${tatBg};color:${tatFg};font-size:11px;font-weight:700;letter-spacing:0.2px;font-family:${FONT};">${tatLabel}</span>
+          <td class="rv-cell" style="padding:10px 12px 10px 0;vertical-align:middle;${rowBorder}white-space:nowrap;">
+            <span class="rv-pill" style="display:inline-block;padding:3px 8px;border-radius:999px;background:${tatBg};color:${tatFg};font-size:11px;font-weight:700;letter-spacing:0.2px;font-family:${FONT};">${tatLabel}</span>
           </td>
-          <td style="padding:10px 12px 10px 0;vertical-align:middle;${rowBorder}width:110px;white-space:nowrap;">
-            <span style="display:inline-block;padding:3px 8px 3px 7px;border-radius:999px;background:#e7f7ee;color:#16a34a;font-size:11px;font-weight:700;letter-spacing:0.2px;font-family:${FONT};">&#9679;&nbsp;Published</span>
+          <td class="rv-cell" style="padding:10px 12px 10px 0;vertical-align:middle;${rowBorder}white-space:nowrap;">
+            <span class="rv-pill" style="display:inline-block;padding:3px 8px 3px 7px;border-radius:999px;background:#e7f7ee;color:#16a34a;font-size:11px;font-weight:700;letter-spacing:0.2px;font-family:${FONT};">&#9679;&nbsp;Published</span>
           </td>
-          <td style="padding:10px 0 10px 0;vertical-align:middle;${rowBorder}width:50px;text-align:right;white-space:nowrap;">
+          <td class="rv-cell" style="padding:10px 0 10px 0;vertical-align:middle;${rowBorder}text-align:right;white-space:nowrap;">
             <a href="${vUrl}" style="font-size:11px;font-weight:600;color:#2f6bff;text-decoration:none;font-family:${FONT};">View &rarr;</a>
           </td>
         </tr>`;
@@ -455,11 +498,12 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>Studio AI Rooftop Report — ${rooftopName}</title>
+${RESPONSIVE_STYLE}
 </head>
 <body style="margin:0;padding:0;background:#f4f5f7;font-family:${FONT};color:#0c1322;">
 <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;background:#f4f5f7;">
   <tr>
-    <td align="center" style="padding:24px 16px 40px;">
+    <td align="center" class="body-pad" style="padding:24px 16px 40px;">
       <!--[if mso]><table width="760" cellpadding="0" cellspacing="0" border="0"><tr><td><![endif]-->
       <table width="760" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;max-width:760px;width:100%;">
 
@@ -523,20 +567,14 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
               </tr>
             </table>
             <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;table-layout:fixed;">
-              <colgroup>
-                <col style="width:56px;" />
-                <col />
-                <col style="width:90px;" />
-                <col style="width:110px;" />
-                <col style="width:50px;" />
-              </colgroup>
+              <colgroup><col /><col /><col /><col /><col /></colgroup>
               <thead>
                 <tr>
-                  <th style="padding:4px 12px 8px 0;border-bottom:1px solid #e7e9ee;text-align:left;font-size:9.5px;letter-spacing:0.8px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:${FONT};"></th>
-                  <th style="padding:4px 12px 8px 0;border-bottom:1px solid #e7e9ee;text-align:left;font-size:9.5px;letter-spacing:0.8px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:${FONT};">Vehicle</th>
-                  <th style="padding:4px 12px 8px 0;border-bottom:1px solid #e7e9ee;text-align:left;font-size:9.5px;letter-spacing:0.8px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:${FONT};">Spyne Time</th>
-                  <th style="padding:4px 12px 8px 0;border-bottom:1px solid #e7e9ee;text-align:left;font-size:9.5px;letter-spacing:0.8px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:${FONT};">Status</th>
-                  <th style="padding:4px 0 8px 0;border-bottom:1px solid #e7e9ee;text-align:right;font-size:9.5px;letter-spacing:0.8px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:${FONT};"></th>
+                  <th class="rv-th-thumb" style="width:56px;padding:4px 12px 8px 0;border-bottom:1px solid #e7e9ee;text-align:left;font-size:9.5px;letter-spacing:0.8px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:${FONT};"></th>
+                  <th class="rv-hdr" style="padding:4px 12px 8px 0;border-bottom:1px solid #e7e9ee;text-align:left;font-size:9.5px;letter-spacing:0.8px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:${FONT};">Vehicle</th>
+                  <th class="rv-hdr rv-th-spyne" style="width:90px;padding:4px 12px 8px 0;border-bottom:1px solid #e7e9ee;text-align:left;font-size:9.5px;letter-spacing:0.8px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:${FONT};">PT</th>
+                  <th class="rv-hdr rv-th-status" style="width:110px;padding:4px 12px 8px 0;border-bottom:1px solid #e7e9ee;text-align:left;font-size:9.5px;letter-spacing:0.8px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:${FONT};">Status</th>
+                  <th class="rv-th-view" style="width:50px;padding:4px 0 8px 0;border-bottom:1px solid #e7e9ee;text-align:right;font-size:9.5px;letter-spacing:0.8px;text-transform:uppercase;color:#98a0ad;font-weight:700;font-family:${FONT};"></th>
                 </tr>
               </thead>
               <tbody>${recentRowsHtml}</tbody>
@@ -586,7 +624,7 @@ function buildByLocationTable(inventoryByRooftop, hasUnmarked, { enterpriseId, a
   const enterpriseConsoleUrl = `https://console.spyne.ai/inventory/v2/listings?enterprise_id=${enterpriseId}`;
 
   const totalChip = (val) =>
-    `<span style="display:inline-block;min-width:28px;padding:3px 6px;border-radius:5px;background:#f4f5f7;border:1px solid #e7e9ee;font-size:12.5px;font-weight:700;color:#0c1322;letter-spacing:-0.2px;font-family:${FONT};white-space:nowrap;">${n(val)}</span>`;
+    `<span class="byloc-total" style="display:inline-block;min-width:28px;padding:3px 6px;border-radius:5px;background:#f4f5f7;border:1px solid #e7e9ee;font-size:12.5px;font-weight:700;color:#0c1322;letter-spacing:-0.2px;font-family:${FONT};white-space:nowrap;">${n(val)}</span>`;
 
   // Two joined chips (With Photos | No Photos) for one condition column.
   const condPair = (bucket) => {
@@ -597,8 +635,8 @@ function buildByLocationTable(inventoryByRooftop, hasUnmarked, { enterpriseId, a
     const base = `padding:5px 0;font-size:12px;font-weight:700;letter-spacing:-0.2px;line-height:1.1;font-family:${FONT};`;
     return `<table align="center" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;margin:0 auto;">
       <tr>
-        <td align="center" width="34" style="width:34px;${base}${leftSt}border-right-width:0;border-radius:4px 0 0 4px;">${wp ? n(wp) : "&mdash;"}</td>
-        <td align="center" width="34" style="width:34px;${base}${rightSt}border-radius:0 4px 4px 0;">${np ? n(np) : "&mdash;"}</td>
+        <td class="byloc-chip" align="center" width="34" style="width:34px;${base}${leftSt}border-right-width:0;border-radius:4px 0 0 4px;">${wp ? n(wp) : "&mdash;"}</td>
+        <td class="byloc-chip" align="center" width="34" style="width:34px;${base}${rightSt}border-radius:0 4px 4px 0;">${np ? n(np) : "&mdash;"}</td>
       </tr>
     </table>`;
   };
@@ -606,7 +644,7 @@ function buildByLocationTable(inventoryByRooftop, hasUnmarked, { enterpriseId, a
   const ttmChip = (days) => {
     if (days == null) return `<span style="font-size:13px;color:#98a0ad;font-weight:700;font-family:${FONT};">&mdash;</span>`;
     const [bg, fg] = days <= 7 ? ["#e7f7ee", "#16a34a"] : days <= 12 ? ["#fff2dc", "#d97706"] : ["#fdecec", "#dc2626"];
-    return `<span style="display:inline-block;padding:3px 8px;border-radius:999px;background:${bg};color:${fg};font-size:11px;font-weight:700;letter-spacing:0.2px;font-family:${FONT};white-space:nowrap;">${formatTtl(days)}</span>`;
+    return `<span class="byloc-pill" style="display:inline-block;padding:3px 8px;border-radius:999px;background:${bg};color:${fg};font-size:11px;font-weight:700;letter-spacing:0.2px;font-family:${FONT};white-space:nowrap;">${formatTtl(days)}</span>`;
   };
 
   const spyneChip = (hrs) => {
@@ -614,22 +652,22 @@ function buildByLocationTable(inventoryByRooftop, hasUnmarked, { enterpriseId, a
     const slow = Number(hrs) > 6;
     const bg = slow ? "#fff2dc" : "#e7f7ee";
     const fg = slow ? "#d97706" : "#16a34a";
-    return `<span style="display:inline-block;padding:3px 8px;border-radius:999px;background:${bg};color:${fg};font-size:11px;font-weight:700;letter-spacing:0.2px;font-family:${FONT};white-space:nowrap;">${formatTat(hrs)}</span>`;
+    return `<span class="byloc-pill" style="display:inline-block;padding:3px 8px;border-radius:999px;background:${bg};color:${fg};font-size:11px;font-weight:700;letter-spacing:0.2px;font-family:${FONT};white-space:nowrap;">${formatTat(hrs)}</span>`;
   };
 
   const HCELL = `padding:4px 6px 8px;border-bottom:1px solid #e7e9ee;font-size:9px;letter-spacing:0.4px;text-transform:uppercase;color:#98a0ad;font-weight:800;font-family:${FONT};`;
-  const condHeaderCells = conds.map((c) => `<td align="center" style="${HCELL}text-align:center;">${condHeader(c)}</td>`).join("");
+  const condHeaderCells = conds.map((c) => `<td class="byloc-hdr" align="center" style="${HCELL}text-align:center;">${condHeader(c)}</td>`).join("");
   // Percentage widths that always sum to 100% so columns spread evenly and fill
   // the card. Location flexed before, so a short name + no NA column dumped all
   // the slack into Location, leaving a large dead gap before the data. Giving
   // every column a share (and a narrower Location when there's no NA column)
   // keeps the row balanced regardless of name length or NA presence.
   const colgroupHtml =
-    `<col style="width:${hasUnmarked ? "23%" : "30%"};" />` +                              // Location
+    `<col style="width:${hasUnmarked ? "32%" : "39%"};" />` +                              // Location (widened — short TTM/PT headers free the space)
     `<col style="width:${hasUnmarked ? "10%" : "11%"};" />` +                              // Total
     conds.map(() => `<col style="width:${hasUnmarked ? "12%" : "14%"};" />`).join("") +    // New / Used / NA
-    `<col style="width:15%;" />` +                                                          // Time to Market
-    `<col style="width:16%;" />`;                                                           // Spyne Processing Time
+    `<col style="width:11%;" />` +                                                          // TTM
+    `<col style="width:11%;" />`;                                                           // PT
   const ncols = conds.length + 4;
 
   const rows = !inventoryByRooftop || inventoryByRooftop.length === 0
@@ -641,25 +679,25 @@ function buildByLocationTable(inventoryByRooftop, hasUnmarked, { enterpriseId, a
         const consoleUrl = `https://console.spyne.ai/home?enterprise_id=${enterpriseId}&team_id=${r.rooftop_id}`;
         const bc = r.byCondition || {};
         const condCells = conds.map((c) =>
-          `<td align="center" style="padding:9px 4px;border-top:1px solid #e7e9ee;vertical-align:middle;">${condPair(bc[c])}</td>`
+          `<td class="byloc-cell" align="center" style="padding:9px 4px;border-top:1px solid #e7e9ee;vertical-align:middle;">${condPair(bc[c])}</td>`
         ).join("");
         return `<tr>
-          <td style="padding:9px 10px 9px 0;border-top:1px solid #e7e9ee;vertical-align:middle;overflow:hidden;">
-            <a href="${consoleUrl}" style="font-size:12.5px;font-weight:600;color:#0c1322;text-decoration:none;font-family:${FONT};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${r.rooftop_name || r.rooftop_id}</a>
+          <td class="byloc-cell" style="padding:9px 10px 9px 0;border-top:1px solid #e7e9ee;vertical-align:middle;overflow:hidden;">
+            <a class="byloc-name" href="${consoleUrl}" style="font-size:12.5px;font-weight:600;color:#0c1322;text-decoration:none;font-family:${FONT};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${r.rooftop_name || r.rooftop_id}</a>
           </td>
-          <td align="center" style="padding:9px 4px;border-top:1px solid #e7e9ee;vertical-align:middle;">${totalChip(rowTotal)}</td>
+          <td class="byloc-cell" align="center" style="padding:9px 4px;border-top:1px solid #e7e9ee;vertical-align:middle;">${totalChip(rowTotal)}</td>
           ${condCells}
-          <td align="center" style="padding:9px 4px;border-top:1px solid #e7e9ee;vertical-align:middle;white-space:nowrap;">${ttmChip(r.ttlDays)}</td>
-          <td align="center" style="padding:9px 0 9px 4px;border-top:1px solid #e7e9ee;vertical-align:middle;white-space:nowrap;">${spyneChip(r.avg_ttd_hrs)}</td>
+          <td class="byloc-cell" align="center" style="padding:9px 4px;border-top:1px solid #e7e9ee;vertical-align:middle;white-space:nowrap;">${ttmChip(r.ttlDays)}</td>
+          <td class="byloc-cell" align="center" style="padding:9px 0 9px 4px;border-top:1px solid #e7e9ee;vertical-align:middle;white-space:nowrap;">${spyneChip(r.avg_ttd_hrs)}</td>
         </tr>`;
       }).join("\n");
 
   return `
     <tr>
-      <td style="background:#FFFFFF;border:1px solid #e7e9ee;border-radius:14px;padding:14px 16px 10px;">
+      <td class="byloc-card" style="background:#FFFFFF;border:1px solid #e7e9ee;border-radius:14px;padding:14px 16px 10px;">
         <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;margin-bottom:8px;">
           <tr>
-            <td valign="middle" style="vertical-align:middle;font-size:11px;letter-spacing:0.8px;text-transform:uppercase;color:#5b6577;font-weight:600;font-family:${FONT};">By Location &middot; Inventory &middot; Till Yesterday</td>
+            <td valign="middle" style="vertical-align:middle;font-size:11px;letter-spacing:0.8px;text-transform:uppercase;color:#5b6577;font-weight:600;font-family:${FONT};">Inventory &middot; Till Yesterday</td>
             <td align="right" valign="middle" style="vertical-align:middle;text-align:right;white-space:nowrap;">
               <span style="display:inline-block;padding:3px 9px;border-radius:999px;background:#e7f5ec;color:#15803d;border:1px solid #bfe1cc;font-size:10px;font-weight:700;letter-spacing:0.3px;font-family:${FONT};vertical-align:middle;">With Photos</span>
               <span style="display:inline-block;padding:3px 9px;border-radius:999px;background:#fdecec;color:#b91c1c;border:1px solid #f5c5c5;font-size:10px;font-weight:700;letter-spacing:0.3px;font-family:${FONT};vertical-align:middle;margin-left:6px;">No Photos</span>
@@ -671,11 +709,11 @@ function buildByLocationTable(inventoryByRooftop, hasUnmarked, { enterpriseId, a
           <colgroup>${colgroupHtml}</colgroup>
           <thead>
             <tr>
-              <td style="${HCELL}text-align:left;">Location</td>
-              <td align="center" style="${HCELL}text-align:center;">Total</td>
+              <td class="byloc-hdr" style="${HCELL}text-align:left;">Location</td>
+              <td class="byloc-hdr" align="center" style="${HCELL}text-align:center;">Total</td>
               ${condHeaderCells}
-              <td align="center" style="${HCELL}text-align:center;">Time to Market</td>
-              <td align="center" style="${HCELL}text-align:center;">Spyne Processing Time</td>
+              <td class="byloc-hdr" align="center" style="${HCELL}text-align:center;">TTM</td>
+              <td class="byloc-hdr" align="center" style="${HCELL}text-align:center;">PT</td>
             </tr>
           </thead>
           <tbody>${rows}</tbody>
@@ -712,11 +750,12 @@ export function buildGroupReportHtml(data, dateLabel) {
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>Studio AI Dealer Report — ${enterpriseName}</title>
+${RESPONSIVE_STYLE}
 </head>
 <body style="margin:0;padding:0;background:#f4f5f7;font-family:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Arial,Helvetica,sans-serif;color:#0c1322;">
 <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;background:#f4f5f7;">
   <tr>
-    <td align="center" style="padding:24px 16px 40px;">
+    <td align="center" class="body-pad" style="padding:24px 16px 40px;">
       <!--[if mso]><table width="760" cellpadding="0" cellspacing="0" border="0"><tr><td><![endif]-->
       <table width="760" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;max-width:760px;width:100%;">
 
@@ -755,7 +794,7 @@ export function buildGroupReportHtml(data, dateLabel) {
           </td>
         </tr>
 
-        <!-- TWO DONUT CARDS -->
+        <!-- THREE KPI CARDS -->
         <tr>
           <td style="padding:0;">${cardsRow}</td>
         </tr>
