@@ -2236,6 +2236,10 @@ function ReportCoverageTab({ rows, loading, onRooftopDrillDown, totalActiveRooft
 }
 
 export default function Dashboard() {
+  const [module, setModule] = useState<"vin" | "studio">(() => {
+    const saved = typeof window !== "undefined" ? localStorage.getItem("vin_module") : null;
+    return saved === "studio" ? "studio" : "vin";
+  });
   const [page, setPage] = useState<"dashboard" | "admin">("dashboard");
   const [tab, setTab] = useState("Overview");
   const [dateFilter, setDateFilter] = useState<"post" | "pre" | "all">(() => {
@@ -2293,6 +2297,7 @@ export default function Dashboard() {
   const [reportCovLoading, setReportCovLoading] = useState(false);
 
   const tabs = ["Overview", "Enterprise View", "Rooftop View", "VIN Data", "Report Status"];
+  const STUDIO_URL = "https://studio-adoption.vercel.app/";
   // Track whether the initial mount load has completed so the dateFilter
   // effect can safely skip its first run (mount effect handles it).
   const initialLoadDone = useRef(false);
@@ -2446,6 +2451,11 @@ export default function Dashboard() {
     localStorage.setItem("vin_dateFilter", dateFilter);
   }, [dateFilter]);
 
+  // Persist module (VIN Tracker vs Studio Adoption) selection across page refreshes
+  useEffect(() => {
+    if (typeof window !== "undefined") localStorage.setItem("vin_module", module);
+  }, [module]);
+
   // Reload summary when dateFilter changes (skip the initial mount — handled above)
   useEffect(() => {
     if (!initialLoadDone.current) return;
@@ -2567,7 +2577,7 @@ export default function Dashboard() {
           animation: cellSweep 1.3s ease-in-out infinite;
         }
       `}</style>
-      {(syncing || loading) && (
+      {module === "vin" && (syncing || loading) && (
         <div className="sync-banner" style={{ width: "100%", height: 36, display: "flex", alignItems: "center", justifyContent: "center", gap: 10, color: "#fff", fontSize: 13, fontWeight: 600, letterSpacing: 0.2, marginBottom: 0 }}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ animation: "spin 1s linear infinite" }}>
             <path d="M21 12a9 9 0 1 1-6.219-8.56" />
@@ -2577,6 +2587,34 @@ export default function Dashboard() {
         </div>
       )}
       <div style={{ padding: "20px 32px" }}>
+      {/* Module toggle — switch between the VIN Tracker dashboard and the embedded Studio Adoption app */}
+      <div style={{ display: "flex", gap: 2, background: "#f3f4f6", borderRadius: 8, padding: 3, width: "fit-content", marginBottom: 16 }}>
+        {([
+          { key: "vin",    label: "VIN Tracker"     },
+          { key: "studio", label: "Studio Adoption" },
+        ] as const).map(({ key, label }) => (
+          <button key={key} onClick={() => setModule(key)}
+            style={{
+              padding: "6px 18px", borderRadius: 6, border: "none", cursor: "pointer",
+              fontSize: 13, fontWeight: 600,
+              background: module === key ? "#4f46e5" : "transparent",
+              color: module === key ? "#fff" : "#6b7280",
+              boxShadow: module === key ? "0 1px 3px rgba(0,0,0,0.15)" : "none",
+              transition: "all 0.15s",
+            }}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {module === "studio" ? (
+        <iframe
+          src={STUDIO_URL}
+          title="Studio Adoption"
+          style={{ width: "100%", height: "calc(100vh - 120px)", border: "none", borderRadius: 12, background: "#fff" }}
+        />
+      ) : (
+      <>
       <div style={{ marginBottom: 24, display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
         <div>
           <h1 style={{ fontSize: 22, fontWeight: 800, color: "#111827", margin: 0 }}>VIN Inventory Dashboard</h1>
@@ -2718,6 +2756,8 @@ export default function Dashboard() {
             />
           )}
         </>
+      )}
+      </>
       )}
       </div>
     </div>
