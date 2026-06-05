@@ -94,7 +94,7 @@ async function syncVins() {
   const statuses = [], after24hs = [], receivedAts = [], processedAts = [];
   const reasonBuckets = [], holdReasons = [], hasPhotosArr = [];
   const outputImageCounts = [], thumbnailUrls = [], vdpUrls = [], vehiclePrices = [], syncedAts = [];
-  const makes = [], models = [], years = [], trims = [], stockNumbers = [], vinScores = [], vinCreations = [], conditions = [];
+  const makes = [], models = [], years = [], trims = [], stockNumbers = [], vinScores = [], vinCreations = [], conditions = [], platforms = [];
 
   for (const row of deduped) {
     vins.push(row.vinName ?? "");
@@ -120,6 +120,7 @@ async function syncVins() {
     vinScores.push(row.vin_score != null ? Number(row.vin_score) : null);
     vinCreations.push(cleanDate(row.vinCreation));
     conditions.push(row.condition ?? null);
+    platforms.push(row.platform ?? null);
     syncedAts.push(syncedAt);
   }
 
@@ -146,7 +147,7 @@ async function syncVins() {
     INSERT INTO vins
       (dealer_vin_id, vin, enterprise_id, rooftop_id, status, after_24h, received_at, processed_at,
        reason_bucket, hold_reason, has_photos, output_image_count, thumbnail_url, vdp_url, vehicle_price,
-       make, model, year, trim, stock_number, vin_score, synced_at, vin_creation, condition)
+       make, model, year, trim, stock_number, vin_score, synced_at, vin_creation, condition, platform)
     SELECT
       UNNEST($1::text[]),    UNNEST($2::text[]),     UNNEST($3::text[]),     UNNEST($4::text[]),
       UNNEST($5::text[]),    UNNEST($6::smallint[]), UNNEST($7::text[]),     UNNEST($8::text[]),
@@ -154,7 +155,7 @@ async function syncVins() {
       UNNEST($13::text[]),   UNNEST($14::text[]),    UNNEST($15::real[]),
       UNNEST($16::text[]),   UNNEST($17::text[]),   UNNEST($18::text[]),    UNNEST($19::text[]),
       UNNEST($20::text[]),   UNNEST($21::real[]),   UNNEST($22::text[]),    UNNEST($23::text[]),
-      UNNEST($24::text[])
+      UNNEST($24::text[]),   UNNEST($25::text[])
   `;
 
   const batchStarts = [];
@@ -175,7 +176,7 @@ async function syncVins() {
           slice(thumbnailUrls), slice(vdpUrls), slice(vehiclePrices),
           slice(makes), slice(models), slice(years), slice(trims),
           slice(stockNumbers), slice(vinScores), slice(syncedAts), slice(vinCreations),
-          slice(conditions),
+          slice(conditions), slice(platforms),
         ]);
         console.log(`[sync:VIN_DETAILS] batch ${batchNum} done (rows ${i + 1}–${Math.min(i + BATCH_SIZE, deduped.length)})`);
       } finally {
@@ -390,6 +391,7 @@ function toApiRow(r) {
     vinScore:     r.vin_score ?? null,
     vdpUrl:       r.vdp_url ?? null,
     condition:    r.condition ?? null,
+    platform:     r.platform ?? null,
   };
 }
 
@@ -823,6 +825,7 @@ const SORT_MAP = {
   reasonBucket: "v.reason_bucket",
   holdReason:   "v.hold_reason",
   vinScore:     "v.vin_score",
+  platform:     "v.platform",
 };
 
 function buildVinSort({ sortBy, sortDir } = {}) {
@@ -839,7 +842,7 @@ const VIN_FROM = `
 
 const VIN_SELECT = `
   SELECT v.vin, v.dealer_vin_id, v.enterprise_id, v.rooftop_id,
-         v.status, v.after_24h, v.has_photos, v.received_at, v.processed_at, v.reason_bucket, v.hold_reason, v.synced_at, v.vin_score, v.vdp_url,
+         v.status, v.after_24h, v.has_photos, v.received_at, v.processed_at, v.reason_bucket, v.hold_reason, v.synced_at, v.vin_score, v.vdp_url, v.platform,
          rd.team_name AS rooftop, rd.team_type AS rooftop_type,
          ed.name AS enterprise, ed.poc_email AS csm
   ${VIN_FROM}

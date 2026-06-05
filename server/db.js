@@ -38,6 +38,7 @@ export async function initSchema() {
       vdp_url              TEXT,
       vehicle_price        REAL,
       condition            TEXT,
+      platform             TEXT,
       synced_at            TEXT
     );
     ALTER TABLE vins ADD COLUMN IF NOT EXISTS hold_reason TEXT DEFAULT '';
@@ -54,6 +55,7 @@ export async function initSchema() {
     ALTER TABLE vins ADD COLUMN IF NOT EXISTS vin_score REAL;
     ALTER TABLE vins ADD COLUMN IF NOT EXISTS vin_creation TEXT;
     ALTER TABLE vins ADD COLUMN IF NOT EXISTS condition    TEXT;
+    ALTER TABLE vins ADD COLUMN IF NOT EXISTS platform     TEXT;
 
     -- Migration: swap PK from vin → dealer_vin_id on existing deployments.
     DO $$

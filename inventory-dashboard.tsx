@@ -626,6 +626,7 @@ function RawTab({ data, loading, filters, setFilters, total, page, pageCount, on
     { key: "hasPhotos",   label: "Has Photos",    numeric: true },
     { key: "status",      label: "Status" },
     { key: "after24h",    label: "After 6h?", numeric: true },
+    { key: "platform",    label: "Source" },
     { key: "receivedAt",  label: "Received" },
     { key: "processedAt",  label: "Delivered" },
     { key: "reasonBucket", label: "Reason Bucket" },
@@ -652,8 +653,8 @@ function RawTab({ data, loading, filters, setFilters, total, page, pageCount, on
       const res = await fetch(`${API_BASE}/api/vins/export?${params}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const { data } = await res.json();
-      const headers = ["Enterprise ID", "Enterprise Name", "Team ID", "Rooftop Name", "Type", "CSM", "VIN", "Dealer VIN ID", "Has Photos", "Status", "After 6h?", "Received", "Delivered", "Reason Bucket", "Hold Reason", "VIN Score"];
-      const rows = data.map(d => [d.enterpriseId, d.enterprise, d.rooftopId, d.rooftop, d.rooftopType, d.csm, d.vin, d.dealerVinId ?? "", d.hasPhotos ? "Yes" : "No", d.status, isAfter6h(d) ? "Yes" : "No", d.receivedAt ? new Date(d.receivedAt).toLocaleString() : "", d.processedAt ? new Date(d.processedAt).toLocaleString() : "", d.reasonBucket || "", d.holdReason || "", d.vinScore != null ? Number(d.vinScore).toFixed(1) : ""]);
+      const headers = ["Enterprise ID", "Enterprise Name", "Team ID", "Rooftop Name", "Type", "CSM", "VIN", "Dealer VIN ID", "Has Photos", "Status", "After 6h?", "Source", "Received", "Delivered", "Reason Bucket", "Hold Reason", "VIN Score"];
+      const rows = data.map(d => [d.enterpriseId, d.enterprise, d.rooftopId, d.rooftop, d.rooftopType, d.csm, d.vin, d.dealerVinId ?? "", d.hasPhotos ? "Yes" : "No", d.status, isAfter6h(d) ? "Yes" : "No", d.platform || "", d.receivedAt ? new Date(d.receivedAt).toLocaleString() : "", d.processedAt ? new Date(d.processedAt).toLocaleString() : "", d.reasonBucket || "", d.holdReason || "", d.vinScore != null ? Number(d.vinScore).toFixed(1) : ""]);
       downloadCSV("vin-data.csv", headers, rows);
     } catch (err) {
       console.error("Export failed:", err);
@@ -686,9 +687,9 @@ function RawTab({ data, loading, filters, setFilters, total, page, pageCount, on
             </tr>
           </thead>
           <tbody className={loading && data.length > 0 ? "tbody-loading" : ""}>
-            {loading && data.length === 0 && <TableShimmer cols={15} />}
+            {loading && data.length === 0 && <TableShimmer cols={16} />}
             {!loading && data.length === 0 && (
-              <tr><td colSpan={15} style={{ padding: 40, textAlign: "center", color: "#9ca3af", fontSize: 14 }}>No records match the current filters.</td></tr>
+              <tr><td colSpan={16} style={{ padding: 40, textAlign: "center", color: "#9ca3af", fontSize: 14 }}>No records match the current filters.</td></tr>
             )}
             {data.map((d, i) => (
               <tr key={d.vin} style={{ background: i % 2 === 0 ? "#fff" : "#f9fafb" }}>
@@ -727,6 +728,7 @@ function RawTab({ data, loading, filters, setFilters, total, page, pageCount, on
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6", textAlign: "center" }}>{d.hasPhotos ? <Badge label="Yes" color="green" /> : <Badge label="No" color="gray" />}</td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}><Badge label={d.status} color={d.status === "Delivered" ? "green" : "red"} /></td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6", textAlign: "center" }}>{isAfter6h(d) ? <Badge label="Yes" color="amber" /> : <Badge label="No" color="green" />}</td>
+                <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}>{d.platform ? <Truncated value={d.platform} maxWidth={140} /> : <span style={{ color: "#9ca3af" }}>—</span>}</td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6", whiteSpace: "nowrap", fontSize: 12 }}>{new Date(d.receivedAt).toLocaleString()}</td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6", whiteSpace: "nowrap", fontSize: 12 }}>{d.processedAt ? new Date(d.processedAt).toLocaleString() : "—"}</td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}>{d.reasonBucket ? <Badge label={d.reasonBucket} color="amber" /> : <span style={{ color: "#9ca3af" }}>—</span>}</td>
