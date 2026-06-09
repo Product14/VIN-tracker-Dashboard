@@ -1941,7 +1941,9 @@ async function computeRooftopDailyReport(rooftopId, yesterday, timezone = "Ameri
           EXTRACT(EPOCH FROM (processed_at::timestamptz - received_at::timestamptz)) / 3600.0
         ) FILTER (WHERE status = 'Delivered' AND COALESCE(has_photos, 0) = 1
                     AND processed_at IS NOT NULL AND received_at IS NOT NULL
-                    AND processed_at::timestamptz >= received_at::timestamptz)::numeric, 1) AS avg_ttd_hrs_inv
+                    AND processed_at::timestamptz >= received_at::timestamptz
+                    -- Spyne Processing Time only: VINs received from May 2026 onward
+                    AND DATE(received_at::timestamptz AT TIME ZONE $3) >= '2026-05-01'::date)::numeric, 1) AS avg_ttd_hrs_inv
       FROM vins
       WHERE rooftop_id = $1
         AND (received_at IS NULL OR DATE(received_at::timestamptz AT TIME ZONE $3) <= $2::date)
@@ -1981,7 +1983,9 @@ async function computeRooftopDailyReport(rooftopId, yesterday, timezone = "Ameri
           EXTRACT(EPOCH FROM (processed_at::timestamptz - received_at::timestamptz)) / 3600.0
         ) FILTER (WHERE status = 'Delivered'
                     AND processed_at IS NOT NULL AND received_at IS NOT NULL
-                    AND processed_at::timestamptz >= received_at::timestamptz)::numeric, 1) AS avg_ttd_hrs_inv
+                    AND processed_at::timestamptz >= received_at::timestamptz
+                    -- Spyne Processing Time only: VINs received from May 2026 onward
+                    AND DATE(received_at::timestamptz AT TIME ZONE $3) >= '2026-05-01'::date)::numeric, 1) AS avg_ttd_hrs_inv
       FROM vins
       WHERE rooftop_id = $1
         AND COALESCE(has_photos, 0) = 1
@@ -2281,7 +2285,9 @@ async function computeGroupDailyReport(enterpriseId, yesterday, timezone = "Amer
         ROUND(AVG(EXTRACT(EPOCH FROM (processed_at::timestamptz - received_at::timestamptz))/3600.0)
           FILTER (WHERE status='Delivered' AND COALESCE(has_photos,0)=1
                   AND processed_at IS NOT NULL AND received_at IS NOT NULL
-                  AND processed_at::timestamptz >= received_at::timestamptz)::numeric, 1) AS avg_ttd_hrs_inv
+                  AND processed_at::timestamptz >= received_at::timestamptz
+                  -- Spyne Processing Time only: VINs received from May 2026 onward
+                  AND DATE(received_at::timestamptz AT TIME ZONE $3) >= '2026-05-01'::date)::numeric, 1) AS avg_ttd_hrs_inv
       FROM vins
       WHERE enterprise_id = $1
         AND (received_at IS NULL OR DATE(received_at::timestamptz AT TIME ZONE $3) <= $2::date)
@@ -2321,7 +2327,9 @@ async function computeGroupDailyReport(enterpriseId, yesterday, timezone = "Amer
         ROUND(AVG(EXTRACT(EPOCH FROM (v.processed_at::timestamptz - v.received_at::timestamptz))/3600.0)
           FILTER (WHERE v.status='Delivered' AND COALESCE(v.has_photos,0)=1
                   AND v.processed_at IS NOT NULL
-                  AND v.processed_at::timestamptz >= v.received_at::timestamptz)::numeric, 1) AS avg_ttd_hrs
+                  AND v.processed_at::timestamptz >= v.received_at::timestamptz
+                  -- Spyne Processing Time only: VINs received from May 2026 onward
+                  AND DATE(v.received_at::timestamptz AT TIME ZONE $3) >= '2026-05-01'::date)::numeric, 1) AS avg_ttd_hrs
       FROM vins v
       LEFT JOIN rooftop_details rd ON v.rooftop_id = rd.team_id
       WHERE v.enterprise_id = $1
@@ -2368,7 +2376,9 @@ async function computeGroupDailyReport(enterpriseId, yesterday, timezone = "Amer
         ROUND(AVG(EXTRACT(EPOCH FROM (processed_at::timestamptz - received_at::timestamptz))/3600.0)
           FILTER (WHERE status='Delivered'
                   AND processed_at IS NOT NULL AND received_at IS NOT NULL
-                  AND processed_at::timestamptz >= received_at::timestamptz)::numeric, 1) AS avg_ttd_hrs_inv
+                  AND processed_at::timestamptz >= received_at::timestamptz
+                  -- Spyne Processing Time only: VINs received from May 2026 onward
+                  AND DATE(received_at::timestamptz AT TIME ZONE $3) >= '2026-05-01'::date)::numeric, 1) AS avg_ttd_hrs_inv
       FROM vins
       WHERE enterprise_id = $1
         AND DATE(received_at::timestamptz AT TIME ZONE $3) <= $2::date
@@ -2406,7 +2416,9 @@ async function computeGroupDailyReport(enterpriseId, yesterday, timezone = "Amer
         ROUND(AVG(EXTRACT(EPOCH FROM (v.processed_at::timestamptz - v.received_at::timestamptz))/3600.0)
           FILTER (WHERE v.status='Delivered' AND COALESCE(v.has_photos,0)=1
                   AND v.processed_at IS NOT NULL
-                  AND v.processed_at::timestamptz >= v.received_at::timestamptz)::numeric, 1) AS avg_ttd_hrs
+                  AND v.processed_at::timestamptz >= v.received_at::timestamptz
+                  -- Spyne Processing Time only: VINs received from May 2026 onward
+                  AND DATE(v.received_at::timestamptz AT TIME ZONE $3) >= '2026-05-01'::date)::numeric, 1) AS avg_ttd_hrs
       FROM vins v
       LEFT JOIN rooftop_details rd ON v.rooftop_id = rd.team_id
       WHERE v.enterprise_id = $1
