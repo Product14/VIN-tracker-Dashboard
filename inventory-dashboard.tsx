@@ -2238,9 +2238,9 @@ function ReportCoverageTab({ rows, loading, onRooftopDrillDown, totalActiveRooft
 }
 
 export default function Dashboard() {
-  const [module, setModule] = useState<"vin" | "studio">(() => {
+  const [module, setModule] = useState<"vin" | "studio" | "tracker360">(() => {
     const saved = typeof window !== "undefined" ? localStorage.getItem("vin_module") : null;
-    return saved === "studio" ? "studio" : "vin";
+    return saved === "studio" || saved === "tracker360" ? saved : "vin";
   });
   const [page, setPage] = useState<"dashboard" | "admin">("dashboard");
   const [tab, setTab] = useState("Overview");
@@ -2300,6 +2300,7 @@ export default function Dashboard() {
 
   const tabs = ["Overview", "Enterprise View", "Rooftop View", "VIN Data", "Report Status"];
   const STUDIO_URL = "https://studio-adoption.vercel.app/";
+  const TRACKER_360_URL = "https://360-tracker-dashboard-tau.vercel.app/";
   // Track whether the initial mount load has completed so the dateFilter
   // effect can safely skip its first run (mount effect handles it).
   const initialLoadDone = useRef(false);
@@ -2453,7 +2454,7 @@ export default function Dashboard() {
     localStorage.setItem("vin_dateFilter", dateFilter);
   }, [dateFilter]);
 
-  // Persist module (VIN Tracker vs Studio Adoption) selection across page refreshes
+  // Persist module (VIN Tracker / Studio Adoption / 360 Tracker) selection across page refreshes
   useEffect(() => {
     if (typeof window !== "undefined") localStorage.setItem("vin_module", module);
   }, [module]);
@@ -2589,11 +2590,12 @@ export default function Dashboard() {
         </div>
       )}
       <div style={{ padding: "20px 32px" }}>
-      {/* Module toggle — switch between the VIN Tracker dashboard and the embedded Studio Adoption app */}
+      {/* Module toggle — switch between the VIN Tracker dashboard and the embedded Studio Adoption / 360 Tracker apps */}
       <div style={{ display: "flex", gap: 2, background: "#f3f4f6", borderRadius: 8, padding: 3, width: "fit-content", marginBottom: 16 }}>
         {([
-          { key: "vin",    label: "VIN Tracker"     },
-          { key: "studio", label: "Studio Adoption" },
+          { key: "vin",        label: "VIN Tracker"     },
+          { key: "studio",     label: "Studio Adoption" },
+          { key: "tracker360", label: "360 Tracker"     },
         ] as const).map(({ key, label }) => (
           <button key={key} onClick={() => setModule(key)}
             style={{
@@ -2609,10 +2611,10 @@ export default function Dashboard() {
         ))}
       </div>
 
-      {module === "studio" ? (
+      {module === "studio" || module === "tracker360" ? (
         <iframe
-          src={STUDIO_URL}
-          title="Studio Adoption"
+          src={module === "studio" ? STUDIO_URL : TRACKER_360_URL}
+          title={module === "studio" ? "Studio Adoption" : "360 Tracker"}
           style={{ width: "100%", height: "calc(100vh - 120px)", border: "none", borderRadius: 12, background: "#fff" }}
         />
       ) : (

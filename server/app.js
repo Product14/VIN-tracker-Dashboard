@@ -1,5 +1,6 @@
 import express from "express";
 import cors from "cors";
+import { parse as parseCsv } from "csv-parse/sync";
 import { query, getClient } from "./db.js";
 import { buildEmailHtml }                                    from "./emailTemplate.js";
 import { buildRooftopReportHtml, buildGroupReportHtml }     from "./emailTemplateDaily.js";
@@ -24,7 +25,12 @@ const EPOCH        = "1970-01-01T00:00:00Z";
 const cleanDate    = (v) => (!v || v === EPOCH) ? null : v;
 const cleanAfter24 = (v) => {
   if (v === null || v === undefined) return null;
-  if (typeof v === "string") return v.toLowerCase() === "yes" ? 1 : 0;
+  // CSV delivers everything as strings, so accept the truthy spellings the card
+  // emits: "Yes" (after_24_hrs) and "1"/"true" (has_photos, an integer in JSON).
+  if (typeof v === "string") {
+    const t = v.trim().toLowerCase();
+    return (t === "yes" || t === "1" || t === "true") ? 1 : 0;
+  }
   return v ? 1 : 0;
 };
 
@@ -47,7 +53,10 @@ function pendencyPredicate6h(alias = 'v') {
 
 // Fetch from Metabase with optional per-attempt timeout and exponential back-off retry.
 // timeoutMs = 0 means no timeout (used for fast endpoints like Rooftops/Enterprises).
-async function fetchFromMetabase(url, label, retries = 3, timeoutMs = 0) {
+// format='csv' reads the body as text and parses it (used for the large VIN pull —
+// CSV is ~half the size of JSON and degrades to a single bad row on truncation
+// instead of failing the whole parse). Both paths return an array of row objects.
+async function fetchFromMetabase(url, label, retries = 3, timeoutMs = 0, format = "json") {
   let lastErr;
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
@@ -55,6 +64,22 @@ async function fetchFromMetabase(url, label, retries = 3, timeoutMs = 0) {
       const opts = timeoutMs > 0 ? { signal: AbortSignal.timeout(timeoutMs) } : {};
       const res = await fetch(url, opts);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+      if (format === "csv") {
+        const text = await res.text();
+        // Detect a truncated body when the server advertised a length. Chunked
+        // responses omit Content-Length, so this is a best-effort guard; strict
+        // CSV parsing below catches a mid-record cut, and the row-count sanity
+        // guard in syncVins catches a clean cut at a line boundary.
+        const expected = Number(res.headers.get("content-length"));
+        const received = Buffer.byteLength(text);
+        if (expected && received < expected)
+          throw new Error(`truncated body: got ${received} of ${expected} bytes`);
+        // columns:true → array of objects keyed by header (= the card's column
+        // aliases). Strict parse: a truncated final record throws and retries.
+        return parseCsv(text, { columns: true, skip_empty_lines: true, bom: true });
+      }
+
       const json = await res.json();
       if (Array.isArray(json)) return json;
       // Metabase sometimes wraps rows in { data: [...] } — normalise to array.
@@ -77,18 +102,29 @@ async function fetchFromMetabase(url, label, retries = 3, timeoutMs = 0) {
 // Each syncs independently — a failure in one does not affect the others.
 // Uses UNNEST bulk-insert for efficiency (single query vs N queries per row).
 
+// Column list shared by the staging insert and the final swap. Order must match
+// between the INSERT column list, the UNNEST SELECT, and the swap's SELECT.
+const VIN_COLUMNS = `dealer_vin_id, vin, enterprise_id, rooftop_id, status, after_24h, received_at, processed_at,
+       reason_bucket, hold_reason, has_photos, output_image_count, thumbnail_url, vdp_url, vehicle_price,
+       make, model, year, trim, stock_number, vin_score, synced_at, vin_creation, condition, platform`;
+
 async function syncVins() {
-  console.log("[sync:VIN_DETAILS] fetching…");
-  // 1 retry (not 3) — Metabase VIN fetch can take 60-120s for 130K rows, so 3 retries
-  // would consume the entire 300s Vercel budget before DB writes even start.
-  // 180s timeout per attempt gives Metabase headroom while leaving ~120s for DB writes.
-  const rows    = await fetchFromMetabase(VIN_DETAILS_URL, "VIN_DETAILS", 1, 180000);
+  console.log("[sync:VIN_DETAILS] fetching (CSV)…");
+  // Fetch as CSV (~half the size of JSON, degrades to one bad row on truncation
+  // rather than failing the whole parse). 1 retry, 180s timeout per attempt.
+  const csvUrl  = VIN_DETAILS_URL.replace("/query/json", "/query/csv");
+  const rows    = await fetchFromMetabase(csvUrl, "VIN_DETAILS", 1, 180000, "csv");
   const syncedAt = new Date().toISOString();
   // Deduplicate by dealerVinId (primary key). Skip rows with no dealerVinId.
   const deduped = Object.values(
     rows.reduce((acc, row) => { if (row["dealerVinId"]) acc[row["dealerVinId"]] = row; return acc; }, {})
   );
   if (deduped.length > 0) console.log("[sync:VIN_DETAILS] sample row keys:", Object.keys(deduped[0]), "| has_photos sample:", deduped[0].has_photos, "| output_image_count sample:", deduped[0].output_image_count);
+
+  // CSV delivers every field as a string, so coerce explicitly: Number("") is 0
+  // (not null), and an empty cell should map to NULL for a nullable TEXT column.
+  const num = (s) => (s == null || s === "") ? null : Number(s);
+  const txt = (s) => (s == null || s === "") ? null : s;
 
   const vins = [], dealerVinIds = [], enterpriseIds = [], rooftopIds = [];
   const statuses = [], after24hs = [], receivedAts = [], processedAts = [];
@@ -108,46 +144,41 @@ async function syncVins() {
     reasonBuckets.push(row.reason_bucket ?? "");
     holdReasons.push(row.hold_reason ?? "");
     hasPhotosArr.push(cleanAfter24(row.has_photos ?? null));
-    outputImageCounts.push(row.output_image_count != null ? Number(row.output_image_count) : null);
-    thumbnailUrls.push(row.thumbnail_url ?? null);
-    vdpUrls.push(row.vdp_url ?? null);
-    vehiclePrices.push(row.sellingPrice != null ? Number(row.sellingPrice) : row.vehicle_price != null ? Number(row.vehicle_price) : null);
-    makes.push(row.make ?? null);
-    models.push(row.model ?? null);
-    years.push(row.year != null ? String(row.year) : null);
-    trims.push(row.trim ?? null);
-    stockNumbers.push(row.stockNumber ?? null);
-    vinScores.push(row.vin_score != null ? Number(row.vin_score) : null);
+    outputImageCounts.push(num(row.output_image_count));
+    thumbnailUrls.push(txt(row.thumbnail_url));
+    vdpUrls.push(txt(row.vdp_url));
+    vehiclePrices.push(num(row.sellingPrice) ?? num(row.vehicle_price));
+    makes.push(txt(row.make));
+    models.push(txt(row.model));
+    years.push(row.year == null || row.year === "" ? null : String(row.year));
+    trims.push(txt(row.trim));
+    stockNumbers.push(txt(row.stockNumber));
+    vinScores.push(num(row.vin_score));
     vinCreations.push(cleanDate(row.vinCreation));
-    conditions.push(row.condition ?? null);
-    platforms.push(row.platform ?? null);
+    conditions.push(txt(row.condition));
+    platforms.push(txt(row.platform));
     syncedAts.push(syncedAt);
   }
 
   const BATCH_SIZE   = 25000;
   const PARALLEL     = 3;      // concurrent inserts — stay within pool max (5)
 
-  // Step 1: Delete all existing rows in its own committed transaction.
-  // This must commit before parallel inserts begin so they don't conflict.
-  const deleteClient = await getClient();
+  // Step 1: Load into a FRESH staging table — never touch the live `vins` until
+  // the whole pull has landed. We hold the sync lock, so DROP/CREATE is safe, and
+  // `LIKE vins` keeps staging's shape in lockstep with vins (incl. ALTER-added cols).
+  const setupClient = await getClient();
   try {
-    await deleteClient.query("BEGIN");
-    await deleteClient.query("SET LOCAL statement_timeout = 0");
-    await deleteClient.query("DELETE FROM vins");
-    await deleteClient.query("COMMIT");
-  } catch (e) {
-    await deleteClient.query("ROLLBACK");
-    throw e;
+    await setupClient.query("SET statement_timeout = 0");
+    await setupClient.query("DROP TABLE IF EXISTS vins_staging");
+    await setupClient.query("CREATE TABLE vins_staging (LIKE vins INCLUDING DEFAULTS)");
   } finally {
-    deleteClient.release();
+    setupClient.release();
   }
 
-  // Step 2: Build batch index list and run inserts PARALLEL at a time.
+  // Step 2: Bulk-insert into staging, PARALLEL batches at a time.
   const INSERT_SQL = `
-    INSERT INTO vins
-      (dealer_vin_id, vin, enterprise_id, rooftop_id, status, after_24h, received_at, processed_at,
-       reason_bucket, hold_reason, has_photos, output_image_count, thumbnail_url, vdp_url, vehicle_price,
-       make, model, year, trim, stock_number, vin_score, synced_at, vin_creation, condition, platform)
+    INSERT INTO vins_staging
+      (${VIN_COLUMNS})
     SELECT
       UNNEST($1::text[]),    UNNEST($2::text[]),     UNNEST($3::text[]),     UNNEST($4::text[]),
       UNNEST($5::text[]),    UNNEST($6::smallint[]), UNNEST($7::text[]),     UNNEST($8::text[]),
@@ -178,13 +209,39 @@ async function syncVins() {
           slice(stockNumbers), slice(vinScores), slice(syncedAts), slice(vinCreations),
           slice(conditions), slice(platforms),
         ]);
-        console.log(`[sync:VIN_DETAILS] batch ${batchNum} done (rows ${i + 1}–${Math.min(i + BATCH_SIZE, deduped.length)})`);
+        console.log(`[sync:VIN_DETAILS] staged batch ${batchNum} (rows ${i + 1}–${Math.min(i + BATCH_SIZE, deduped.length)})`);
       } finally {
         client.release();
       }
     }));
   }
 
+  // Step 3: Sanity guard — never swap an obviously-truncated pull over good data.
+  // A clean cut at a line boundary parses fine but drops rows; this catches it.
+  const { rows: liveRows } = await query("SELECT count(*)::int AS n FROM vins");
+  const liveCount = liveRows[0]?.n ?? 0;
+  if (liveCount > 0 && deduped.length < liveCount * 0.8) {
+    throw new Error(`[sync:VIN_DETAILS] aborting swap — suspected truncation: staged ${deduped.length} rows vs live ${liveCount}`);
+  }
+
+  // Step 4: Atomic swap. The materialized views depend on the `vins` table OID, so
+  // we keep its identity (DELETE+INSERT in one transaction) instead of renaming.
+  // Readers see the previous snapshot until COMMIT — never an empty/partial table.
+  const swapClient = await getClient();
+  try {
+    await swapClient.query("BEGIN");
+    await swapClient.query("SET LOCAL statement_timeout = 0");
+    await swapClient.query("DELETE FROM vins");
+    await swapClient.query(`INSERT INTO vins (${VIN_COLUMNS}) SELECT ${VIN_COLUMNS} FROM vins_staging`);
+    await swapClient.query("COMMIT");
+  } catch (e) {
+    await swapClient.query("ROLLBACK");
+    throw e;
+  } finally {
+    swapClient.release();
+  }
+
+  await query("TRUNCATE vins_staging").catch(() => {});
   console.log(`[sync:VIN_DETAILS] done — ${deduped.length} rows`);
 }
 
