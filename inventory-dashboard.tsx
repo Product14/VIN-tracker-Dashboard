@@ -610,6 +610,18 @@ function TableShimmer({ cols, rows = 10 }: { cols: number; rows?: number }) {
 function RawTab({ data, loading, filters, setFilters, total, page, pageCount, onPageChange, rooftopOptions, typeOptions, csmOptions, enterpriseObjects = [], sortCol, sortDir, onSortChange }) {
   const [downloading, setDownloading] = useState(false);
 
+  // QC Hold Tracker overlay: read-only workflow status (shows "In progress" + a
+  // Tech/CSM/QC pill next to the Reason Bucket). Fails open — never blocks this dashboard.
+  const [qcOverrides, setQcOverrides] = useState<Record<string, any>>({});
+  useEffect(() => {
+    let alive = true;
+    fetch("https://qc-hold-events.vercel.app/api/vin-overrides")
+      .then(r => r.json())
+      .then(j => { if (alive) setQcOverrides(j.byDealerVinId || {}); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
+
   const handleSort = (col) => {
     if (sortCol !== col) { onSortChange(col, "desc"); }
     else if (sortDir === "desc") { onSortChange(col, "asc"); }
@@ -731,7 +743,17 @@ function RawTab({ data, loading, filters, setFilters, total, page, pageCount, on
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}>{d.platform ? <Truncated value={d.platform} maxWidth={140} /> : <span style={{ color: "#9ca3af" }}>—</span>}</td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6", whiteSpace: "nowrap", fontSize: 12 }}>{new Date(d.receivedAt).toLocaleString()}</td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6", whiteSpace: "nowrap", fontSize: 12 }}>{d.processedAt ? new Date(d.processedAt).toLocaleString() : "—"}</td>
-                <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}>{d.reasonBucket ? <Badge label={d.reasonBucket} color="amber" /> : <span style={{ color: "#9ca3af" }}>—</span>}</td>
+                <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}>{(() => {
+                  const o = qcOverrides[d.dealerVinId];
+                  const reason = (o && o.reasonOverride) || d.reasonBucket;
+                  if (!reason) return <span style={{ color: "#9ca3af" }}>—</span>;
+                  return (
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                      <Badge label={reason} color={reason === "QC Hold" ? "amber" : "blue"} />
+                      {o && o.pill && d.reasonBucket === "QC Hold" ? <Badge label={o.pill} color="blue" /> : null}
+                    </span>
+                  );
+                })()}</td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}>{d.holdReason ? <Truncated value={d.holdReason} maxWidth={180} /> : <span style={{ color: "#9ca3af" }}>—</span>}</td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6", textAlign: "center" }}>
                   {d.vinScore != null
