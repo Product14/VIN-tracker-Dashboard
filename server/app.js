@@ -10,7 +10,11 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// VIN_CARD_URL env override lets us point the sync at an alternate Metabase card
+// (e.g. the expanded publishing-on+off query) for local/test runs without removing
+// the production card. Unset in prod → behaviour is identical to before.
 const VIN_DETAILS_URL =
+  process.env.VIN_CARD_URL ||
   "https://metabase.spyne.ai/api/public/card/15e908e4-fe21-4982-9d8c-4aff07f2c948/query/json";
 
 const ROOFTOP_DETAILS_URL =
@@ -106,7 +110,8 @@ async function fetchFromMetabase(url, label, retries = 3, timeoutMs = 0, format 
 // between the INSERT column list, the UNNEST SELECT, and the swap's SELECT.
 const VIN_COLUMNS = `dealer_vin_id, vin, enterprise_id, rooftop_id, status, after_24h, received_at, processed_at,
        reason_bucket, hold_reason, has_photos, output_image_count, thumbnail_url, vdp_url, vehicle_price,
-       make, model, year, trim, stock_number, vin_score, synced_at, vin_creation, condition, platform`;
+       make, model, year, trim, stock_number, vin_score, synced_at, vin_creation, condition, platform,
+       is_publishing, is_qc_on`;
 
 async function syncVins() {
   console.log("[sync:VIN_DETAILS] fetching (CSV)…");
@@ -131,6 +136,7 @@ async function syncVins() {
   const reasonBuckets = [], holdReasons = [], hasPhotosArr = [];
   const outputImageCounts = [], thumbnailUrls = [], vdpUrls = [], vehiclePrices = [], syncedAts = [];
   const makes = [], models = [], years = [], trims = [], stockNumbers = [], vinScores = [], vinCreations = [], conditions = [], platforms = [];
+  const isPublishings = [], isQcOns = [];
 
   for (const row of deduped) {
     vins.push(row.vinName ?? "");
@@ -157,6 +163,10 @@ async function syncVins() {
     vinCreations.push(cleanDate(row.vinCreation));
     conditions.push(txt(row.condition));
     platforms.push(txt(row.platform));
+    // is_publishing / is_qc_on are 0/1 flags emitted by the expanded VIN card.
+    // Older cards omit them → null (treated as publishing-ON downstream via COALESCE).
+    isPublishings.push(cleanAfter24(row.is_publishing ?? null));
+    isQcOns.push(cleanAfter24(row.is_qc_on ?? null));
     syncedAts.push(syncedAt);
   }
 
@@ -186,7 +196,8 @@ async function syncVins() {
       UNNEST($13::text[]),   UNNEST($14::text[]),    UNNEST($15::real[]),
       UNNEST($16::text[]),   UNNEST($17::text[]),   UNNEST($18::text[]),    UNNEST($19::text[]),
       UNNEST($20::text[]),   UNNEST($21::real[]),   UNNEST($22::text[]),    UNNEST($23::text[]),
-      UNNEST($24::text[]),   UNNEST($25::text[])
+      UNNEST($24::text[]),   UNNEST($25::text[]),
+      UNNEST($26::smallint[]), UNNEST($27::smallint[])
   `;
 
   const batchStarts = [];
@@ -208,6 +219,7 @@ async function syncVins() {
           slice(makes), slice(models), slice(years), slice(trims),
           slice(stockNumbers), slice(vinScores), slice(syncedAts), slice(vinCreations),
           slice(conditions), slice(platforms),
+          slice(isPublishings), slice(isQcOns),
         ]);
         console.log(`[sync:VIN_DETAILS] staged batch ${batchNum} (rows ${i + 1}–${Math.min(i + BATCH_SIZE, deduped.length)})`);
       } finally {
@@ -449,6 +461,8 @@ function toApiRow(r) {
     vdpUrl:       r.vdp_url ?? null,
     condition:    r.condition ?? null,
     platform:     r.platform ?? null,
+    isPublishing: r.is_publishing !== null && r.is_publishing !== undefined ? Boolean(r.is_publishing) : true,
+    isQcOn:       r.is_qc_on !== null && r.is_qc_on !== undefined ? Boolean(r.is_qc_on) : null,
   };
 }
 
@@ -585,6 +599,8 @@ function toEnterpriseRow(r) {
     rooftopCount:             r.rooftop_count ?? 0,
     notIntegratedCount:       r.not_integrated_count ?? 0,
     publishingDisabledCount:  r.publishing_disabled_count ?? 0,
+    publishingOnRooftops:     r.publishing_on_rooftops ?? 0,
+    publishingOffRooftops:    r.publishing_off_rooftops ?? 0,
     avgWebsiteScore:          r.avg_website_score ?? null,
     avgInventoryScore:        r.avg_inventory_score ?? null,
     websiteUrl:               r.website_url ?? null,
@@ -627,6 +643,8 @@ function toCsmRow(r) {
     missingWebsiteCount:      r.missing_website_count ?? 0,
     integratedCount:          r.integrated_count ?? 0,
     publishingCount:          r.publishing_count ?? 0,
+    publishingOnRooftops:     r.publishing_on_rooftops ?? 0,
+    publishingOffRooftops:    r.publishing_off_rooftops ?? 0,
     bucketUploadPending:      r.bucket_upload_pending,
     bucketProcessingPending:  r.bucket_processing_pending,
     bucketMissingVinName:     r.bucket_missing_vin_name,
@@ -657,6 +675,8 @@ function toTypeRow(r) {
     missingWebsiteCount:      r.missing_website_count ?? 0,
     integratedCount:          r.integrated_count ?? 0,
     publishingCount:          r.publishing_count ?? 0,
+    publishingOnRooftops:     r.publishing_on_rooftops ?? 0,
+    publishingOffRooftops:    r.publishing_off_rooftops ?? 0,
     bucketUploadPending:      r.bucket_upload_pending,
     bucketProcessingPending:  r.bucket_processing_pending,
     bucketMissingVinName:     r.bucket_missing_vin_name,
@@ -785,6 +805,8 @@ function buildEnterpriseSource(dateFilter) {
         COUNT(DISTINCT v.rooftop_id)::int     AS rooftop_count,
         COUNT(DISTINCT CASE WHEN rd.ims_integration_status = 'false' THEN v.rooftop_id END)::int AS not_integrated_count,
         COUNT(DISTINCT CASE WHEN rd.publishing_status = 'false' THEN v.rooftop_id END)::int      AS publishing_disabled_count,
+        COUNT(DISTINCT CASE WHEN COALESCE(v.is_publishing,1)=1 THEN v.rooftop_id END)::int       AS publishing_on_rooftops,
+        COUNT(DISTINCT CASE WHEN COALESCE(v.is_publishing,1)=0 THEN v.rooftop_id END)::int       AS publishing_off_rooftops,
         ROUND(AVG(rd.website_score)::numeric, 2) AS avg_website_score,
         ROUND(AVG(v.vin_score)::numeric, 2)      AS avg_inventory_score,
         MAX(ed.website_url)                   AS website_url,
@@ -883,6 +905,7 @@ const SORT_MAP = {
   holdReason:   "v.hold_reason",
   vinScore:     "v.vin_score",
   platform:     "v.platform",
+  isPublishing: "v.is_publishing",
 };
 
 function buildVinSort({ sortBy, sortDir } = {}) {
@@ -900,6 +923,7 @@ const VIN_FROM = `
 const VIN_SELECT = `
   SELECT v.vin, v.dealer_vin_id, v.enterprise_id, v.rooftop_id,
          v.status, v.after_24h, v.has_photos, v.received_at, v.processed_at, v.reason_bucket, v.hold_reason, v.synced_at, v.vin_score, v.vdp_url, v.platform,
+         COALESCE(v.is_publishing, 1) AS is_publishing, v.is_qc_on,
          rd.team_name AS rooftop, rd.team_type AS rooftop_type,
          ed.name AS enterprise, ed.poc_email AS csm
   ${VIN_FROM}
@@ -908,7 +932,7 @@ const VIN_SELECT = `
 // Builds a WHERE clause with PostgreSQL positional params ($1, $2, …).
 // Returns { where: string, params: any[] }.
 function buildVinFilters(queryParams) {
-  const { search, rooftop, rooftopId, rooftopType, csm, status, after24h, hasPhotos, hasVin, enterprise, enterpriseId, reasonBucket, dateFilter } = queryParams;
+  const { search, rooftop, rooftopId, rooftopType, csm, status, after24h, hasPhotos, hasVin, enterprise, enterpriseId, reasonBucket, dateFilter, publishing } = queryParams;
   const conditions = [];
   const params = [];
 
@@ -941,6 +965,9 @@ function buildVinFilters(queryParams) {
   if (queryParams.inventoryScore === "Good (8+)")      conditions.push("v.vin_score >= 8");
   const dc = getDateCondition(dateFilter, 'v');
   if (dc) conditions.push(dc);
+  // Publishing scope (per-VIN is_publishing; NULL on legacy data treated as ON).
+  if (publishing === "on"  || publishing === "1") conditions.push("COALESCE(v.is_publishing, 1) = 1");
+  if (publishing === "off" || publishing === "0") conditions.push("COALESCE(v.is_publishing, 1) = 0");
 
   return { where: conditions.length ? `WHERE ${conditions.join(" AND ")}` : "", params };
 }
@@ -1002,6 +1029,7 @@ async function computeSummary(dateFilter) {
           v.rooftop_id,
           v.enterprise_id,
           v.vin_score,
+          COALESCE(v.is_publishing, 1) AS is_publishing,
           ed.poc_email,
           rd.team_name,
           rd.team_type,
@@ -1054,6 +1082,8 @@ async function computeSummary(dateFilter) {
           COUNT(DISTINCT CASE WHEN (website_listing_url IS NULL OR website_listing_url = '') THEN rooftop_id END)::int              AS missing_website_count,
           COUNT(DISTINCT CASE WHEN ims_integration_status = 'false' THEN rooftop_id END)::int                                      AS integrated_count,
           COUNT(DISTINCT CASE WHEN publishing_status = 'false' THEN rooftop_id END)::int                                           AS publishing_count,
+          COUNT(DISTINCT CASE WHEN is_publishing = 1 THEN rooftop_id END)::int                                                     AS publishing_on_rooftops,
+          COUNT(DISTINCT CASE WHEN is_publishing = 0 THEN rooftop_id END)::int                                                     AS publishing_off_rooftops,
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Upload Pending'      AND ${pendencyPredicate6h('')} THEN 1 ELSE 0 END)::int AS bucket_upload_pending,
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Processing Pending' AND ${pendencyPredicate6h('')} THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Missing VIN Name'   AND ${pendencyPredicate6h('')} THEN 1 ELSE 0 END)::int AS bucket_missing_vin_name,
@@ -1084,6 +1114,8 @@ async function computeSummary(dateFilter) {
           COUNT(DISTINCT CASE WHEN (website_listing_url IS NULL OR website_listing_url = '') THEN rooftop_id END)::int              AS missing_website_count,
           COUNT(DISTINCT CASE WHEN ims_integration_status = 'false' THEN rooftop_id END)::int                                      AS integrated_count,
           COUNT(DISTINCT CASE WHEN publishing_status = 'false' THEN rooftop_id END)::int                                           AS publishing_count,
+          COUNT(DISTINCT CASE WHEN is_publishing = 1 THEN rooftop_id END)::int                                                     AS publishing_on_rooftops,
+          COUNT(DISTINCT CASE WHEN is_publishing = 0 THEN rooftop_id END)::int                                                     AS publishing_off_rooftops,
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Upload Pending'      AND ${pendencyPredicate6h('')} THEN 1 ELSE 0 END)::int AS bucket_upload_pending,
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Processing Pending' AND ${pendencyPredicate6h('')} THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
           SUM(CASE WHEN status != 'Delivered' AND COALESCE(has_photos,0)=1 AND reason_bucket = 'Missing VIN Name'   AND ${pendencyPredicate6h('')} THEN 1 ELSE 0 END)::int AS bucket_missing_vin_name,
@@ -1635,6 +1667,8 @@ const ENTERPRISE_SORT_MAP = {
   rooftopCount:            "rooftop_count",
   notIntegratedCount:      "not_integrated_count",
   publishingDisabledCount: "publishing_disabled_count",
+  publishingOnRooftops:    "publishing_on_rooftops",
+  publishingOffRooftops:   "publishing_off_rooftops",
   bucketUploadPending:     "bucket_upload_pending",
   bucketProcessingPending: "bucket_processing_pending",
   bucketMissingVinName:    "bucket_missing_vin_name",

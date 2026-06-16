@@ -39,6 +39,8 @@ export async function initSchema() {
       vehicle_price        REAL,
       condition            TEXT,
       platform             TEXT,
+      is_publishing        SMALLINT,
+      is_qc_on             SMALLINT,
       synced_at            TEXT
     );
     ALTER TABLE vins ADD COLUMN IF NOT EXISTS hold_reason TEXT DEFAULT '';
@@ -56,6 +58,10 @@ export async function initSchema() {
     ALTER TABLE vins ADD COLUMN IF NOT EXISTS vin_creation TEXT;
     ALTER TABLE vins ADD COLUMN IF NOT EXISTS condition    TEXT;
     ALTER TABLE vins ADD COLUMN IF NOT EXISTS platform     TEXT;
+    -- Per-VIN publishing/QC flags emitted by the expanded VIN card. NULL on legacy
+    -- (publishing-on-only) data → treated as publishing-ON downstream via COALESCE.
+    ALTER TABLE vins ADD COLUMN IF NOT EXISTS is_publishing SMALLINT;
+    ALTER TABLE vins ADD COLUMN IF NOT EXISTS is_qc_on      SMALLINT;
 
     -- Migration: swap PK from vin → dealer_vin_id on existing deployments.
     DO $$
@@ -80,6 +86,7 @@ export async function initSchema() {
     CREATE INDEX IF NOT EXISTS idx_vins_has_photos        ON vins(has_photos);
     CREATE INDEX IF NOT EXISTS idx_vins_reason_bucket     ON vins(reason_bucket);
     CREATE INDEX IF NOT EXISTS idx_vins_status_photos_24h ON vins(status, has_photos, after_24h);
+    CREATE INDEX IF NOT EXISTS idx_vins_is_publishing     ON vins(is_publishing);
 
     CREATE TABLE IF NOT EXISTS rooftop_details (
       team_id                TEXT PRIMARY KEY,
@@ -268,6 +275,7 @@ export async function initSchema() {
       MAX(rd.website_listing_url)         AS website_listing_url,
       MAX(rd.ims_integration_status)      AS ims_integration_status,
       MAX(rd.publishing_status)           AS publishing_status,
+      MAX(COALESCE(v.is_publishing, 1))::int AS is_publishing,
       ROUND(AVG(v.vin_score)::numeric, 2) AS avg_inventory_score,
       SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Upload Pending'      AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS bucket_upload_pending,
       SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Processing Pending' AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
@@ -301,6 +309,8 @@ export async function initSchema() {
       COUNT(DISTINCT v.rooftop_id)::int     AS rooftop_count,
       COUNT(DISTINCT CASE WHEN rd.ims_integration_status = 'false' THEN v.rooftop_id END)::int AS not_integrated_count,
       COUNT(DISTINCT CASE WHEN rd.publishing_status = 'false' THEN v.rooftop_id END)::int      AS publishing_disabled_count,
+      COUNT(DISTINCT CASE WHEN COALESCE(v.is_publishing,1)=1 THEN v.rooftop_id END)::int       AS publishing_on_rooftops,
+      COUNT(DISTINCT CASE WHEN COALESCE(v.is_publishing,1)=0 THEN v.rooftop_id END)::int       AS publishing_off_rooftops,
       ROUND(AVG(rd.website_score)::numeric, 2)  AS avg_website_score,
       ROUND(AVG(v.vin_score)::numeric, 2)       AS avg_inventory_score,
       MAX(ed.website_url)                   AS website_url,
