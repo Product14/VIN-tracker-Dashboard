@@ -1,6 +1,8 @@
 import express from "express";
 import cors from "cors";
 import { parse as parseCsv } from "csv-parse/sync";
+import { parse as parseCsvStream } from "csv-parse";
+import { Readable } from "node:stream";
 import { query, getClient } from "./db.js";
 import { buildEmailHtml }                                    from "./emailTemplate.js";
 import { buildRooftopReportHtml, buildGroupReportHtml }     from "./emailTemplateDaily.js";
@@ -137,79 +139,23 @@ const VIN_COLUMNS = `dealer_vin_id, vin, enterprise_id, rooftop_id, status, afte
        is_publishing, is_qc_on, status_overall_status`;
 
 async function syncVins() {
-  console.log("[sync:VIN_DETAILS] fetching (CSV)…");
-  // Fetch as CSV (~half the size of JSON, degrades to one bad row on truncation
-  // rather than failing the whole parse). 1 retry, 180s timeout per attempt.
-  const csvUrl  = VIN_DETAILS_URL.replace("/query/json", "/query/csv");
-  const rows    = await fetchFromMetabase(csvUrl, "VIN_DETAILS", 1, 180000, "csv");
+  console.log("[sync:VIN_DETAILS] fetching (CSV, streaming)…");
+  // STREAMING sync: the expanded card (~425k+ rows, ~187 MB CSV) cannot be buffered
+  // in memory — parsing the whole array + building 28 full-length column arrays
+  // OOM-killed the function even at 3008 MB. Instead we stream-parse the CSV and
+  // flush fixed-size batches to staging as they fill, so peak memory is bounded to
+  // one BATCH_SIZE chunk regardless of total volume. Dedup is deferred to the swap
+  // (DISTINCT ON) since we no longer hold all rows at once.
+  const csvUrl   = VIN_DETAILS_URL.replace("/query/json", "/query/csv");
   const syncedAt = new Date().toISOString();
-  // Deduplicate by dealerVinId (primary key). Skip rows with no dealerVinId.
-  const deduped = Object.values(
-    rows.reduce((acc, row) => { if (row["dealerVinId"]) acc[row["dealerVinId"]] = row; return acc; }, {})
-  );
-  if (deduped.length > 0) console.log("[sync:VIN_DETAILS] sample row keys:", Object.keys(deduped[0]), "| has_photos sample:", deduped[0].has_photos, "| output_image_count sample:", deduped[0].output_image_count);
 
   // CSV delivers every field as a string, so coerce explicitly: Number("") is 0
   // (not null), and an empty cell should map to NULL for a nullable TEXT column.
   const num = (s) => (s == null || s === "") ? null : Number(s);
   const txt = (s) => (s == null || s === "") ? null : s;
 
-  const vins = [], dealerVinIds = [], enterpriseIds = [], rooftopIds = [];
-  const statuses = [], after24hs = [], receivedAts = [], processedAts = [];
-  const reasonBuckets = [], holdReasons = [], hasPhotosArr = [];
-  const outputImageCounts = [], thumbnailUrls = [], vdpUrls = [], vehiclePrices = [], syncedAts = [];
-  const makes = [], models = [], years = [], trims = [], stockNumbers = [], vinScores = [], vinCreations = [], conditions = [], platforms = [];
-  const isPublishings = [], isQcOns = [], statusOveralls = [];
+  const BATCH_SIZE = 25000;
 
-  for (const row of deduped) {
-    vins.push(row.vinName ?? "");
-    dealerVinIds.push(row["dealerVinId"] ?? null);
-    enterpriseIds.push(row.enterpriseId ?? "");
-    rooftopIds.push(String(row.teamId ?? ""));
-    statuses.push(row.status ?? "");
-    after24hs.push(cleanAfter24(row.after_24_hrs ?? row.after_24hrs ?? null));
-    receivedAts.push(cleanDate(row.receivedAt));
-    processedAts.push(cleanDate(row.sentAt));
-    reasonBuckets.push(row.reason_bucket ?? "");
-    holdReasons.push(row.hold_reason ?? "");
-    hasPhotosArr.push(cleanAfter24(row.has_photos ?? null));
-    outputImageCounts.push(num(row.output_image_count));
-    thumbnailUrls.push(txt(row.thumbnail_url));
-    vdpUrls.push(txt(row.vdp_url));
-    vehiclePrices.push(num(row.sellingPrice) ?? num(row.vehicle_price));
-    makes.push(txt(row.make));
-    models.push(txt(row.model));
-    years.push(row.year == null || row.year === "" ? null : String(row.year));
-    trims.push(txt(row.trim));
-    stockNumbers.push(txt(row.stockNumber));
-    vinScores.push(num(row.vin_score));
-    vinCreations.push(cleanDate(row.vinCreation));
-    conditions.push(txt(row.condition));
-    platforms.push(txt(row.platform));
-    // is_publishing / is_qc_on are 0/1 flags emitted by the expanded VIN card.
-    // Older cards omit them → null (treated as publishing-ON downstream via COALESCE).
-    isPublishings.push(cleanAfter24(row.is_publishing ?? null));
-    isQcOns.push(cleanAfter24(row.is_qc_on ?? null));
-    statusOveralls.push(txt(row.status_overallStatus));
-    syncedAts.push(syncedAt);
-  }
-
-  const BATCH_SIZE   = 25000;
-  const PARALLEL     = 3;      // concurrent inserts — stay within pool max (5)
-
-  // Step 1: Load into a FRESH staging table — never touch the live `vins` until
-  // the whole pull has landed. We hold the sync lock, so DROP/CREATE is safe, and
-  // `LIKE vins` keeps staging's shape in lockstep with vins (incl. ALTER-added cols).
-  const setupClient = await getClient();
-  try {
-    await setupClient.query("SET statement_timeout = 0");
-    await setupClient.query("DROP TABLE IF EXISTS vins_staging");
-    await setupClient.query("CREATE TABLE vins_staging (LIKE vins INCLUDING DEFAULTS)");
-  } finally {
-    setupClient.release();
-  }
-
-  // Step 2: Bulk-insert into staging, PARALLEL batches at a time.
   const INSERT_SQL = `
     INSERT INTO vins_staging
       (${VIN_COLUMNS})
@@ -225,52 +171,150 @@ async function syncVins() {
       UNNEST($28::text[])
   `;
 
-  const batchStarts = [];
-  for (let i = 0; i < deduped.length; i += BATCH_SIZE) batchStarts.push(i);
-
-  for (let g = 0; g < batchStarts.length; g += PARALLEL) {
-    const group = batchStarts.slice(g, g + PARALLEL);
-    await Promise.all(group.map(async (i) => {
-      const batchNum = Math.floor(i / BATCH_SIZE) + 1;
-      const slice = (arr) => arr.slice(i, i + BATCH_SIZE);
-      const client = await getClient();
-      try {
-        await client.query("SET statement_timeout = 0");
-        await client.query(INSERT_SQL, [
-          slice(dealerVinIds), slice(vins), slice(enterpriseIds), slice(rooftopIds),
-          slice(statuses), slice(after24hs), slice(receivedAts), slice(processedAts),
-          slice(reasonBuckets), slice(holdReasons), slice(hasPhotosArr), slice(outputImageCounts),
-          slice(thumbnailUrls), slice(vdpUrls), slice(vehiclePrices),
-          slice(makes), slice(models), slice(years), slice(trims),
-          slice(stockNumbers), slice(vinScores), slice(syncedAts), slice(vinCreations),
-          slice(conditions), slice(platforms),
-          slice(isPublishings), slice(isQcOns),
-          slice(statusOveralls),
-        ]);
-        console.log(`[sync:VIN_DETAILS] staged batch ${batchNum} (rows ${i + 1}–${Math.min(i + BATCH_SIZE, deduped.length)})`);
-      } finally {
-        client.release();
-      }
-    }));
+  // Step 1: FRESH staging table — never touch live `vins` until the whole pull
+  // has landed. We hold the sync lock, so DROP/CREATE is safe, and `LIKE vins`
+  // keeps staging's shape in lockstep with vins (incl. ALTER-added cols).
+  const setupClient = await getClient();
+  try {
+    await setupClient.query("SET statement_timeout = 0");
+    await setupClient.query("DROP TABLE IF EXISTS vins_staging");
+    await setupClient.query("CREATE TABLE vins_staging (LIKE vins INCLUDING DEFAULTS)");
+  } finally {
+    setupClient.release();
   }
 
+  // Empty per-batch column arrays — reset after every flush so only one chunk is
+  // ever resident. Column order MUST match INSERT_SQL / VIN_COLUMNS exactly.
+  const freshCols = () => ({
+    vins: [], dealerVinIds: [], enterpriseIds: [], rooftopIds: [],
+    statuses: [], after24hs: [], receivedAts: [], processedAts: [],
+    reasonBuckets: [], holdReasons: [], hasPhotosArr: [], outputImageCounts: [],
+    thumbnailUrls: [], vdpUrls: [], vehiclePrices: [], makes: [], models: [],
+    years: [], trims: [], stockNumbers: [], vinScores: [], vinCreations: [],
+    conditions: [], platforms: [], isPublishings: [], isQcOns: [], statusOveralls: [],
+    syncedAts: [],
+  });
+
+  let cols = freshCols();
+  let inBatch = 0, staged = 0, batchNum = 0;
+
+  const flush = async () => {
+    if (inBatch === 0) return;
+    batchNum++;
+    const client = await getClient();
+    try {
+      await client.query("SET statement_timeout = 0");
+      await client.query(INSERT_SQL, [
+        cols.dealerVinIds, cols.vins, cols.enterpriseIds, cols.rooftopIds,
+        cols.statuses, cols.after24hs, cols.receivedAts, cols.processedAts,
+        cols.reasonBuckets, cols.holdReasons, cols.hasPhotosArr, cols.outputImageCounts,
+        cols.thumbnailUrls, cols.vdpUrls, cols.vehiclePrices,
+        cols.makes, cols.models, cols.years, cols.trims,
+        cols.stockNumbers, cols.vinScores, cols.syncedAts, cols.vinCreations,
+        cols.conditions, cols.platforms,
+        cols.isPublishings, cols.isQcOns,
+        cols.statusOveralls,
+      ]);
+      staged += inBatch;
+      console.log(`[sync:VIN_DETAILS] staged batch ${batchNum} (${staged} rows so far)`);
+    } finally {
+      client.release();
+    }
+    cols = freshCols();   // release the just-inserted chunk
+    inBatch = 0;
+  };
+
+  // Step 2: fetch + stream-parse. 180s connect/read timeout, mirroring the old pull.
+  const res = await fetch(csvUrl, { signal: AbortSignal.timeout(180000) });
+  if (!res.ok) throw new Error(`[sync:VIN_DETAILS] HTTP ${res.status}`);
+  // Metabase delivers query errors (timeouts, failed/expired cards) as a JSON body
+  // even on the CSV endpoint, often with a 2xx — detect via content-type and surface
+  // the real error instead of feeding garbage to the CSV parser.
+  const ctype = (res.headers.get("content-type") || "").toLowerCase();
+  if (ctype.includes("json")) {
+    const body = await res.text();
+    let detail = body.slice(0, 300);
+    try { const j = JSON.parse(body); detail = j.error || j.message || j.status || detail; } catch { /* keep raw head */ }
+    throw new Error(`[sync:VIN_DETAILS] Metabase returned a non-CSV (JSON) body, likely a query error: ${detail}`);
+  }
+
+  const parser = parseCsvStream({
+    columns: true, skip_empty_lines: true, bom: true,
+    relax_quotes: true, relax_column_count: true,
+  });
+  const nodeStream = Readable.fromWeb(res.body);
+  // .pipe does not forward source errors to the parser — bridge them so a failed
+  // download rejects the for-await loop instead of hanging.
+  nodeStream.on("error", (e) => parser.destroy(e));
+  nodeStream.pipe(parser);
+
+  let firstLogged = false;
+  for await (const row of parser) {
+    const id = row["dealerVinId"];
+    if (!id) continue;   // skip rows with no PK (matches the old dedup's skip)
+    if (!firstLogged) {
+      console.log("[sync:VIN_DETAILS] sample row keys:", Object.keys(row), "| has_photos sample:", row.has_photos, "| output_image_count sample:", row.output_image_count);
+      firstLogged = true;
+    }
+    cols.vins.push(row.vinName ?? "");
+    cols.dealerVinIds.push(id);
+    cols.enterpriseIds.push(row.enterpriseId ?? "");
+    cols.rooftopIds.push(String(row.teamId ?? ""));
+    cols.statuses.push(row.status ?? "");
+    cols.after24hs.push(cleanAfter24(row.after_24_hrs ?? row.after_24hrs ?? null));
+    cols.receivedAts.push(cleanDate(row.receivedAt));
+    cols.processedAts.push(cleanDate(row.sentAt));
+    cols.reasonBuckets.push(row.reason_bucket ?? "");
+    cols.holdReasons.push(row.hold_reason ?? "");
+    cols.hasPhotosArr.push(cleanAfter24(row.has_photos ?? null));
+    cols.outputImageCounts.push(num(row.output_image_count));
+    cols.thumbnailUrls.push(txt(row.thumbnail_url));
+    cols.vdpUrls.push(txt(row.vdp_url));
+    cols.vehiclePrices.push(num(row.sellingPrice) ?? num(row.vehicle_price));
+    cols.makes.push(txt(row.make));
+    cols.models.push(txt(row.model));
+    cols.years.push(row.year == null || row.year === "" ? null : String(row.year));
+    cols.trims.push(txt(row.trim));
+    cols.stockNumbers.push(txt(row.stockNumber));
+    cols.vinScores.push(num(row.vin_score));
+    cols.vinCreations.push(cleanDate(row.vinCreation));
+    cols.conditions.push(txt(row.condition));
+    cols.platforms.push(txt(row.platform));
+    // is_publishing / is_qc_on are 0/1 flags emitted by the expanded VIN card.
+    // Older cards omit them → null (treated as publishing-ON downstream via COALESCE).
+    cols.isPublishings.push(cleanAfter24(row.is_publishing ?? null));
+    cols.isQcOns.push(cleanAfter24(row.is_qc_on ?? null));
+    cols.statusOveralls.push(txt(row.status_overallStatus));
+    cols.syncedAts.push(syncedAt);
+    if (++inBatch >= BATCH_SIZE) await flush();
+  }
+  await flush();   // final partial batch
+
   // Step 3: Sanity guard — never swap an obviously-truncated pull over good data.
-  // A clean cut at a line boundary parses fine but drops rows; this catches it.
+  // Compare DISTINCT staged keys (post-dedup count) against the live row count.
+  const { rows: stagedRows } = await query("SELECT COUNT(DISTINCT dealer_vin_id)::int AS n FROM vins_staging");
+  const stagedDistinct = stagedRows[0]?.n ?? 0;
   const { rows: liveRows } = await query("SELECT count(*)::int AS n FROM vins");
   const liveCount = liveRows[0]?.n ?? 0;
-  if (liveCount > 0 && deduped.length < liveCount * 0.8) {
-    throw new Error(`[sync:VIN_DETAILS] aborting swap — suspected truncation: staged ${deduped.length} rows vs live ${liveCount}`);
+  if (liveCount > 0 && stagedDistinct < liveCount * 0.8) {
+    throw new Error(`[sync:VIN_DETAILS] aborting swap — suspected truncation: staged ${stagedDistinct} distinct vs live ${liveCount}`);
   }
 
   // Step 4: Atomic swap. The materialized views depend on the `vins` table OID, so
   // we keep its identity (DELETE+INSERT in one transaction) instead of renaming.
   // Readers see the previous snapshot until COMMIT — never an empty/partial table.
+  // DISTINCT ON dedups by dealer_vin_id (PK); ctid DESC keeps the last-streamed row
+  // per key, matching the old "last occurrence wins" map dedup.
   const swapClient = await getClient();
   try {
     await swapClient.query("BEGIN");
     await swapClient.query("SET LOCAL statement_timeout = 0");
     await swapClient.query("DELETE FROM vins");
-    await swapClient.query(`INSERT INTO vins (${VIN_COLUMNS}) SELECT ${VIN_COLUMNS} FROM vins_staging`);
+    await swapClient.query(`INSERT INTO vins (${VIN_COLUMNS})
+       SELECT DISTINCT ON (dealer_vin_id) ${VIN_COLUMNS}
+       FROM vins_staging
+       WHERE dealer_vin_id IS NOT NULL
+       ORDER BY dealer_vin_id, ctid DESC`);
     await swapClient.query("COMMIT");
   } catch (e) {
     await swapClient.query("ROLLBACK");
@@ -280,7 +324,7 @@ async function syncVins() {
   }
 
   await query("TRUNCATE vins_staging").catch(() => {});
-  console.log(`[sync:VIN_DETAILS] done — ${deduped.length} rows`);
+  console.log(`[sync:VIN_DETAILS] done — ${stagedDistinct} rows (${staged} streamed)`);
 }
 
 async function syncRooftops() {
