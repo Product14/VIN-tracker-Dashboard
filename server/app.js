@@ -489,8 +489,15 @@ async function runSync() {
       `);
       // Refresh materialized views with new vins data, then precompute
       // filter-options cache so GET /api/filter-options is a trivial lookup.
-      await query(`REFRESH MATERIALIZED VIEW CONCURRENTLY v_by_rooftop`);
-      await query(`REFRESH MATERIALIZED VIEW CONCURRENTLY v_by_enterprise`);
+      // The vins swap above already committed, so a transient MV error (e.g. a
+      // lingering old-deploy instance dropping the view mid-rollover) must not
+      // fail the whole sync — log and let the next refresh/cold start recover.
+      try {
+        await query(`REFRESH MATERIALIZED VIEW CONCURRENTLY v_by_rooftop`);
+        await query(`REFRESH MATERIALIZED VIEW CONCURRENTLY v_by_enterprise`);
+      } catch (e) {
+        console.error(`[sync] MV refresh failed (vins swap already committed; recovers on next refresh):`, e?.message);
+      }
       try {
         const filterPayload = await computeFilterOptions();
         await upsertFilterCache(filterPayload);

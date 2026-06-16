@@ -230,16 +230,20 @@ export async function initSchema() {
       WHERE status IN ('skipped', 'error');
   `);
 
-  // Materialized views — dropped and recreated on every cold start so schema changes
-  // (column additions, reorders) are always picked up automatically.
+  // Materialized views — created once (idempotent) and then LEFT IN PLACE.
   //
-  // Migration note: on first deploy, v_by_rooftop / v_by_enterprise may still be
-  // regular views. DROP VIEW silently fails if they're already materialized views
-  // (different object type), so we catch the error and fall through to the
-  // DROP MATERIALIZED VIEW which handles the post-migration case.
+  // We deliberately do NOT drop+recreate on every cold start. In serverless,
+  // many instances cold-start concurrently; an unconditional DROP+CREATE races
+  // a refresh/read on another instance against the drop→create gap and surfaces
+  // "relation v_by_rooftop does not exist" (worse at 3x volume, where CREATE is
+  // slower). CREATE ... IF NOT EXISTS is a no-op once they exist, so there's no
+  // gap. A future definition change must drop the MV explicitly (a migration that
+  // runs DROP MATERIALIZED VIEW) so the CREATE ... IF NOT EXISTS below rebuilds it.
+  //
+  // Legacy cleanup: older deploys had these as regular VIEWs. DROP VIEW IF EXISTS
+  // is a caught no-op when they're already materialized.
   await pool.query(`DROP VIEW IF EXISTS v_totals, v_by_csm, v_by_type`).catch(() => {});
   await pool.query(`DROP VIEW IF EXISTS v_by_rooftop, v_by_enterprise`).catch(() => {});
-  await pool.query(`DROP MATERIALIZED VIEW IF EXISTS v_by_rooftop, v_by_enterprise`);
 
   // Pendency threshold: VIN counts as ">6h pending" when either it's still
   // unprocessed and was received more than 6 hours ago, or it was eventually
@@ -259,7 +263,7 @@ export async function initSchema() {
   )`;
 
   await pool.query(`
-    CREATE MATERIALIZED VIEW v_by_rooftop AS
+    CREATE MATERIALIZED VIEW IF NOT EXISTS v_by_rooftop AS
     SELECT
       v.rooftop_id,
       v.enterprise_id,
@@ -298,7 +302,7 @@ export async function initSchema() {
   `);
 
   await pool.query(`
-    CREATE MATERIALIZED VIEW v_by_enterprise AS
+    CREATE MATERIALIZED VIEW IF NOT EXISTS v_by_enterprise AS
     SELECT
       v.enterprise_id                       AS id,
       MAX(ed.name)                          AS name,
