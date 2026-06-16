@@ -75,6 +75,20 @@ async function fetchFromMetabase(url, label, retries = 3, timeoutMs = 0, format 
         const received = Buffer.byteLength(text);
         if (expected && received < expected)
           throw new Error(`truncated body: got ${received} of ${expected} bytes`);
+        // Metabase delivers query errors (timeouts, failed/expired cards) as a
+        // JSON body even on the CSV endpoint — and with a 2xx status, so the
+        // res.ok guard above doesn't catch it. A real CSV never starts with '{'
+        // or '['; detect that and surface Metabase's actual error instead of the
+        // cryptic CSV "Invalid Opening Quote: … value is {" parse failure.
+        const head = text.replace(/^\uFEFF/, "").trimStart();
+        if (head.startsWith("{") || head.startsWith("[")) {
+          let detail = head.slice(0, 300);
+          try {
+            const j = JSON.parse(head);
+            detail = j.error || j.message || j.status || detail;
+          } catch { /* not valid JSON either — keep the raw head */ }
+          throw new Error(`Metabase returned a non-CSV (JSON) body, likely a query error: ${detail}`);
+        }
         // columns:true → array of objects keyed by header (= the card's column
         // aliases). Strict parse: a truncated final record throws and retries.
         return parseCsv(text, { columns: true, skip_empty_lines: true, bom: true });
