@@ -279,8 +279,8 @@ const CHIP_STYLE = {
 // Desktop keeps the original fixed 3-column table (unchanged). The `kpi-cell`
 // class lets the media query flip the cells to full-width stacked blocks on
 // phones; desktop is never touched because that rule only fires ≤600px.
-const kpiCard = ({ title, marker, pill, graphic, body }) => `
-    <td class="kpi-cell" valign="top" width="33%" style="width:33%;background:#FFFFFF;border:1px solid #e7e9ee;border-radius:14px;padding:12px 14px;font-family:${FONT};">
+const kpiCard = ({ title, marker, pill, graphic, body, valign = "top" }) => `
+    <td class="kpi-cell" valign="${valign}" width="33%" style="width:33%;background:#FFFFFF;border:1px solid #e7e9ee;border-radius:14px;padding:12px 14px;font-family:${FONT};">
       <div style="text-align:center;font-size:11px;letter-spacing:0.7px;text-transform:uppercase;color:#5b6577;font-weight:700;line-height:1.3;">${title}${marker ? sup(marker) : ""}</div>
       <div style="text-align:center;padding:5px 0 0;">${pill}</div>
       <div style="padding:6px 0 2px;">${centerImg(graphic)}</div>
@@ -297,7 +297,7 @@ const subRow = (dotColor, label, marker, value) => `
 
 // Three KPI cards (Inventory donut + Time to Market gauge + Photo Score gauge).
 // Rendered byte-identically for the rooftop and the group reports.
-function buildKpiCardsRow({ inventoryByCondition, hasUnmarked, avgTtlDaysInventory, avgTatHrsInventory, avgScoreInventory, websiteScore }) {
+function buildKpiCardsRow({ inventoryByCondition, hasUnmarked, avgTtlDaysInventory, avgTatHrsInventory, avgScoreInventory, websiteScore, publishingOff = false }) {
   // ── Inventory card ──
   const ibc = inventoryByCondition || {
     withPhotos: { New: 0, Used: 0, Unmarked: 0 },
@@ -314,7 +314,9 @@ function buildKpiCardsRow({ inventoryByCondition, hasUnmarked, avgTtlDaysInvento
   const photographed = wpTotal + pdTotal;
   const pctDelivered = photographed > 0 ? Math.round((wpTotal / photographed) * 100) : 0;
   const invZone = photographed === 0 ? "n" : (pctDelivered >= 90 ? "g" : (pctDelivered >= 60 ? "a" : "r"));
-  const conds = hasUnmarked ? ["New", "Used", "Unmarked"] : ["New", "Used"];
+  let conds = hasUnmarked ? ["New", "Used", "Unmarked"] : ["New", "Used"];
+  // Publishing-OFF: condition isn't tracked (all NA) — drop the New/Used columns.
+  if (publishingOff) conds = conds.filter((c) => c === "Unmarked");
 
   const invChip = (val, kind) => {
     const st = val ? CHIP_STYLE[kind] : CHIP_STYLE.empty;
@@ -362,6 +364,21 @@ function buildKpiCardsRow({ inventoryByCondition, hasUnmarked, avgTtlDaysInvento
     body: subRow("#16a34a", "Spyne Processing Time", "†", sptVal),
   });
 
+  // ── Publishing-OFF variant: Spyne Processing Time gauge replaces Time to Market ──
+  // TTM (IMS entry → website publish) is meaningless when the rooftop isn't published.
+  // Gauge is hour-scaled: <12h green, 12–24h amber, 24h+ red. The "†" glossary entry stays.
+  const ptHrs  = avgTatHrsInventory;
+  const ptZone = ptHrs == null ? "n" : (ptHrs < 12 ? "g" : (ptHrs < 24 ? "a" : "r"));
+  const ptCard = kpiCard({
+    title: "Spyne Processing Time",
+    marker: "†",
+    pill: zonePill(ptZone, { g: "Excellent", a: "Good", r: "Poor", n: "No data" }),
+    graphic: gaugeImg({ value: ptHrs, min: 0, max: 48, t1: 12, t2: 24, dir: "desc", center: formatTat(ptHrs), scale: "0h,12h,24h,48h" }, 150),
+    body: "",
+    valign: "middle",  // gauge vertically centered (card has no sub-row for publishing-off)
+  });
+  const middleCard = publishingOff ? ptCard : ttmCard;
+
   // ── Photo Score card ──
   const photoScore = avgScoreInventory;
   const scoreZone  = photoScore == null ? "n" : (photoScore >= 8 ? "g" : (photoScore >= 6 ? "a" : "r"));
@@ -376,31 +393,35 @@ function buildKpiCardsRow({ inventoryByCondition, hasUnmarked, avgTtlDaysInvento
   // Original fixed 3-column row (desktop unchanged). On mobile the media query
   // turns .kpi-cell into full-width blocks and hides the .kpi-gap spacers.
   const spacerCell = `<td class="kpi-gap" width="14" style="width:14px;min-width:14px;font-size:0;line-height:0;">&nbsp;</td>`;
-  return `<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;table-layout:fixed;"><tr>${inventoryCard}${spacerCell}${ttmCard}${spacerCell}${photoCard}</tr></table>`;
+  return `<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;table-layout:fixed;"><tr>${inventoryCard}${spacerCell}${middleCard}${spacerCell}${photoCard}</tr></table>`;
 }
 
 // Static Glossary card (4 entries; no Merchandising Score). Shared by both reports.
-function buildGlossaryCard() {
+function buildGlossaryCard(publishingOff = false) {
   const glossItem = (marker, title, desc, ideal) => `
     <td valign="top" width="50%" style="width:50%;padding:8px 10px;font-family:${FONT};">
       <div style="font-size:11.5px;font-weight:700;color:#0c1322;letter-spacing:-0.1px;">${title}${sup(marker)}</div>
       <div style="font-size:10.5px;color:#98a0ad;line-height:1.4;margin-top:2px;">${desc}</div>
       <div style="font-size:10px;color:#5b6577;line-height:1.4;margin-top:3px;"><b style="font-weight:700;">Ideal:</b> ${ideal}</div>
     </td>`;
+  // Time to Market is omitted for publishing-OFF reports (it isn't shown there).
+  const items = [];
+  if (!publishingOff) items.push(glossItem("*", "Time to Market (TTM)", "Days from IMS/DMS entry to photos published.", "&lt; 5d"));
+  items.push(glossItem("†", "Spyne Processing Time (PT)",  "Spyne turnaround from photo capture to publish.", "&lt; 6h"));
+  items.push(glossItem("‡", "Photo Score",   "Photo quality 0&ndash;10. Dealers at 8+ sell 2&times; faster.", "8+"));
+  items.push(glossItem("§", "Website Score", "Listing quality based on consistency, background, hero angle, etc. Scored 0&ndash;10.", "8+"));
+  const emptyCell = `<td width="50%" style="width:50%;"></td>`;
+  let glossRows = "";
+  for (let i = 0; i < items.length; i += 2) {
+    glossRows += `<tr>${items[i]}${items[i + 1] || emptyCell}</tr>`;
+  }
   return `
     <tr><td style="height:14px;font-size:0;line-height:0;">&nbsp;</td></tr>
     <tr>
       <td style="background:#FFFFFF;border:1px solid #e7e9ee;border-radius:14px;padding:12px 14px 14px;">
         <div style="font-size:11px;letter-spacing:0.8px;text-transform:uppercase;color:#5b6577;font-weight:600;font-family:${FONT};margin-bottom:4px;">Glossary &middot; How to read this report</div>
         <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;table-layout:fixed;">
-          <tr>
-            ${glossItem("*", "Time to Market (TTM)",        "Days from IMS/DMS entry to photos published.", "&lt; 5d")}
-            ${glossItem("†", "Spyne Processing Time (PT)",  "Spyne turnaround from photo capture to publish.", "&lt; 6h")}
-          </tr>
-          <tr>
-            ${glossItem("‡", "Photo Score",   "Photo quality 0&ndash;10. Dealers at 8+ sell 2&times; faster.", "8+")}
-            ${glossItem("§", "Website Score", "Listing quality based on consistency, background, hero angle, etc. Scored 0&ndash;10.", "8+")}
-          </tr>
+          ${glossRows}
         </table>
       </td>
     </tr>`;
@@ -429,7 +450,7 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
       ? `https://console.spyne.ai/inventory/v2/listings/${dealerVinId}?enterprise_id=${enterpriseId || ""}${rooftopId ? `&team_id=${rooftopId}` : ""}`
       : null;
 
-  const cardsRow = buildKpiCardsRow({ inventoryByCondition, hasUnmarked, avgTtlDaysInventory, avgTatHrsInventory, avgScoreInventory, websiteScore });
+  const cardsRow = buildKpiCardsRow({ inventoryByCondition, hasUnmarked, avgTtlDaysInventory, avgTatHrsInventory, avgScoreInventory, websiteScore, publishingOff: data.publishingOff });
 
   // ── Recent Vehicles rows ─────────────────────────────────────────────────────
   const recentRowsHtml = recentVins.length === 0
@@ -486,7 +507,7 @@ export function buildRooftopReportHtml(data, dateLabel, timezone = "America/New_
   });
 
   // ── Glossary card ───────────────────────────────────────────────────────────
-  const glossaryHtml = buildGlossaryCard();
+  const glossaryHtml = buildGlossaryCard(data.publishingOff);
 
   // ── Full HTML ─────────────────────────────────────────────────────────────
   // Email-safe: 100% inline styles, table-based layout, hosted images for the
@@ -618,8 +639,10 @@ ${RESPONSIVE_STYLE}
 // Time. The NA column appears only when null-condition VINs exist (hasUnmarked).
 // Pending VINs are intentionally not charted here, so the chips need not sum to
 // Total. Lists every rooftop in the enterprise (ordered by inventory size).
-function buildByLocationTable(inventoryByRooftop, hasUnmarked, { enterpriseId, allImsIntegrated }) {
-  const conds = hasUnmarked ? ["New", "Used", "Unmarked"] : ["New", "Used"];
+function buildByLocationTable(inventoryByRooftop, hasUnmarked, { enterpriseId, allImsIntegrated, publishingOff = false }) {
+  let conds = hasUnmarked ? ["New", "Used", "Unmarked"] : ["New", "Used"];
+  // Publishing-OFF: condition isn't tracked (all NA) — drop the New/Used columns.
+  if (publishingOff) conds = conds.filter((c) => c === "Unmarked");
   const condHeader = (c) => (c === "Unmarked" ? "NA" : c);
   const enterpriseConsoleUrl = `https://console.spyne.ai/inventory/v2/listings?enterprise_id=${enterpriseId}`;
 
@@ -662,13 +685,23 @@ function buildByLocationTable(inventoryByRooftop, hasUnmarked, { enterpriseId, a
   // the slack into Location, leaving a large dead gap before the data. Giving
   // every column a share (and a narrower Location when there's no NA column)
   // keeps the row balanced regardless of name length or NA presence.
-  const colgroupHtml =
-    `<col style="width:${hasUnmarked ? "32%" : "39%"};" />` +                              // Location (widened — short TTM/PT headers free the space)
-    `<col style="width:${hasUnmarked ? "10%" : "11%"};" />` +                              // Total
-    conds.map(() => `<col style="width:${hasUnmarked ? "12%" : "14%"};" />`).join("") +    // New / Used / NA
-    `<col style="width:11%;" />` +                                                          // TTM
-    `<col style="width:11%;" />`;                                                           // PT
-  const ncols = conds.length + 4;
+  let colgroupHtml;
+  if (publishingOff) {
+    // publishing-off: Location, Total, [NA], PT — New/Used and TTM removed
+    colgroupHtml =
+      `<col style="width:54%;" />` +                                                        // Location
+      `<col style="width:14%;" />` +                                                        // Total
+      conds.map(() => `<col style="width:16%;" />`).join("") +                              // NA
+      `<col style="width:16%;" />`;                                                          // PT
+  } else {
+    colgroupHtml =
+      `<col style="width:${hasUnmarked ? "32%" : "39%"};" />` +                              // Location
+      `<col style="width:${hasUnmarked ? "10%" : "11%"};" />` +                              // Total
+      conds.map(() => `<col style="width:${hasUnmarked ? "12%" : "14%"};" />`).join("") +    // New / Used / NA
+      `<col style="width:11%;" />` +                                                          // TTM
+      `<col style="width:11%;" />`;                                                           // PT
+  }
+  const ncols = conds.length + (publishingOff ? 3 : 4);
 
   const rows = !inventoryByRooftop || inventoryByRooftop.length === 0
     ? `<tr><td colspan="${ncols}" style="padding:20px 0;text-align:center;font-size:12px;color:#9CA3AF;font-family:${FONT};">No inventory data available.</td></tr>`
@@ -687,7 +720,7 @@ function buildByLocationTable(inventoryByRooftop, hasUnmarked, { enterpriseId, a
           </td>
           <td class="byloc-cell" align="center" style="padding:9px 4px;border-top:1px solid #e7e9ee;vertical-align:middle;">${totalChip(rowTotal)}</td>
           ${condCells}
-          <td class="byloc-cell" align="center" style="padding:9px 4px;border-top:1px solid #e7e9ee;vertical-align:middle;white-space:nowrap;">${ttmChip(r.ttlDays)}</td>
+          ${publishingOff ? "" : `<td class="byloc-cell" align="center" style="padding:9px 4px;border-top:1px solid #e7e9ee;vertical-align:middle;white-space:nowrap;">${ttmChip(r.ttlDays)}</td>`}
           <td class="byloc-cell" align="center" style="padding:9px 0 9px 4px;border-top:1px solid #e7e9ee;vertical-align:middle;white-space:nowrap;">${spyneChip(r.avg_ttd_hrs)}</td>
         </tr>`;
       }).join("\n");
@@ -712,7 +745,7 @@ function buildByLocationTable(inventoryByRooftop, hasUnmarked, { enterpriseId, a
               <td class="byloc-hdr" style="${HCELL}text-align:left;">Location</td>
               <td class="byloc-hdr" align="center" style="${HCELL}text-align:center;">Total</td>
               ${condHeaderCells}
-              <td class="byloc-hdr" align="center" style="${HCELL}text-align:center;">TTM</td>
+              ${publishingOff ? "" : `<td class="byloc-hdr" align="center" style="${HCELL}text-align:center;">TTM</td>`}
               <td class="byloc-hdr" align="center" style="${HCELL}text-align:center;">PT</td>
             </tr>
           </thead>
@@ -739,9 +772,9 @@ export function buildGroupReportHtml(data, dateLabel) {
 
   const enterpriseConsoleUrl = `https://console.spyne.ai/inventory/v2/listings?enterprise_id=${enterpriseId}`;
 
-  const cardsRow        = buildKpiCardsRow({ inventoryByCondition, hasUnmarked, avgTtlDaysInventory, avgTatHrsInventory, avgScoreInventory, websiteScore });
-  const byLocationTable = buildByLocationTable(inventoryByRooftop, hasUnmarked, { enterpriseId, allImsIntegrated });
-  const glossaryHtml    = buildGlossaryCard();
+  const cardsRow        = buildKpiCardsRow({ inventoryByCondition, hasUnmarked, avgTtlDaysInventory, avgTatHrsInventory, avgScoreInventory, websiteScore, publishingOff: data.publishingOff });
+  const byLocationTable = buildByLocationTable(inventoryByRooftop, hasUnmarked, { enterpriseId, allImsIntegrated, publishingOff: data.publishingOff });
+  const glossaryHtml    = buildGlossaryCard(data.publishingOff);
 
   // ── Full HTML ─────────────────────────────────────────────────────────────
   return `<!doctype html>

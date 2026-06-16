@@ -80,8 +80,17 @@ async function fetchFromMetabase(url, label, retries = 3, timeoutMs = 0, format 
         if (expected && received < expected)
           throw new Error(`truncated body: got ${received} of ${expected} bytes`);
         // columns:true → array of objects keyed by header (= the card's column
-        // aliases). Strict parse: a truncated final record throws and retries.
-        return parseCsv(text, { columns: true, skip_empty_lines: true, bom: true });
+        // aliases). relax_quotes/relax_column_count tolerate dirty source values
+        // (e.g. a stray " inside a vdp_url) instead of aborting the whole pull;
+        // the content-length check above + the row-count sanity guard in syncVins
+        // still catch genuine truncation.
+        return parseCsv(text, {
+          columns: true,
+          skip_empty_lines: true,
+          bom: true,
+          relax_quotes: true,
+          relax_column_count: true,
+        });
       }
 
       const json = await res.json();
@@ -111,7 +120,7 @@ async function fetchFromMetabase(url, label, retries = 3, timeoutMs = 0, format 
 const VIN_COLUMNS = `dealer_vin_id, vin, enterprise_id, rooftop_id, status, after_24h, received_at, processed_at,
        reason_bucket, hold_reason, has_photos, output_image_count, thumbnail_url, vdp_url, vehicle_price,
        make, model, year, trim, stock_number, vin_score, synced_at, vin_creation, condition, platform,
-       is_publishing, is_qc_on`;
+       is_publishing, is_qc_on, status_overall_status`;
 
 async function syncVins() {
   console.log("[sync:VIN_DETAILS] fetching (CSV)…");
@@ -136,7 +145,7 @@ async function syncVins() {
   const reasonBuckets = [], holdReasons = [], hasPhotosArr = [];
   const outputImageCounts = [], thumbnailUrls = [], vdpUrls = [], vehiclePrices = [], syncedAts = [];
   const makes = [], models = [], years = [], trims = [], stockNumbers = [], vinScores = [], vinCreations = [], conditions = [], platforms = [];
-  const isPublishings = [], isQcOns = [];
+  const isPublishings = [], isQcOns = [], statusOveralls = [];
 
   for (const row of deduped) {
     vins.push(row.vinName ?? "");
@@ -167,6 +176,7 @@ async function syncVins() {
     // Older cards omit them → null (treated as publishing-ON downstream via COALESCE).
     isPublishings.push(cleanAfter24(row.is_publishing ?? null));
     isQcOns.push(cleanAfter24(row.is_qc_on ?? null));
+    statusOveralls.push(txt(row.status_overallStatus));
     syncedAts.push(syncedAt);
   }
 
@@ -197,7 +207,8 @@ async function syncVins() {
       UNNEST($16::text[]),   UNNEST($17::text[]),   UNNEST($18::text[]),    UNNEST($19::text[]),
       UNNEST($20::text[]),   UNNEST($21::real[]),   UNNEST($22::text[]),    UNNEST($23::text[]),
       UNNEST($24::text[]),   UNNEST($25::text[]),
-      UNNEST($26::smallint[]), UNNEST($27::smallint[])
+      UNNEST($26::smallint[]), UNNEST($27::smallint[]),
+      UNNEST($28::text[])
   `;
 
   const batchStarts = [];
@@ -220,6 +231,7 @@ async function syncVins() {
           slice(stockNumbers), slice(vinScores), slice(syncedAts), slice(vinCreations),
           slice(conditions), slice(platforms),
           slice(isPublishings), slice(isQcOns),
+          slice(statusOveralls),
         ]);
         console.log(`[sync:VIN_DETAILS] staged batch ${batchNum} (rows ${i + 1}–${Math.min(i + BATCH_SIZE, deduped.length)})`);
       } finally {
@@ -702,12 +714,33 @@ function getDateCondition(dateFilter, alias = '') {
   return null;
 }
 
+// Returns a SQL condition string for the global publishing scope, or null for "all".
+// NULL is_publishing (legacy / pre-swap data) is treated as publishing-ON via COALESCE.
+function getPublishingCondition(publishing, alias = '') {
+  const col = alias ? `COALESCE(${alias}.is_publishing, 1)` : 'COALESCE(is_publishing, 1)';
+  if (publishing === 'on')  return `${col} = 1`;
+  if (publishing === 'off') return `${col} = 0`;
+  return null;
+}
+
+// Business exclusion: VINs from enterprise f57d27acb whose overall status is FAILED
+// are treated as noise and hidden from ALL dashboard reads (summary, rooftop,
+// enterprise, VIN data, and the materialized views). Always on — not user-toggleable.
+// NOTE: deliberately NOT applied to the emailers (computeRooftopDailyReport /
+// computeGroupDailyReport) yet — that's deferred to the publishing-off emailer setup.
+function getExcludedVinsPredicate(alias = 'v') {
+  const a = alias ? `${alias}.` : '';
+  return `NOT (${a}enterprise_id = 'f57d27acb' AND ${a}status_overall_status = 'FAILED')`;
+}
+
 // Returns { prefix, from } for the rooftop aggregation source.
 // Joins report_history CTE (last 7 report days from snapshot) per rooftop for display columns.
-function buildRooftopSource(dateFilter) {
+function buildRooftopSource(dateFilter, publishing) {
   const dc = getDateCondition(dateFilter, 'v');
+  const pc = getPublishingCondition(publishing, 'v');
+  const scope = [dc, pc].filter(Boolean);
   let invCte = '', invSource;
-  if (dc) {
+  if (scope.length) {
     invCte = `rt AS (
       SELECT
         v.rooftop_id,
@@ -741,7 +774,7 @@ function buildRooftopSource(dateFilter) {
       FROM vins v
       LEFT JOIN rooftop_details rd ON v.rooftop_id = rd.team_id
       LEFT JOIN enterprise_details ed ON v.enterprise_id = ed.enterprise_id
-      WHERE ${dc}
+      WHERE ${[...scope, getExcludedVinsPredicate('v')].join(' AND ')}
       GROUP BY v.rooftop_id, v.enterprise_id
     ),
     `;
@@ -785,10 +818,12 @@ function buildRooftopSource(dateFilter) {
 // Returns { prefix, from } for the enterprise aggregation source.
 // Always embeds ENTERPRISE_STATUS_CTES so report_status is a real column
 // available for SQL-level filtering and sorting.
-function buildEnterpriseSource(dateFilter) {
+function buildEnterpriseSource(dateFilter, publishing) {
   const dc = getDateCondition(dateFilter, 'v');
+  const pc = getPublishingCondition(publishing, 'v');
+  const scope = [dc, pc].filter(Boolean);
   let invCte = '', invSource;
-  if (dc) {
+  if (scope.length) {
     invCte = `et AS (
       SELECT
         v.enterprise_id                       AS id,
@@ -823,7 +858,7 @@ function buildEnterpriseSource(dateFilter) {
       FROM vins v
       LEFT JOIN enterprise_details ed ON v.enterprise_id = ed.enterprise_id
       LEFT JOIN rooftop_details rd    ON v.rooftop_id = rd.team_id
-      WHERE ${dc}
+      WHERE ${[...scope, getExcludedVinsPredicate('v')].join(' AND ')}
       GROUP BY v.enterprise_id
     ),
     `;
@@ -968,6 +1003,8 @@ function buildVinFilters(queryParams) {
   // Publishing scope (per-VIN is_publishing; NULL on legacy data treated as ON).
   if (publishing === "on"  || publishing === "1") conditions.push("COALESCE(v.is_publishing, 1) = 1");
   if (publishing === "off" || publishing === "0") conditions.push("COALESCE(v.is_publishing, 1) = 0");
+  // Always-on business exclusion (see getExcludedVinsPredicate).
+  conditions.push(getExcludedVinsPredicate('v'));
 
   return { where: conditions.length ? `WHERE ${conditions.join(" AND ")}` : "", params };
 }
@@ -1011,9 +1048,11 @@ app.post("/api/sync", async (_req, res) => {
 // Called at the end of each sync (to precompute all 3 variants) and as a
 // fallback in GET /api/summary when the cache is empty (first deploy).
 
-async function computeSummary(dateFilter) {
+async function computeSummary(dateFilter, publishing) {
   const dc = getDateCondition(dateFilter);
-  const statsWhere = dc ? `WHERE ${dc}` : '';
+  const pc = getPublishingCondition(publishing);
+  const scope = [dc, pc, getExcludedVinsPredicate('v')].filter(Boolean);
+  const statsWhere = scope.length ? `WHERE ${scope.join(' AND ')}` : '';
   const { rows } = await query(`
     WITH
       meta AS (
@@ -1252,6 +1291,13 @@ async function upsertSummaryCache(dateFilter, payload) {
 
 app.get("/api/summary", async (req, res) => {
   const dateFilter = req.query.dateFilter ?? null;
+  const publishing = req.query.publishing ?? null;
+  // Publishing-scoped summaries (on/off) are computed fresh, not cached: the sync
+  // only precomputes the default all-publishing variants, so a cached on/off
+  // payload would go stale after the next sync.
+  if (publishing === 'on' || publishing === 'off') {
+    return res.json(await computeSummary(dateFilter, publishing));
+  }
   const cacheKey   = dateFilter ?? 'all';
   const { rows } = await query(
     'SELECT payload FROM summary_cache WHERE date_filter = $1',
@@ -1509,7 +1555,7 @@ app.get("/api/rooftops", async (req, res) => {
   const pageSize = Math.min(500, Math.max(10, parseInt(req.query.pageSize) || 50));
   const offset   = (page - 1) * pageSize;
 
-  const { prefix, from } = buildRooftopSource(req.query.dateFilter);
+  const { prefix, from } = buildRooftopSource(req.query.dateFilter, req.query.publishing);
   const { where, params } = buildRooftopFilters(req.query);
   const sortCol = ROOFTOP_SORT_MAP[req.query.sortBy] ?? "not_processed_after_24h";
   const sortDir = req.query.sortDir === "asc" ? "ASC" : "DESC";
@@ -1531,7 +1577,7 @@ app.get("/api/rooftops", async (req, res) => {
 });
 
 app.get("/api/rooftops/export", async (req, res) => {
-  const { prefix, from } = buildRooftopSource(req.query.dateFilter);
+  const { prefix, from } = buildRooftopSource(req.query.dateFilter, req.query.publishing);
   const { where, params } = buildRooftopFilters(req.query);
   const sortCol = ROOFTOP_SORT_MAP[req.query.sortBy] ?? "not_processed_after_24h";
   const sortDir = req.query.sortDir === "asc" ? "ASC" : "DESC";
@@ -1733,7 +1779,7 @@ app.get("/api/enterprises", async (req, res) => {
   const pageSize = Math.min(500, Math.max(10, parseInt(req.query.pageSize) || 50));
   const offset   = (page - 1) * pageSize;
 
-  const { prefix, from } = buildEnterpriseSource(req.query.dateFilter);
+  const { prefix, from } = buildEnterpriseSource(req.query.dateFilter, req.query.publishing);
   const { where, params } = buildEnterpriseFilters(req.query);
   const sortCol = ENTERPRISE_SORT_MAP[req.query.sortBy] ?? "not_processed_after_24h";
   const sortDir = req.query.sortDir === "asc" ? "ASC" : "DESC";
@@ -1755,7 +1801,7 @@ app.get("/api/enterprises", async (req, res) => {
 });
 
 app.get("/api/enterprises/export", async (req, res) => {
-  const { prefix, from } = buildEnterpriseSource(req.query.dateFilter);
+  const { prefix, from } = buildEnterpriseSource(req.query.dateFilter, req.query.publishing);
   const { where, params } = buildEnterpriseFilters(req.query);
   const sortCol = ENTERPRISE_SORT_MAP[req.query.sortBy] ?? "not_processed_after_24h";
   const sortDir = req.query.sortDir === "asc" ? "ASC" : "DESC";
@@ -1879,7 +1925,7 @@ async function computeRooftopDailyReport(rooftopId, yesterday, timezone = "Ameri
       ROUND(AVG(vin_score) FILTER (WHERE status = 'Delivered' AND COALESCE(has_photos, 0) = 1 AND DATE(received_at::timestamptz AT TIME ZONE $3) = $2::date
                                      AND vin_score IS NOT NULL)::numeric, 1) AS avg_score_yday
     FROM vins
-    WHERE rooftop_id = $1
+    WHERE rooftop_id = $1 AND ${getExcludedVinsPredicate('')}
   `, [rooftopId, yesterday, timezone]);
 
   // Detect IMS integration if not explicitly provided
@@ -1894,6 +1940,14 @@ async function computeRooftopDailyReport(rooftopId, yesterday, timezone = "Ameri
   const { rows: [rooftop] } = await query(`
     SELECT team_name, enterprise_id, website_score FROM rooftop_details WHERE team_id = $1
   `, [rooftopId]);
+
+  // Publishing-OFF rooftops get the Spyne-Processing-Time report variant (no TTM).
+  // Per-VIN is_publishing (NULL → ON). No VINs → treated as ON (publishingOff=false).
+  const { rows: [{ pub: rtPub } = {}] } = await query(
+    `SELECT MAX(COALESCE(is_publishing,1))::int AS pub FROM vins WHERE rooftop_id = $1`,
+    [rooftopId]
+  );
+  const publishingOff = rtPub === 0;
 
   // Delivered VINs published yesterday — per-VIN table (max 5 for email) + total count
   const [{ rows: processedVins }, { rows: [processedCount] }] = await Promise.all([
@@ -1915,7 +1969,7 @@ async function computeRooftopDailyReport(rooftopId, yesterday, timezone = "Ameri
           ::numeric, 2
         )                                                  AS ttd_hrs
       FROM vins
-      WHERE rooftop_id = $1
+      WHERE rooftop_id = $1 AND ${getExcludedVinsPredicate('')}
         AND status = 'Delivered'
         AND COALESCE(has_photos, 0) = 1
         AND DATE(received_at::timestamptz AT TIME ZONE $3) = $2::date
@@ -1925,7 +1979,7 @@ async function computeRooftopDailyReport(rooftopId, yesterday, timezone = "Ameri
     query(`
       SELECT COUNT(*)::int AS total
       FROM vins
-      WHERE rooftop_id = $1
+      WHERE rooftop_id = $1 AND ${getExcludedVinsPredicate('')}
         AND status = 'Delivered'
         AND COALESCE(has_photos, 0) = 1
         AND DATE(received_at::timestamptz AT TIME ZONE $3) = $2::date
@@ -1949,7 +2003,7 @@ async function computeRooftopDailyReport(rooftopId, yesterday, timezone = "Ameri
         received_at, processed_at,
         ROUND(EXTRACT(EPOCH FROM (processed_at::timestamptz - received_at::timestamptz)) / 3600.0 ::numeric, 2) AS ttd_hrs
       FROM vins
-      WHERE rooftop_id = $1
+      WHERE rooftop_id = $1 AND ${getExcludedVinsPredicate('')}
         AND status = 'Delivered'
         AND COALESCE(has_photos, 0) = 1
         AND processed_at IS NOT NULL
@@ -1962,7 +2016,7 @@ async function computeRooftopDailyReport(rooftopId, yesterday, timezone = "Ameri
     query(`
       SELECT COUNT(*)::int AS total
       FROM vins
-       WHERE rooftop_id = $1
+       WHERE rooftop_id = $1 AND ${getExcludedVinsPredicate('')}
          AND status = 'Delivered'
          AND COALESCE(has_photos, 0) = 1
          AND processed_at IS NOT NULL
@@ -1992,7 +2046,7 @@ async function computeRooftopDailyReport(rooftopId, yesterday, timezone = "Ameri
         received_at,
         EXTRACT(day FROM NOW() - received_at::timestamptz)::int AS days_on_lot
       FROM vins
-      WHERE rooftop_id = $1
+      WHERE rooftop_id = $1 AND ${getExcludedVinsPredicate('')}
         AND COALESCE(has_photos, 0) = 0
         AND (received_at IS NULL OR DATE(received_at::timestamptz AT TIME ZONE $3) <= $2::date)
       ORDER BY received_at ASC NULLS LAST
@@ -2005,7 +2059,7 @@ async function computeRooftopDailyReport(rooftopId, yesterday, timezone = "Ameri
     const { rows: [ageing] } = await query(`
       SELECT ROUND(AVG(EXTRACT(day FROM NOW() - received_at::timestamptz))::numeric, 0) AS avg_days
       FROM vins
-      WHERE rooftop_id = $1
+      WHERE rooftop_id = $1 AND ${getExcludedVinsPredicate('')}
         AND COALESCE(has_photos, 0) = 0
         AND received_at IS NOT NULL
         AND DATE(received_at::timestamptz AT TIME ZONE $3) <= $2::date
@@ -2025,7 +2079,8 @@ async function computeRooftopDailyReport(rooftopId, yesterday, timezone = "Ameri
           EXTRACT(EPOCH FROM (processed_at::timestamptz - vin_creation::timestamptz)) / 86400.0
         ) FILTER (WHERE status = 'Delivered' AND COALESCE(has_photos, 0) = 1
                     AND processed_at IS NOT NULL AND vin_creation IS NOT NULL
-                    AND processed_at::timestamptz >= vin_creation::timestamptz)::numeric, 4) AS avg_ttl_days_inv,
+                    AND processed_at::timestamptz >= vin_creation::timestamptz
+                  AND COALESCE(is_publishing,1)=1)::numeric, 4) AS avg_ttl_days_inv,
         ROUND(AVG(vin_score) FILTER (WHERE status = 'Delivered' AND COALESCE(has_photos, 0) = 1
                                        AND vin_score IS NOT NULL)::numeric, 1) AS avg_score_inv,
         ROUND(AVG(
@@ -2036,7 +2091,7 @@ async function computeRooftopDailyReport(rooftopId, yesterday, timezone = "Ameri
                     -- Spyne Processing Time only: VINs received from May 2026 onward
                     AND DATE(received_at::timestamptz AT TIME ZONE $3) >= '2026-05-01'::date)::numeric, 1) AS avg_ttd_hrs_inv
       FROM vins
-      WHERE rooftop_id = $1
+      WHERE rooftop_id = $1 AND ${getExcludedVinsPredicate('')}
         AND (received_at IS NULL OR DATE(received_at::timestamptz AT TIME ZONE $3) <= $2::date)
     `, [rooftopId, yesterday, timezone]);
 
@@ -2067,7 +2122,8 @@ async function computeRooftopDailyReport(rooftopId, yesterday, timezone = "Ameri
           EXTRACT(EPOCH FROM (processed_at::timestamptz - vin_creation::timestamptz)) / 86400.0
         ) FILTER (WHERE status = 'Delivered'
                     AND processed_at IS NOT NULL AND vin_creation IS NOT NULL
-                    AND processed_at::timestamptz >= vin_creation::timestamptz)::numeric, 4) AS avg_ttl_days_inv,
+                    AND processed_at::timestamptz >= vin_creation::timestamptz
+                  AND COALESCE(is_publishing,1)=1)::numeric, 4) AS avg_ttl_days_inv,
         ROUND(AVG(vin_score) FILTER (WHERE status = 'Delivered'
                                        AND vin_score IS NOT NULL)::numeric, 1) AS avg_score_inv,
         ROUND(AVG(
@@ -2078,7 +2134,7 @@ async function computeRooftopDailyReport(rooftopId, yesterday, timezone = "Ameri
                     -- Spyne Processing Time only: VINs received from May 2026 onward
                     AND DATE(received_at::timestamptz AT TIME ZONE $3) >= '2026-05-01'::date)::numeric, 1) AS avg_ttd_hrs_inv
       FROM vins
-      WHERE rooftop_id = $1
+      WHERE rooftop_id = $1 AND ${getExcludedVinsPredicate('')}
         AND COALESCE(has_photos, 0) = 1
         AND DATE(received_at::timestamptz AT TIME ZONE $3) <= $2::date
         AND DATE(received_at::timestamptz AT TIME ZONE $3) >= ($2::date - INTERVAL '90 days')
@@ -2096,7 +2152,7 @@ async function computeRooftopDailyReport(rooftopId, yesterday, timezone = "Ameri
     // No-photos count (always shown regardless of IMS status, per design spec)
     const { rows: [noPhotos] } = await query(`
       SELECT COUNT(*)::int AS total FROM vins
-       WHERE rooftop_id = $1
+       WHERE rooftop_id = $1 AND ${getExcludedVinsPredicate('')}
          AND COALESCE(has_photos, 0) = 0
     `, [rooftopId]);
     noImagesTotal = Number(noPhotos.total) || 0;
@@ -2120,7 +2176,7 @@ async function computeRooftopDailyReport(rooftopId, yesterday, timezone = "Ameri
       COUNT(*) FILTER (WHERE COALESCE(has_photos, 0) = 1 AND status != 'Delivered')  AS pending,
       COUNT(*) FILTER (WHERE COALESCE(has_photos, 0) = 0)                            AS no_photos
     FROM vins
-    WHERE rooftop_id = $1
+    WHERE rooftop_id = $1 AND ${getExcludedVinsPredicate('')}
       AND ${condCohort}
     GROUP BY 1
   `, [rooftopId, yesterday, timezone]);
@@ -2147,6 +2203,7 @@ async function computeRooftopDailyReport(rooftopId, yesterday, timezone = "Ameri
     rooftopName:     rooftop?.team_name ?? rooftopId,
     websiteScore:    rooftop?.website_score != null ? Number(rooftop.website_score) : null,
     imsOff,
+    publishingOff,
     // Yesterday KPIs
     newVins:         Number(kpi.new_vins)        || 0,
     vinsDelivered:   Number(kpi.vins_delivered)  || 0,
@@ -2208,7 +2265,7 @@ async function computeGroupDailyReport(enterpriseId, yesterday, timezone = "Amer
       ROUND(AVG(vin_score) FILTER (WHERE status='Delivered' AND COALESCE(has_photos,0)=1
                 AND vin_score IS NOT NULL)::numeric, 1)                                  AS avg_score_yday
     FROM vins
-    WHERE enterprise_id = $1
+    WHERE enterprise_id = $1 AND ${getExcludedVinsPredicate('')}
       AND COALESCE(has_photos, 0) = 1
       AND DATE(received_at::timestamptz AT TIME ZONE $3) = $2::date
   `, [enterpriseId, yesterday, timezone]);
@@ -2220,12 +2277,23 @@ async function computeGroupDailyReport(enterpriseId, yesterday, timezone = "Amer
       COUNT(*) FILTER (WHERE status != 'Delivered')       AS total_pending,
       COUNT(DISTINCT rooftop_id)                          AS rooftop_count
     FROM vins
-    WHERE enterprise_id = $1
+    WHERE enterprise_id = $1 AND ${getExcludedVinsPredicate('')}
   `, [enterpriseId]);
 
   const { rows: [enterprise] } = await query(`
     SELECT name FROM enterprise_details WHERE enterprise_id = $1
   `, [enterpriseId]);
+
+  // Publishing scope: a group gets the Spyne-Processing-Time variant only when ALL its
+  // rooftops are publishing-off. The TTM metric below is scoped to publishing-ON rooftops
+  // (no-op for pure-on groups; for mixed groups, off rooftops show "—" in the TTM column).
+  // Per-VIN is_publishing (NULL → ON).
+  const { rows: [{ on_rooftops: onRooftops } = {}] } = await query(
+    `SELECT COUNT(DISTINCT rooftop_id) FILTER (WHERE COALESCE(is_publishing,1)=1)::int AS on_rooftops
+       FROM vins WHERE enterprise_id = $1`,
+    [enterpriseId]
+  );
+  const publishingOff = (onRooftops || 0) === 0;
 
   // Top 5 rooftops by new VINs yesterday
   const { rows: topProcessed } = await query(`
@@ -2243,7 +2311,7 @@ async function computeGroupDailyReport(enterpriseId, yesterday, timezone = "Amer
                   AND DATE(v.processed_at::timestamptz AT TIME ZONE $3) = $2::date)::numeric, 1) AS avg_ttd_hrs
     FROM vins v
     LEFT JOIN rooftop_details rd ON v.rooftop_id = rd.team_id
-    WHERE v.enterprise_id = $1
+    WHERE v.enterprise_id = $1 AND ${getExcludedVinsPredicate('v')}
       AND COALESCE(v.has_photos, 0) = 1
       AND DATE(v.received_at::timestamptz AT TIME ZONE $3) = $2::date
     GROUP BY v.rooftop_id
@@ -2262,7 +2330,7 @@ async function computeGroupDailyReport(enterpriseId, yesterday, timezone = "Amer
       )::numeric, 1)                                         AS avg_days_on_lot
     FROM vins v
     LEFT JOIN rooftop_details rd ON v.rooftop_id = rd.team_id
-    WHERE v.enterprise_id = $1
+    WHERE v.enterprise_id = $1 AND ${getExcludedVinsPredicate('v')}
       AND COALESCE(v.has_photos, 0) = 0
     GROUP BY v.rooftop_id
     ORDER BY vin_count DESC
@@ -2297,7 +2365,7 @@ async function computeGroupDailyReport(enterpriseId, yesterday, timezone = "Amer
       )                                                                           AS ttd_hrs
     FROM vins v
     LEFT JOIN rooftop_details rd ON v.rooftop_id = rd.team_id
-    WHERE v.enterprise_id = $1
+    WHERE v.enterprise_id = $1 AND ${getExcludedVinsPredicate('v')}
       AND v.status = 'Delivered'
       AND COALESCE(v.has_photos, 0) = 1
       AND v.processed_at IS NOT NULL
@@ -2335,7 +2403,7 @@ async function computeGroupDailyReport(enterpriseId, yesterday, timezone = "Amer
         )                                                                           AS ttd_hrs
       FROM vins v
       LEFT JOIN rooftop_details rd ON v.rooftop_id = rd.team_id
-      WHERE v.enterprise_id = $1
+      WHERE v.enterprise_id = $1 AND ${getExcludedVinsPredicate('v')}
         AND v.status = 'Delivered'
         AND COALESCE(v.has_photos, 0) = 1
         AND v.processed_at IS NOT NULL
@@ -2370,7 +2438,8 @@ async function computeGroupDailyReport(enterpriseId, yesterday, timezone = "Amer
         ROUND(AVG(EXTRACT(EPOCH FROM (processed_at::timestamptz - vin_creation::timestamptz))/86400.0)
           FILTER (WHERE status='Delivered' AND COALESCE(has_photos,0)=1
                   AND vin_creation IS NOT NULL AND processed_at IS NOT NULL
-                  AND processed_at::timestamptz >= vin_creation::timestamptz)::numeric, 4) AS avg_ttl_days_inv,
+                  AND processed_at::timestamptz >= vin_creation::timestamptz
+                  AND COALESCE(is_publishing,1)=1)::numeric, 4) AS avg_ttl_days_inv,
         ROUND(AVG(vin_score) FILTER (WHERE status='Delivered' AND COALESCE(has_photos,0)=1
                   AND vin_score IS NOT NULL)::numeric, 1)                                AS avg_score_inv,
         ROUND(AVG(EXTRACT(EPOCH FROM (processed_at::timestamptz - received_at::timestamptz))/3600.0)
@@ -2380,7 +2449,7 @@ async function computeGroupDailyReport(enterpriseId, yesterday, timezone = "Amer
                   -- Spyne Processing Time only: VINs received from May 2026 onward
                   AND DATE(received_at::timestamptz AT TIME ZONE $3) >= '2026-05-01'::date)::numeric, 1) AS avg_ttd_hrs_inv
       FROM vins
-      WHERE enterprise_id = $1
+      WHERE enterprise_id = $1 AND ${getExcludedVinsPredicate('')}
         AND (received_at IS NULL OR DATE(received_at::timestamptz AT TIME ZONE $3) <= $2::date)
     `, [enterpriseId, yesterday, timezone]);
 
@@ -2414,7 +2483,8 @@ async function computeGroupDailyReport(enterpriseId, yesterday, timezone = "Amer
         ROUND(AVG(EXTRACT(EPOCH FROM (v.processed_at::timestamptz - v.vin_creation::timestamptz))/86400.0)
           FILTER (WHERE v.status='Delivered' AND COALESCE(v.has_photos,0)=1
                   AND v.vin_creation IS NOT NULL AND v.processed_at IS NOT NULL
-                  AND v.processed_at::timestamptz >= v.vin_creation::timestamptz)::numeric, 4) AS avg_ttl_days,
+                  AND v.processed_at::timestamptz >= v.vin_creation::timestamptz
+                  AND COALESCE(v.is_publishing,1)=1)::numeric, 4) AS avg_ttl_days,
         ROUND(AVG(EXTRACT(EPOCH FROM (v.processed_at::timestamptz - v.received_at::timestamptz))/3600.0)
           FILTER (WHERE v.status='Delivered' AND COALESCE(v.has_photos,0)=1
                   AND v.processed_at IS NOT NULL
@@ -2423,7 +2493,7 @@ async function computeGroupDailyReport(enterpriseId, yesterday, timezone = "Amer
                   AND DATE(v.received_at::timestamptz AT TIME ZONE $3) >= '2026-05-01'::date)::numeric, 1) AS avg_ttd_hrs
       FROM vins v
       LEFT JOIN rooftop_details rd ON v.rooftop_id = rd.team_id
-      WHERE v.enterprise_id = $1
+      WHERE v.enterprise_id = $1 AND ${getExcludedVinsPredicate('v')}
         AND (v.received_at IS NULL OR DATE(v.received_at::timestamptz AT TIME ZONE $3) <= $2::date)
       GROUP BY v.rooftop_id
       ORDER BY total_active DESC
@@ -2461,7 +2531,8 @@ async function computeGroupDailyReport(enterpriseId, yesterday, timezone = "Amer
         ROUND(AVG(EXTRACT(EPOCH FROM (processed_at::timestamptz - vin_creation::timestamptz))/86400.0)
           FILTER (WHERE status='Delivered' AND vin_creation IS NOT NULL
                   AND processed_at IS NOT NULL
-                  AND processed_at::timestamptz >= vin_creation::timestamptz)::numeric, 4) AS avg_ttl_days_inv,
+                  AND processed_at::timestamptz >= vin_creation::timestamptz
+                  AND COALESCE(is_publishing,1)=1)::numeric, 4) AS avg_ttl_days_inv,
         ROUND(AVG(vin_score) FILTER (WHERE status='Delivered'
                   AND vin_score IS NOT NULL)::numeric, 1)    AS avg_score_inv,
         ROUND(AVG(EXTRACT(EPOCH FROM (processed_at::timestamptz - received_at::timestamptz))/3600.0)
@@ -2471,7 +2542,7 @@ async function computeGroupDailyReport(enterpriseId, yesterday, timezone = "Amer
                   -- Spyne Processing Time only: VINs received from May 2026 onward
                   AND DATE(received_at::timestamptz AT TIME ZONE $3) >= '2026-05-01'::date)::numeric, 1) AS avg_ttd_hrs_inv
       FROM vins
-      WHERE enterprise_id = $1
+      WHERE enterprise_id = $1 AND ${getExcludedVinsPredicate('')}
         AND DATE(received_at::timestamptz AT TIME ZONE $3) <= $2::date
         AND DATE(received_at::timestamptz AT TIME ZONE $3) >= ($2::date - INTERVAL '90 days')
     `, [enterpriseId, yesterday, timezone]);
@@ -2503,7 +2574,8 @@ async function computeGroupDailyReport(enterpriseId, yesterday, timezone = "Amer
         ROUND(AVG(EXTRACT(EPOCH FROM (v.processed_at::timestamptz - v.vin_creation::timestamptz))/86400.0)
           FILTER (WHERE v.status='Delivered'
                   AND v.vin_creation IS NOT NULL AND v.processed_at IS NOT NULL
-                  AND v.processed_at::timestamptz >= v.vin_creation::timestamptz)::numeric, 4) AS avg_ttl_days,
+                  AND v.processed_at::timestamptz >= v.vin_creation::timestamptz
+                  AND COALESCE(v.is_publishing,1)=1)::numeric, 4) AS avg_ttl_days,
         ROUND(AVG(EXTRACT(EPOCH FROM (v.processed_at::timestamptz - v.received_at::timestamptz))/3600.0)
           FILTER (WHERE v.status='Delivered' AND COALESCE(v.has_photos,0)=1
                   AND v.processed_at IS NOT NULL
@@ -2512,7 +2584,7 @@ async function computeGroupDailyReport(enterpriseId, yesterday, timezone = "Amer
                   AND DATE(v.received_at::timestamptz AT TIME ZONE $3) >= '2026-05-01'::date)::numeric, 1) AS avg_ttd_hrs
       FROM vins v
       LEFT JOIN rooftop_details rd ON v.rooftop_id = rd.team_id
-      WHERE v.enterprise_id = $1
+      WHERE v.enterprise_id = $1 AND ${getExcludedVinsPredicate('v')}
         AND DATE(v.received_at::timestamptz AT TIME ZONE $3) <= $2::date
         AND DATE(v.received_at::timestamptz AT TIME ZONE $3) >= ($2::date - INTERVAL '90 days')
       GROUP BY v.rooftop_id
@@ -2556,7 +2628,7 @@ async function computeGroupDailyReport(enterpriseId, yesterday, timezone = "Amer
       COUNT(*) FILTER (WHERE COALESCE(has_photos, 0) = 1 AND status != 'Delivered')  AS pending,
       COUNT(*) FILTER (WHERE COALESCE(has_photos, 0) = 0)                            AS no_photos
     FROM vins
-    WHERE enterprise_id = $1
+    WHERE enterprise_id = $1 AND ${getExcludedVinsPredicate('')}
       AND ${condCohortGroup}
     GROUP BY 1
   `, [enterpriseId, yesterday, timezone]);
@@ -2603,7 +2675,7 @@ async function computeGroupDailyReport(enterpriseId, yesterday, timezone = "Amer
       EXTRACT(day FROM NOW() - v.received_at::timestamptz)::int AS days_on_lot
     FROM vins v
     LEFT JOIN rooftop_details rd ON rd.team_id = v.rooftop_id
-    WHERE v.enterprise_id = $1
+    WHERE v.enterprise_id = $1 AND ${getExcludedVinsPredicate('v')}
       AND COALESCE(v.has_photos, 0) = 0
       AND (v.received_at IS NULL OR DATE(v.received_at::timestamptz AT TIME ZONE $3) <= $2::date)
     ORDER BY v.received_at ASC NULLS LAST
@@ -2612,6 +2684,7 @@ async function computeGroupDailyReport(enterpriseId, yesterday, timezone = "Amer
 
   return {
     enterpriseId,
+    publishingOff,
     enterpriseName:  enterprise?.name ?? enterpriseId,
     rooftopCount:    Number(totals.rooftop_count) || 0,
     // Yesterday KPIs

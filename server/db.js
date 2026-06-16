@@ -41,6 +41,7 @@ export async function initSchema() {
       platform             TEXT,
       is_publishing        SMALLINT,
       is_qc_on             SMALLINT,
+      status_overall_status TEXT,
       synced_at            TEXT
     );
     ALTER TABLE vins ADD COLUMN IF NOT EXISTS hold_reason TEXT DEFAULT '';
@@ -62,6 +63,9 @@ export async function initSchema() {
     -- (publishing-on-only) data → treated as publishing-ON downstream via COALESCE.
     ALTER TABLE vins ADD COLUMN IF NOT EXISTS is_publishing SMALLINT;
     ALTER TABLE vins ADD COLUMN IF NOT EXISTS is_qc_on      SMALLINT;
+    -- Overall processing status from the VIN card (e.g. DONE) — distinct from the
+    -- delivery status column (Delivered / Not Delivered).
+    ALTER TABLE vins ADD COLUMN IF NOT EXISTS status_overall_status TEXT;
 
     -- Migration: swap PK from vin → dealer_vin_id on existing deployments.
     DO $$
@@ -289,6 +293,7 @@ export async function initSchema() {
     FROM vins v
     LEFT JOIN rooftop_details rd ON v.rooftop_id = rd.team_id
     LEFT JOIN enterprise_details ed ON v.enterprise_id = ed.enterprise_id
+    WHERE NOT (v.enterprise_id = 'f57d27acb' AND v.status_overall_status = 'FAILED')
     GROUP BY v.rooftop_id, v.enterprise_id;
   `);
 
@@ -327,6 +332,7 @@ export async function initSchema() {
     FROM vins v
     LEFT JOIN enterprise_details ed ON v.enterprise_id = ed.enterprise_id
     LEFT JOIN rooftop_details rd    ON v.rooftop_id = rd.team_id
+    WHERE NOT (v.enterprise_id = 'f57d27acb' AND v.status_overall_status = 'FAILED')
     GROUP BY v.enterprise_id;
   `);
 

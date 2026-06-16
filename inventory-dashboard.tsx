@@ -614,7 +614,7 @@ function TableShimmer({ cols, rows = 10 }: { cols: number; rows?: number }) {
   );
 }
 
-function RawTab({ data, loading, filters, setFilters, total, page, pageCount, onPageChange, rooftopOptions, typeOptions, csmOptions, enterpriseObjects = [], sortCol, sortDir, onSortChange }) {
+function RawTab({ data, loading, filters, setFilters, total, page, pageCount, onPageChange, rooftopOptions, typeOptions, csmOptions, enterpriseObjects = [], sortCol, sortDir, onSortChange, publishing = "all" }) {
   const [downloading, setDownloading] = useState(false);
 
   const handleSort = (col) => {
@@ -656,7 +656,8 @@ function RawTab({ data, loading, filters, setFilters, total, page, pageCount, on
     if (filters.hasVin !== null && filters.hasVin !== undefined) params.set("hasVin", filters.hasVin ? "true" : "false");
     if (filters.reasonBucket)      params.set("reasonBucket", filters.reasonBucket);
     if (filters.inventoryScore)    params.set("inventoryScore", filters.inventoryScore);
-    if (filters.publishing)        params.set("publishing", filters.publishing);
+    const _pub = filters.publishing || (publishing !== "all" ? publishing : null);
+    if (_pub)                      params.set("publishing", _pub);
     if (sortCol) { params.set("sortBy", sortCol); params.set("sortDir", sortDir); }
     try {
       const res = await fetch(`${API_BASE}/api/vins/export?${params}`);
@@ -771,7 +772,7 @@ function RawTab({ data, loading, filters, setFilters, total, page, pageCount, on
   );
 }
 
-function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterpriseOptions = [], bucketFlags = {}, rows, total, page, pageCount, loading, onPageChange, onDrillDown, filters, setFilters, sortCol, sortDir, onSortChange, reportDates = [] }: any) {
+function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterpriseOptions = [], bucketFlags = {}, rows, total, page, pageCount, loading, onPageChange, onDrillDown, filters, setFilters, sortCol, sortDir, onSortChange, reportDates = [], publishing = "all" }: any) {
   const [downloading, setDownloading] = useState(false);
   const [reportDatesExpanded, setReportDatesExpanded] = useState(false);
   const row1Ref = useRef<HTMLTableRowElement>(null);
@@ -828,6 +829,7 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
     if (filters.reportReason)     params.set("reportReason",    filters.reportReason);
     if (filters.reportDay)        params.set("reportDay",       filters.reportDay);
     if (sortCol) { params.set("sortBy", sortCol); params.set("sortDir", sortDir); }
+    if (publishing !== "all") params.set("publishing", publishing);
     try {
       const res = await fetch(`${API_BASE}/api/rooftops/export?${params}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -1138,7 +1140,7 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
   );
 }
 
-function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = false, hasPublishingDisabled = false, bucketFlags = {}, rows, total, page, pageCount, loading, onPageChange, onDrillDown, filters = DEFAULT_ENTERPRISE_FILTERS, setFilters = (_f) => {}, sortCol, sortDir, onSortChange, reportDates = [] }: any) {
+function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = false, hasPublishingDisabled = false, bucketFlags = {}, rows, total, page, pageCount, loading, onPageChange, onDrillDown, filters = DEFAULT_ENTERPRISE_FILTERS, setFilters = (_f) => {}, sortCol, sortDir, onSortChange, reportDates = [], publishing = "all" }: any) {
   const [downloading, setDownloading] = useState(false);
   const [reportDatesExpanded, setReportDatesExpanded] = useState(false);
   const row1Ref = useRef<HTMLTableRowElement>(null);
@@ -1199,6 +1201,7 @@ function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = f
     if (filters.reportStatus)   params.set("reportStatus",   filters.reportStatus);
     if (filters.reportReason)   params.set("reportReason",   filters.reportReason);
     if (sortCol) { params.set("sortBy", sortCol); params.set("sortDir", sortDir); }
+    if (publishing !== "all") params.set("publishing", publishing);
     try {
       const res = await fetch(`${API_BASE}/api/enterprises/export?${params}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -2286,10 +2289,18 @@ export default function Dashboard() {
   });
   const [page, setPage] = useState<"dashboard" | "admin">("dashboard");
   const [tab, setTab] = useState("Overview");
-  const [dateFilter, setDateFilter] = useState<"post" | "pre" | "all">(() => {
-    const saved = typeof window !== "undefined" ? localStorage.getItem("vin_dateFilter") : null;
-    return (saved === "post" || saved === "pre" || saved === "all") ? saved : "post";
+  // Date filtering is disabled — pinned to "all". The header toggle now controls
+  // the global Publishing scope instead (see pubScope below).
+  const [dateFilter, setDateFilter] = useState<"post" | "pre" | "all">("all");
+  // Global publishing scope: 'all' | 'on' | 'off'. Scopes every tab via per-VIN is_publishing.
+  const [pubScope, setPubScope] = useState<"all" | "on" | "off">(() => {
+    const saved = typeof window !== "undefined" ? localStorage.getItem("vin_pubScope") : null;
+    return (saved === "on" || saved === "off" || saved === "all") ? saved : "all";
   });
+  // Ref mirror so the (stable) loaders can read the current scope without being
+  // recreated; effects below add pubScope to their deps to re-fire on change.
+  const pubScopeRef = useRef(pubScope);
+  pubScopeRef.current = pubScope;
   const [rawFilters, setRawFilters] = useState(DEFAULT_FILTERS);
   const [rooftopFilters, setRooftopFilters] = useState(DEFAULT_ROOFTOP_FILTERS);
   const [enterpriseFilters, setEnterpriseFilters] = useState(DEFAULT_ENTERPRISE_FILTERS);
@@ -2352,7 +2363,8 @@ export default function Dashboard() {
   // showLoader: true when triggered by a user filter toggle (not the initial page load).
   const loadSummary = useCallback((df: string = "post", showLoader = false) => {
     if (showLoader) setSummaryLoading(true);
-    return fetch(`${API_BASE}/api/summary?dateFilter=${df}`)
+    const _pub = pubScopeRef.current !== "all" ? `&publishing=${pubScopeRef.current}` : "";
+    return fetch(`${API_BASE}/api/summary?dateFilter=${df}${_pub}`)
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
       .then(json => {
         if (json.totalRows === 0) return null; // DB empty
@@ -2389,6 +2401,7 @@ export default function Dashboard() {
     if (filters.reportDay)        params.set("reportDay",       filters.reportDay);
     if (sortCol) { params.set("sortBy", sortCol); params.set("sortDir", sortDir); }
     params.set("dateFilter", df);
+    if (pubScopeRef.current !== "all") params.set("publishing", pubScopeRef.current);
     fetch(`${API_BASE}/api/rooftops?${params}`)
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
       .then(({ data, total, pageCount, reportDates: dates }) => {
@@ -2413,6 +2426,7 @@ export default function Dashboard() {
     if (filters.reportDay)      params.set("reportDay",      filters.reportDay);
     if (sortCol) { params.set("sortBy", sortCol); params.set("sortDir", sortDir); }
     params.set("dateFilter", df);
+    if (pubScopeRef.current !== "all") params.set("publishing", pubScopeRef.current);
     fetch(`${API_BASE}/api/enterprises?${params}`)
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
       .then(({ data, total, pageCount, reportDates: dates }) => {
@@ -2446,7 +2460,9 @@ export default function Dashboard() {
     if (filters.hasVin !== null && filters.hasVin !== undefined) params.set("hasVin", filters.hasVin ? "true" : "false");
     if (filters.reasonBucket)      params.set("reasonBucket", filters.reasonBucket);
     if (filters.inventoryScore)    params.set("inventoryScore", filters.inventoryScore);
-    if (filters.publishing)        params.set("publishing", filters.publishing);
+    // Local VIN-Data publishing dropdown wins; otherwise fall back to the global scope.
+    const _pub = filters.publishing || (pubScopeRef.current !== "all" ? pubScopeRef.current : null);
+    if (_pub)                      params.set("publishing", _pub);
     if (sortCol) { params.set("sortBy", sortCol); params.set("sortDir", sortDir); }
     params.set("dateFilter", df);
 
@@ -2498,6 +2514,11 @@ export default function Dashboard() {
     localStorage.setItem("vin_dateFilter", dateFilter);
   }, [dateFilter]);
 
+  // Persist global publishing scope across page refreshes
+  useEffect(() => {
+    localStorage.setItem("vin_pubScope", pubScope);
+  }, [pubScope]);
+
   // Persist module (Studio Health / VIN Tracker / Studio Adoption / 360 Tracker) selection across page refreshes
   useEffect(() => {
     if (typeof window !== "undefined") localStorage.setItem("vin_module", module);
@@ -2507,22 +2528,22 @@ export default function Dashboard() {
   useEffect(() => {
     if (!initialLoadDone.current) return;
     loadSummary(dateFilter, true).catch(() => {});
-  }, [dateFilter]);
+  }, [dateFilter, pubScope]);
 
   // Load rooftop page when switching to Rooftop View or when filters/sort/dateFilter change
   useEffect(() => {
     if (tab === "Rooftop View") loadRooftopPage(1, rooftopFilters, rooftopSortCol, rooftopSortDir, dateFilter);
-  }, [tab, rooftopFilters, rooftopSortCol, rooftopSortDir, dateFilter]);
+  }, [tab, rooftopFilters, rooftopSortCol, rooftopSortDir, dateFilter, pubScope]);
 
   // Load enterprise page when switching to Enterprise View or when filters/sort/dateFilter change
   useEffect(() => {
     if (tab === "Enterprise View") loadEnterprisePage(1, enterpriseFilters, enterpriseSortCol, enterpriseSortDir, dateFilter);
-  }, [tab, enterpriseFilters, enterpriseSortCol, enterpriseSortDir, dateFilter]);
+  }, [tab, enterpriseFilters, enterpriseSortCol, enterpriseSortDir, dateFilter, pubScope]);
 
   // Load raw page when switching to VIN Data tab or when filters/page/sort/dateFilter change
   useEffect(() => {
     if (tab === "VIN Data") loadRawPage(rawPage, rawFilters, rawSortCol, rawSortDir, dateFilter);
-  }, [tab, rawPage, rawFilters, rawSortCol, rawSortDir, dateFilter]);
+  }, [tab, rawPage, rawFilters, rawSortCol, rawSortDir, dateFilter, pubScope]);
 
   // Load report coverage when switching to Report Status tab
   useEffect(() => {
@@ -2677,6 +2698,7 @@ export default function Dashboard() {
               {lastSync && <span style={{ color: "#9ca3af" }}> · synced {timeAgo(lastSync)}</span>}
             </span>
           )}
+          {/* Date filter disabled — replaced by the global Publishing scope toggle below.
           <div style={{ display: "flex", gap: 2, background: "#f3f4f6", borderRadius: 8, padding: 3 }}>
             {([
               { key: "post", label: "Post 1st Apr" },
@@ -2692,6 +2714,29 @@ export default function Dashboard() {
                     : "transparent",
                   color: dateFilter === key ? "#fff" : "#6b7280",
                   boxShadow: dateFilter === key ? "0 1px 3px rgba(0,0,0,0.15)" : "none",
+                  transition: "all 0.15s",
+                }}>
+                {label}
+              </button>
+            ))}
+          </div>
+          */}
+          {/* Global Publishing scope — On / Off / All (per-VIN is_publishing) */}
+          <div style={{ display: "flex", gap: 2, background: "#f3f4f6", borderRadius: 8, padding: 3 }}>
+            {([
+              { key: "all", label: "All"           },
+              { key: "on",  label: "Publishing On"  },
+              { key: "off", label: "Publishing Off" },
+            ] as const).map(({ key, label }) => (
+              <button key={key} onClick={() => setPubScope(key)}
+                style={{
+                  padding: "5px 14px", borderRadius: 6, border: "none", cursor: "pointer",
+                  fontSize: 12, fontWeight: 600,
+                  background: pubScope === key
+                    ? key === "on" ? "#166534" : key === "off" ? "#6b7280" : "#374151"
+                    : "transparent",
+                  color: pubScope === key ? "#fff" : "#6b7280",
+                  boxShadow: pubScope === key ? "0 1px 3px rgba(0,0,0,0.15)" : "none",
                   transition: "all 0.15s",
                 }}>
                 {label}
@@ -2749,6 +2794,7 @@ export default function Dashboard() {
               sortDir={rooftopSortDir}
               onSortChange={handleRooftopSort}
               reportDates={reportDates}
+              publishing={pubScope}
             />
           )}
           {tab === "Enterprise View" && (
@@ -2771,6 +2817,7 @@ export default function Dashboard() {
               sortDir={enterpriseSortDir}
               onSortChange={handleEnterpriseSort}
               reportDates={reportDates}
+              publishing={pubScope}
             />
           )}
           {tab === "VIN Data" && (
@@ -2790,6 +2837,7 @@ export default function Dashboard() {
               sortCol={rawSortCol}
               sortDir={rawSortDir}
               onSortChange={handleRawSort}
+              publishing={pubScope}
             />
           )}
           {tab === "Report Status" && (
