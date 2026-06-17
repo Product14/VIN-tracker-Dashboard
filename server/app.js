@@ -301,15 +301,18 @@ async function syncVins() {
   }
 
   // Step 4: Atomic swap. The materialized views depend on the `vins` table OID, so
-  // we keep its identity (DELETE+INSERT in one transaction) instead of renaming.
-  // Readers see the previous snapshot until COMMIT — never an empty/partial table.
+  // we keep its identity (TRUNCATE+INSERT in one transaction) instead of renaming.
+  // TRUNCATE (vs DELETE) reclaims the old rows in O(1) without marking 395k dead
+  // tuples or doing per-row index maintenance — the bulk of the old swap cost. It
+  // takes an ACCESS EXCLUSIVE lock, so readers briefly block during the swap rather
+  // than seeing the previous snapshot, but the whole swap is one short transaction.
   // DISTINCT ON dedups by dealer_vin_id (PK); ctid DESC keeps the last-streamed row
   // per key, matching the old "last occurrence wins" map dedup.
   const swapClient = await getClient();
   try {
     await swapClient.query("BEGIN");
     await swapClient.query("SET LOCAL statement_timeout = 0");
-    await swapClient.query("DELETE FROM vins");
+    await swapClient.query("TRUNCATE vins");
     await swapClient.query(`INSERT INTO vins (${VIN_COLUMNS})
        SELECT DISTINCT ON (dealer_vin_id) ${VIN_COLUMNS}
        FROM vins_staging
@@ -498,12 +501,16 @@ async function runSync() {
       `);
       // Refresh materialized views with new vins data, then precompute
       // filter-options cache so GET /api/filter-options is a trivial lookup.
+      // Plain (non-CONCURRENT) REFRESH rebuilds the MV outright instead of doing a
+      // row-by-row diff against the old contents — substantially faster, at the cost
+      // of a brief ACCESS EXCLUSIVE lock that blocks filter-options reads during the
+      // rebuild (acceptable: sync runs off-peak, summary cache is already fresh).
       // The vins swap above already committed, so a transient MV error (e.g. a
       // lingering old-deploy instance dropping the view mid-rollover) must not
       // fail the whole sync — log and let the next refresh/cold start recover.
       try {
-        await query(`REFRESH MATERIALIZED VIEW CONCURRENTLY v_by_rooftop`);
-        await query(`REFRESH MATERIALIZED VIEW CONCURRENTLY v_by_enterprise`);
+        await query(`REFRESH MATERIALIZED VIEW v_by_rooftop`);
+        await query(`REFRESH MATERIALIZED VIEW v_by_enterprise`);
       } catch (e) {
         console.error(`[sync] MV refresh failed (vins swap already committed; recovers on next refresh):`, e?.message);
       }
