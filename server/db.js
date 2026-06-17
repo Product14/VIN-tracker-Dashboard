@@ -297,7 +297,6 @@ export async function initSchema() {
     FROM vins v
     LEFT JOIN rooftop_details rd ON v.rooftop_id = rd.team_id
     LEFT JOIN enterprise_details ed ON v.enterprise_id = ed.enterprise_id
-    WHERE NOT (v.enterprise_id = 'f57d27acb' AND v.status_overall_status = 'FAILED')
     GROUP BY v.rooftop_id, v.enterprise_id;
   `);
 
@@ -336,7 +335,6 @@ export async function initSchema() {
     FROM vins v
     LEFT JOIN enterprise_details ed ON v.enterprise_id = ed.enterprise_id
     LEFT JOIN rooftop_details rd    ON v.rooftop_id = rd.team_id
-    WHERE NOT (v.enterprise_id = 'f57d27acb' AND v.status_overall_status = 'FAILED')
     GROUP BY v.enterprise_id;
   `);
 
