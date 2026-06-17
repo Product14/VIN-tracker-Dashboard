@@ -470,16 +470,25 @@ async function runSync() {
     // does not show a fresh "synced X min ago" after a failed sync.
     if (succeeded) {
       await query(`UPDATE sync_state SET running = FALSE, completed_at = NOW() WHERE id = 'global'`);
-      // Precompute all 3 summary variants and store in summary_cache so
-      // GET /api/summary becomes a trivial single-row lookup (<5ms).
-      for (const df of [null, 'post', 'pre']) {
+      // Precompute the publishing-scope summary variants (all / on / off) and
+      // store them in summary_cache so GET /api/summary is a trivial single-row
+      // lookup (<5ms) for EVERY scope. The date filter was retired in favour of
+      // the publishing scope, so the frontend only ever sends dateFilter=all —
+      // the old post/pre variants are dead. Refreshing on/off here (instead of
+      // computing them per request) keeps them both fast and fresh: they're
+      // rebuilt every sync alongside 'all', so they never go stale.
+      for (const pub of [null, 'on', 'off']) {
+        const key = pub ?? 'all';
         try {
-          const payload = await computeSummary(df);
-          await upsertSummaryCache(df, payload);
+          const payload = await computeSummary(null, pub);
+          await upsertSummaryCache(key, payload);
         } catch (e) {
-          console.error(`[sync] summary precompute failed for dateFilter=${df}:`, e?.message);
+          console.error(`[sync] summary precompute failed for publishing=${key}:`, e?.message);
         }
       }
+      // Evict stale rows from the old date-filter scheme (post/pre) so the cache
+      // holds only the current all/on/off keys.
+      await query(`DELETE FROM summary_cache WHERE date_filter NOT IN ('all','on','off')`).catch(() => {});
       // Update meta in sync_state so GET /api/sync/status needs no vins scan.
       await query(`
         UPDATE sync_state
@@ -1355,15 +1364,12 @@ async function upsertSummaryCache(dateFilter, payload) {
 // Falls back to computing on-demand if cache is empty (first deploy with existing data).
 
 app.get("/api/summary", async (req, res) => {
-  const dateFilter = req.query.dateFilter ?? null;
   const publishing = req.query.publishing ?? null;
-  // Publishing-scoped summaries (on/off) are computed fresh, not cached: the sync
-  // only precomputes the default all-publishing variants, so a cached on/off
-  // payload would go stale after the next sync.
-  if (publishing === 'on' || publishing === 'off') {
-    return res.json(await computeSummary(dateFilter, publishing));
-  }
-  const cacheKey   = dateFilter ?? 'all';
+  // The cache key is the publishing scope (all/on/off) — all three are precomputed
+  // and refreshed every sync. The date filter was retired (always 'all'), so it's
+  // no longer part of the cache key.
+  const scope    = (publishing === 'on' || publishing === 'off') ? publishing : null;
+  const cacheKey = scope ?? 'all';
   const { rows } = await query(
     'SELECT payload FROM summary_cache WHERE date_filter = $1',
     [cacheKey]
@@ -1371,9 +1377,10 @@ app.get("/api/summary", async (req, res) => {
   if (rows.length > 0) {
     return res.json(rows[0].payload);
   }
-  // Cache not yet populated — compute and store so the next request is instant.
-  const payload = await computeSummary(dateFilter);
-  await upsertSummaryCache(dateFilter, payload);
+  // Cache not yet populated (e.g. first request right after a deploy, before the
+  // first sync) — compute this scope on-demand and store it so the next is instant.
+  const payload = await computeSummary(null, scope);
+  await upsertSummaryCache(cacheKey, payload);
   res.json(payload);
 });
 
