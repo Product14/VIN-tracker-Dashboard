@@ -290,15 +290,11 @@ async function syncVins() {
   }
   await flush();   // final partial batch
 
-  // Step 3: Sanity guard — never swap an obviously-truncated pull over good data.
-  // Compare DISTINCT staged keys (post-dedup count) against the live row count.
+  // Step 3: Post-dedup staged count — used only for the completion log below.
+  // (The truncation sanity guard was removed: the source card's legitimate row
+  // count can change, so comparing against the live count produced false aborts.)
   const { rows: stagedRows } = await query("SELECT COUNT(DISTINCT dealer_vin_id)::int AS n FROM vins_staging");
   const stagedDistinct = stagedRows[0]?.n ?? 0;
-  const { rows: liveRows } = await query("SELECT count(*)::int AS n FROM vins");
-  const liveCount = liveRows[0]?.n ?? 0;
-  if (liveCount > 0 && stagedDistinct < liveCount * 0.8) {
-    throw new Error(`[sync:VIN_DETAILS] aborting swap — suspected truncation: staged ${stagedDistinct} distinct vs live ${liveCount}`);
-  }
 
   // Step 4: Atomic swap. The materialized views depend on the `vins` table OID, so
   // we keep its identity (TRUNCATE+INSERT in one transaction) instead of renaming.
