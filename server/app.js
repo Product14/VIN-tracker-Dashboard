@@ -4482,8 +4482,9 @@ app.get("/api/cleanup-report-archive", async (req, res) => {
 
 // ─── Studio Health Report — Executive Board (on-screen dashboard) ────────────
 // GET /api/studio-health-board → live HTML board built from the three Studio Health
-// sheet tabs (Funnel · Plan · Images · 360 · Video · Adoption). View-only; an hourly
-// edge cache is re-warmed by the Vercel cron, and ?refresh=1 bypasses every cache.
+// sheet tabs (Funnel · Plan · Images · 360 · Video · Adoption). View-only; a short edge
+// cache (s-maxage=300) + a 5-min in-memory cache keep it fast, and ?refresh=1 bypasses
+// every cache for a live rebuild.
 app.get("/api/studio-health-board", async (req, res) => {
   try {
     const html = await buildStudioHealthBoardHtml({ force: !!req.query?.refresh });
@@ -4491,7 +4492,7 @@ app.get("/api/studio-health-board", async (req, res) => {
     if (req.query?.refresh) {
       res.setHeader("Cache-Control", "no-store, max-age=0");
     } else {
-      res.setHeader("Cache-Control", "public, max-age=0, s-maxage=3600, stale-while-revalidate=86400");
+      res.setHeader("Cache-Control", "public, max-age=0, s-maxage=300, stale-while-revalidate=600");
     }
     return res.status(200).send(html);
   } catch (e) {
