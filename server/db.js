@@ -42,6 +42,7 @@ export async function initSchema() {
       is_publishing        SMALLINT,
       is_qc_on             SMALLINT,
       status_overall_status TEXT,
+      customer_segment     TEXT,
       synced_at            TEXT
     );
     ALTER TABLE vins ADD COLUMN IF NOT EXISTS hold_reason TEXT DEFAULT '';
@@ -66,6 +67,9 @@ export async function initSchema() {
     -- Overall processing status from the VIN card (e.g. DONE) — distinct from the
     -- delivery status column (Delivered / Not Delivered).
     ALTER TABLE vins ADD COLUMN IF NOT EXISTS status_overall_status TEXT;
+    -- Customer segment (Ent / Mid / SMB) from the VIN card — drives the Studio Health
+    -- Images section's ENT/MID/SMB columns.
+    ALTER TABLE vins ADD COLUMN IF NOT EXISTS customer_segment TEXT;
 
     -- Migration: swap PK from vin → dealer_vin_id on existing deployments.
     DO $$

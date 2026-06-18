@@ -82,11 +82,17 @@ Three Metabase public cards, fetched without authentication via the card UUIDs:
 
 | Source             | Metabase Card ID                       | Used for                                                |
 | ------------------ | -------------------------------------- | ------------------------------------------------------- |
-| VIN Details        | `15e908e4-fe21-4982-9d8c-4aff07f2c948` | All VIN inventory records (the critical dataset)        |
+| VIN Details        | `15e908e4-fe21-4982-9d8c-4aff07f2c948` (default; overridable via `VIN_CARD_URL` env) | All VIN inventory records (the critical dataset) |
 | Rooftop Details    | `f5c032a6-c262-40ee-8d95-c115d326d3a8` | Rooftop metadata (name, type, score, integration flags) |
 | Enterprise Details | `b8f1271c-cc5a-470f-badf-807711f74af4` | Enterprise metadata (name, type, POC/CSM email)         |
 
-The Metabase VIN query is slow — it takes 30–60 seconds. The code uses a 65-second timeout with one retry. Rooftops and Enterprises are fast (milliseconds) and non-critical (a failure on either is logged but does not abort the sync).
+Card URLs are defined at [server/app.js:15](server/app.js#L15). The VIN card can be swapped without a code change by setting the `VIN_CARD_URL` env var — this is the intended mechanism for pointing at the expanded "publishing on + off" VIN card. There is no second hardcoded VIN UUID; old-vs-new is purely the env swap.
+
+The sync fetches **CSV**, not JSON — the code rewrites the card's `/query/json` path to `/query/csv` ([server/app.js:149](server/app.js#L149)) and stream-parses the response.
+
+The VIN card now also surfaces several columns beyond the basic inventory fields: `is_publishing`, `is_qc_on`, `platform`, `condition` (new/used), and `status_overall_status` (see §6).
+
+The Metabase VIN query is slow. The VIN CSV fetch uses a 180-second timeout. Rooftops and Enterprises are fast (milliseconds) and non-critical (a failure on either is logged but does not abort the sync).
 
 ---
 
@@ -96,27 +102,30 @@ A sync is triggered either by the UI ("Sync Now" button hitting `POST /api/sync`
 
 1. The server acquires an **atomic sync lock** via the `sync_state` table (single row, primary key `id = 'global'`). If a sync is already running, the request returns `202 Already Running`.
 2. The three Metabase cards are fetched sequentially: Rooftops, Enterprises, then VINs (VINs last because they're the critical, slow one).
-3. Each dataset is deduplicated (group by primary key, keep the latest row) and bulk-inserted using PostgreSQL `UNNEST` arrays in a single query. The destination table is fully replaced inside a transaction (DELETE + INSERT).
-4. After a successful VIN sync, post-processing runs:
-   - **Summary cache** is recomputed for all three date filter variants (`all`, `post`, `pre`) and stored in `summary_cache`.
-   - **Materialized views** `v_by_rooftop` and `v_by_enterprise` are refreshed concurrently.
+3. **VINs are streamed, not buffered.** The CSV response is stream-parsed and flushed in chunks of 25,000 rows into a fresh `vins_staging` table (`CREATE TABLE vins_staging (LIKE vins INCLUDING DEFAULTS)`). Each chunk is inserted via an `UNNEST` array query, but only one chunk is resident in memory at a time — this bounds memory for the ~3x-larger publishing-on+off dataset. See [server/app.js:141](server/app.js#L141) onward. Rooftops and Enterprises (small) still use the simple replace-in-transaction approach.
+4. **Atomic swap** ([server/app.js:307](server/app.js#L307)): in a single transaction, `TRUNCATE vins` then `INSERT INTO vins SELECT DISTINCT ON (dealer_vin_id) ... FROM vins_staging ORDER BY dealer_vin_id, ctid DESC` (last-streamed row wins on dedup). `TRUNCATE + INSERT` is used deliberately instead of `RENAME` so the `vins` table OID is preserved — the materialized views depend on it. (The old row-count truncation guard was removed in commit `727f5c4` because the source card's row count legitimately changed.)
+5. After a successful VIN sync, post-processing runs:
+   - **Summary cache** is recomputed for three **publishing-scope** variants (`all`, `on`, `off`) and stored in `summary_cache`. (This replaced the old date-filter variants — see note below.)
+   - **Materialized views** `v_by_rooftop` and `v_by_enterprise` are refreshed concurrently (they are NOT dropped — see §6).
    - **Filter options cache** is recomputed and stored in `filter_cache` so dropdowns load instantly.
    - `sync_state.completed_at`, `total_rows`, and `last_sync` are updated.
-5. The sync lock is released. If the VIN fetch failed, `completed_at` is intentionally NOT stamped — the UI then surfaces a stale-sync warning rather than a misleading "synced X min ago".
+6. The sync lock is released. If the VIN fetch failed, `completed_at` is intentionally NOT stamped — the UI then surfaces a stale-sync warning rather than a misleading "synced X min ago".
 
 ### The pendency threshold
 
 Historically the SLA was "pending more than 24 hours." It is now **6 hours**. The column names in the database and API still say `after_24h` / `after24h` for backwards compatibility, but the logic in `pendencyPredicate6h()` (server/app.js:36) uses `INTERVAL '6 hours'`. The Metabase `after_24_hrs` field is stored but no longer authoritative — server-side queries recompute pendency from `received_at` / `processed_at`.
 
-### Date filter (`post` / `pre` / `all`)
+### Publishing scope (`all` / `on` / `off`)
 
-Cutoff: **2026-04-01**.
+The primary slice across the whole app is now **publishing scope**, driven by the VIN `is_publishing` flag (`COALESCE(is_publishing, 1)` — NULL is treated as publishing-ON):
 
-- `post` — VINs with `received_at >= 2026-04-01`
-- `pre`  — VINs with `received_at < 2026-04-01` or null
-- `all`  — no date filter (default)
+- `on`  — publishing-on VINs only (`publishing=on` query param)
+- `off` — publishing-off VINs only (`publishing=off`)
+- `all` — no filter (param omitted; default)
 
-When a date filter is active, the server uses inline CTEs instead of the materialized views, so the filter is applied before aggregation.
+The server condition helper is `getPublishingCondition` ([server/app.js:794](server/app.js#L794)). `summary_cache` is keyed by these three scope values. The dashboard exposes a global 3-way toggle (see §10).
+
+> **Note on the dead date filter.** Historically the app sliced by a `post`/`pre`/`all` date filter with a **2026-04-01** cutoff. That machinery (`DATE_CUTOFF`, `getDateCondition`) still physically exists in [server/app.js:783](server/app.js#L783) and is still wired into the query builders, but **every caller now passes `dateFilter = null`, so it is dormant/dead code.** Confusingly, the `summary_cache` primary-key column is still literally named `date_filter` ([server/db.js:140](server/db.js#L140)) but now stores publishing-scope values (`all`/`on`/`off`). The column was never renamed — only its meaning changed (commit `b2687b4`).
 
 ---
 
@@ -126,7 +135,8 @@ When a date filter is active, the server uses inline CTEs instead of the materia
 
 | Table                          | Purpose                                                                  |
 | ------------------------------ | ------------------------------------------------------------------------ |
-| `vins`                         | Raw VIN inventory records; PK = `dealer_vin_id`                          |
+| `vins`                         | Raw VIN inventory records; PK = `dealer_vin_id` (columns below)          |
+| `vins_staging`                 | Transient table built during each sync; swapped into `vins` at the end (see §5) |
 | `rooftop_details`              | Rooftop / dealership metadata; PK = `team_id`                            |
 | `enterprise_details`           | Enterprise / organization metadata; PK = `enterprise_id`                 |
 | `email_recipients`             | Email recipients for daily reports, mapped to a rooftop and/or enterprise with a `report_type` of `Rooftop` or `Group` |
@@ -136,6 +146,8 @@ When a date filter is active, the server uses inline CTEs instead of the materia
 | `daily_report_runs`            | Header row per daily-report run (run_id, started_at, recipient counts, test mode) |
 | `report_queue`                 | One row per recipient per run; tracks status (`pending` → `processing` → `sent` / `skipped` / `error`), attempt count, error reason, TO/CC, entity, report_date |
 | `rooftop_report_status_daily`  | Snapshot table written at the end of each run: `(report_day, rooftop_id) → status / reason`. Powers the Report Status tab. |
+
+**`vins` columns** ([server/db.js:24](server/db.js#L24)): `dealer_vin_id` (PK), `vin`, `enterprise_id`, `rooftop_id`, `status`, `after_24h`, `received_at`, `processed_at`, `reason_bucket`, `hold_reason`, `has_photos`, `output_image_count`, `thumbnail_url`, `vdp_url`, `vehicle_price`, `condition` (new/used), `platform`, `is_publishing`, `is_qc_on`, `status_overall_status`, `synced_at`, plus ALTER-added `make`, `model`, `year`, `trim`, `stock_number`, `vin_score`, `vin_creation`. `is_publishing` / `is_qc_on` are SMALLINT; NULL `is_publishing` is treated as publishing-ON via `COALESCE(is_publishing, 1)`.
 
 ### Tables created via migrations
 
@@ -149,6 +161,8 @@ When a date filter is active, the server uses inline CTEs instead of the materia
 | `006_add_report_queue.sql`               | Adds `report_queue`                                                             |
 | `007_slim_daily_report_runs.sql`         | Slims down `daily_report_runs` columns                                          |
 | `008_daily_report_emails.sql`            | Adds `daily_report_emails` (archive of sent HTML by entity + day)               |
+| `009_add_vin_publishing_qc.sql`          | Adds `vins.is_publishing`, `vins.is_qc_on`, and a supporting index              |
+| `010_add_vin_status_overall.sql`         | Adds `vins.status_overall_status`                                               |
 
 There is also a `schema_migrations` tracking table that records which `.sql` files have been applied.
 
@@ -157,7 +171,9 @@ There is also a `schema_migrations` tracking table that records which `.sql` fil
 - `v_by_rooftop` — aggregated stats per rooftop (joins `vins` + `rooftop_details` + `enterprise_details`)
 - `v_by_enterprise` — aggregated stats per enterprise
 
-Both have unique indexes (`uix_mv_rooftop_id`, `uix_mv_enterprise_id`) so they can be refreshed with `REFRESH MATERIALIZED VIEW CONCURRENTLY`, which doesn't block readers. They are dropped and recreated on cold start to pick up schema changes automatically.
+Both have unique indexes (`uix_mv_rooftop_id`, `uix_mv_enterprise_id`) so they can be refreshed with `REFRESH MATERIALIZED VIEW CONCURRENTLY`, which doesn't block readers.
+
+**They are created `IF NOT EXISTS` and left in place — NOT dropped on cold start** (changed in commit `ccbc6fb` to fix a refresh race; [server/db.js:233](server/db.js#L233)). The earlier behavior of dropping + recreating them on every cold start caused races and unnecessary full rebuilds. **Consequence:** if you change a materialized-view *definition*, the new SQL will not take effect automatically — you must drop the view via an explicit migration so the `IF NOT EXISTS` recreate picks up the new shape. (The `DROP VIEW IF EXISTS` calls in db.js are legacy regular-view cleanup and do not touch the materialized views.)
 
 ### Indexes on `vins`
 
@@ -275,8 +291,9 @@ Most data endpoints accept:
 - `page`, `pageSize` — pagination (10–500, default 50)
 - `sortBy`, `sortDir` — column sorting (column names are whitelisted to prevent SQL injection)
 - `search` — free-text across VIN, rooftop, CSM, enterprise
-- `dateFilter` — `post` / `pre` / omit for all
+- `publishing` — `on` / `off` / omit for all (the primary scope slice; see §5)
 - `enterpriseId`, `rooftopId`, `csm`, `status`, `rooftopType`, `after24h`, `hasPhotos`, `reasonBucket` — exact-match filters
+- `dateFilter` — **dormant**: still accepted (`post` / `pre`) but no caller sets it; see the note in §5
 
 ---
 
@@ -296,6 +313,7 @@ Common behavior across tabs:
 - Pagination, sorting, and filtering are all **server-side** (not client-side).
 - The header shows last sync time and a "Sync Now" button (calls `POST /api/sync`).
 - CSV exports come from the `/api/*/export` endpoints (no pagination), generated client-side.
+- **Global publishing-scope toggle** — a 3-way segmented control ("All / Publishing On / Publishing Off") in the header, state `pubScope`, persisted to `localStorage["vin_pubScope"]`. When not "All" it is appended as `&publishing=<on|off>` to every data fetch and passed into the VIN / Rooftop / Enterprise tabs. (The VIN tab also has its own per-tab publishing dropdown, and the Enterprise tab has dedicated Pub-On/Pub-Off columns with drill-down.)
 
 ---
 
@@ -304,6 +322,7 @@ Common behavior across tabs:
 | Variable                    | Required | Purpose                                                                |
 | --------------------------- | -------- | ---------------------------------------------------------------------- |
 | `VIN_TRACKER_DATABASE_URL`  | Yes      | Supabase Postgres connection string (transaction mode, port 6543)      |
+| `VIN_CARD_URL`              | No       | Overrides the default VIN Metabase card UUID (used to swap to the publishing on+off card) |
 | `INTERNAL_EMAIL_API_URL`    | Yes (prod) | Internal email API endpoint, typically `https://mail.spyne.ai/api/v1/send-template-email` |
 | `EMAIL_TO`                  | Yes (prod) | Snapshot report primary recipients (comma-separated)                   |
 | `EMAIL_CC`                  | No       | Snapshot report CC                                                     |
@@ -329,7 +348,7 @@ When migrations run:
 
 Each migration file is recorded in a `schema_migrations` tracking table to avoid re-application.
 
-To add a new migration, drop a new `NNN_description.sql` file in `server/migrations/` using the next sequence number. Keep statements idempotent (`IF NOT EXISTS`, `IF EXISTS`) wherever possible — `server/db.js` reapplies the base schema on every cold start, and your migration may interact with that.
+Migrations currently run `001`–`010`. To add a new one, drop a new `NNN_description.sql` file in `server/migrations/` using the next sequence number. Keep statements idempotent (`IF NOT EXISTS`, `IF EXISTS`) wherever possible — `server/db.js` reapplies the base schema on every cold start, and your migration may interact with that.
 
 ---
 
@@ -374,9 +393,9 @@ To add a new migration, drop a new `NNN_description.sql` file in `server/migrati
 
 [api/index.js](api/index.js) is the single Vercel function entry point. It imports the Express app from [server/app.js](server/app.js), calls `initSchema()` on cold start, and handles every `/api/*` route. The connection pool is kept minimal (`max: 1`) because the function is stateless and short-lived.
 
-Materialized views are dropped and recreated on cold start so that schema changes propagate without manual intervention. Table creation is idempotent (`IF NOT EXISTS`).
+Table and materialized-view creation is idempotent (`IF NOT EXISTS`). **Materialized views are no longer dropped on cold start** (see §6) — they persist, so a view *definition* change requires an explicit drop migration.
 
-The function has `maxDuration: 600` (10 minutes) in `vercel.json` to accommodate long syncs and queue runs.
+The function has `maxDuration: 600` (10 minutes) and `memory: 3008` (MB) in `vercel.json` — the memory was raised to handle the ~3x-larger publishing on+off VIN volume during sync.
 
 ### Required env vars in Vercel
 
@@ -476,10 +495,14 @@ The first request after a deploy or period of inactivity is 2–5 seconds becaus
 ## 17. Known gotchas
 
 - **`after_24h` doesn't mean 24 hours anymore** — the threshold is 6 hours. The column name and query parameter were kept for backwards compatibility. Don't rely on the name.
-- **Metabase VIN queries are slow** — 30–60 seconds typical. The retry is set to 1 with a 65-second per-attempt timeout. If you see repeated timeouts in production, the Metabase card query likely needs optimization (talk to whoever owns the Metabase card).
+- **Metabase VIN queries are slow** — tens of seconds, now larger with the publishing on+off card. The VIN CSV fetch uses a 180-second timeout. If you see repeated timeouts in production, the Metabase card query likely needs optimization (talk to whoever owns the Metabase card).
 - **The sync lock is global** — only one sync can run across all serverless instances. A second concurrent trigger returns `202 Already Running` instead of failing.
 - **`completed_at` is intentionally not stamped on failed VIN syncs** — this is so the UI doesn't show a misleading "synced X min ago" message. If you see `completedAt` lagging behind `startedAt`, the last sync's VIN step failed.
-- **Materialized views drop on cold start** — this is by design (schema changes propagate automatically) but it does mean the very first request after a deploy refreshes them lazily, which can add a second or two.
+- **Materialized views are NOT dropped on cold start (anymore)** — they're created `IF NOT EXISTS` and persist (commit `ccbc6fb`, fixing a refresh race). This means a change to a view *definition* will silently not take effect — you must drop the view in an explicit migration. (The handover previously documented the opposite, drop-on-cold-start behavior; that is no longer true.)
+- **`summary_cache.date_filter` no longer means a date** — the column was never renamed but now stores publishing scope (`all`/`on`/`off`). And `dateFilter` (`post`/`pre`, 2026-04-01 cutoff) is dormant dead code: the helpers still exist but no caller sets it.
+- **No FAILED-VIN business exclusion** — the old logic that hid a specific enterprise's `FAILED` VINs from dashboard queries was removed (commit `d53c4e0`). `status_overall_status` is still ingested but nothing filters on it.
+- **VIN sync uses a staging-table swap** — `vins_staging` is built chunk-by-chunk then swapped into `vins` via `TRUNCATE + INSERT` (not `RENAME`, to preserve the table OID the MVs depend on). If a sync dies mid-stream, a stale `vins_staging` may be left behind; it's recreated (`LIKE vins`) at the start of the next sync, so it's self-healing, but worth knowing.
+- **The row-count truncation guard is gone** — syncs no longer abort if the new row count differs sharply from the old one (commit `727f5c4`); the publishing on+off card legitimately changed volume. A genuinely broken/empty source card will now replace `vins` with whatever it returns.
 - **`vercel.json`'s `* 12-13 * * *` cron** — runs every minute for two hours daily. If you ever shorten the report-generation window, make sure all queued recipients can be drained within it; otherwise some emails will be left as `pending` indefinitely.
 - **CSV recipient uploads are write-mostly** — the UI replaces the recipient set per entity rather than appending. Double-check before uploading.
 - **Inline SVG charts in emails** — Gmail and Outlook web render them fine; some older clients may not. If a recipient complains about missing charts, the template is in [server/emailTemplateDaily.js](server/emailTemplateDaily.js) and graphics come from `/api/donut.svg` and `/api/split-dot.svg`.
@@ -501,7 +524,7 @@ VIN-tracker-Dashboard/
 │   ├── emailTemplateDaily.js     # ~1,000 lines — rooftop + group report HTML (Pipeline B)
 │   ├── index.js                  # Local dev entry (PORT 3002)
 │   ├── migrate.js                # Applies .sql migrations
-│   ├── migrations/               # Numbered .sql migration files (001–008)
+│   ├── migrations/               # Numbered .sql migration files (001–010)
 │   ├── backfill-report-status.js # One-shot rebuild of rooftop_report_status_daily
 │   ├── scoreUtil.js              # Helper: website-score → label
 │   └── spyneLogo.js              # Inline base64 logo for emails

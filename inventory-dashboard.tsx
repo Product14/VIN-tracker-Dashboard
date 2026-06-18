@@ -2352,7 +2352,9 @@ export default function Dashboard() {
   const [reportCovLoading, setReportCovLoading] = useState(false);
 
   const tabs = ["Overview", "Enterprise View", "Rooftop View", "VIN Data", "Report Status"];
-  const STUDIO_HEALTH_URL = "https://studio-adoption.vercel.app/studio-health-report";
+  // Served from this project now (replicated under server/studio/) — same-origin in
+  // prod (vercel rewrite) and proxied to the Express server in dev (vite.config.js).
+  const STUDIO_HEALTH_URL = `${API_BASE}/api/studio-health-board`;
   const STUDIO_URL = "https://studio-adoption.vercel.app/";
   const TRACKER_360_URL = "https://360-tracker-dashboard-tau.vercel.app/";
   // Track whether the initial mount load has completed so the dateFilter

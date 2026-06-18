@@ -7,17 +7,19 @@ import { query, getClient } from "./db.js";
 import { buildEmailHtml }                                    from "./emailTemplate.js";
 import { buildRooftopReportHtml, buildGroupReportHtml }     from "./emailTemplateDaily.js";
 import { sendReport, sendDailyReport }                      from "./emailClient.js";
+import { buildHtml as buildStudioHealthHtml, subjectStamp } from "./studio/studioHealthReport.js";
+import { buildBoardHtml as buildStudioHealthBoardHtml }     from "./studio/studioHealthBoard.js";
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// VIN_CARD_URL env override lets us point the sync at an alternate Metabase card
-// (e.g. the expanded publishing-on+off query) for local/test runs without removing
-// the production card. Unset in prod → behaviour is identical to before.
+// Canonical VIN card — includes is_publishing / is_qc_on / customer_segment. The
+// VIN_CARD_URL env override can still point the sync at an alternate card for local
+// /test runs. (.replace("/query/json","/query/csv") below derives the streaming CSV URL.)
 const VIN_DETAILS_URL =
   process.env.VIN_CARD_URL ||
-  "https://metabase.spyne.ai/api/public/card/15e908e4-fe21-4982-9d8c-4aff07f2c948/query/json";
+  "https://metabase.spyne.ai/api/public/card/a8842975-bdb4-49f1-b980-93aae93007fc/query/json";
 
 const ROOFTOP_DETAILS_URL =
   "https://metabase.spyne.ai/api/public/card/f5c032a6-c262-40ee-8d95-c115d326d3a8/query/json";
@@ -136,7 +138,7 @@ async function fetchFromMetabase(url, label, retries = 3, timeoutMs = 0, format 
 const VIN_COLUMNS = `dealer_vin_id, vin, enterprise_id, rooftop_id, status, after_24h, received_at, processed_at,
        reason_bucket, hold_reason, has_photos, output_image_count, thumbnail_url, vdp_url, vehicle_price,
        make, model, year, trim, stock_number, vin_score, synced_at, vin_creation, condition, platform,
-       is_publishing, is_qc_on, status_overall_status`;
+       is_publishing, is_qc_on, status_overall_status, customer_segment`;
 
 async function syncVins() {
   console.log("[sync:VIN_DETAILS] fetching (CSV, streaming)…");
@@ -168,7 +170,7 @@ async function syncVins() {
       UNNEST($20::text[]),   UNNEST($21::real[]),   UNNEST($22::text[]),    UNNEST($23::text[]),
       UNNEST($24::text[]),   UNNEST($25::text[]),
       UNNEST($26::smallint[]), UNNEST($27::smallint[]),
-      UNNEST($28::text[])
+      UNNEST($28::text[]),   UNNEST($29::text[])
   `;
 
   // Step 1: FRESH staging table — never touch live `vins` until the whole pull
@@ -192,6 +194,7 @@ async function syncVins() {
     thumbnailUrls: [], vdpUrls: [], vehiclePrices: [], makes: [], models: [],
     years: [], trims: [], stockNumbers: [], vinScores: [], vinCreations: [],
     conditions: [], platforms: [], isPublishings: [], isQcOns: [], statusOveralls: [],
+    customerSegments: [],
     syncedAts: [],
   });
 
@@ -214,6 +217,7 @@ async function syncVins() {
         cols.conditions, cols.platforms,
         cols.isPublishings, cols.isQcOns,
         cols.statusOveralls,
+        cols.customerSegments,
       ]);
       staged += inBatch;
       console.log(`[sync:VIN_DETAILS] staged batch ${batchNum} (${staged} rows so far)`);
@@ -285,6 +289,8 @@ async function syncVins() {
     cols.isPublishings.push(cleanAfter24(row.is_publishing ?? null));
     cols.isQcOns.push(cleanAfter24(row.is_qc_on ?? null));
     cols.statusOveralls.push(txt(row.status_overallStatus));
+    // Customer segment (Ent / Mid / SMB) — accept the snake_case header or a spaced variant.
+    cols.customerSegments.push(txt(row.customer_segment ?? row["Customer Segment"]));
     cols.syncedAts.push(syncedAt);
     if (++inBatch >= BATCH_SIZE) await flush();
   }
@@ -4471,6 +4477,66 @@ app.get("/api/cleanup-report-archive", async (req, res) => {
   } catch (e) {
     console.error("[cleanup-report-archive] error:", e?.message);
     return res.status(500).json({ error: e?.message });
+  }
+});
+
+// ─── Studio Health Report — Executive Board (on-screen dashboard) ────────────
+// GET /api/studio-health-board → live HTML board built from the three Studio Health
+// sheet tabs (Funnel · Plan · Images · 360 · Video · Adoption). View-only; an hourly
+// edge cache is re-warmed by the Vercel cron, and ?refresh=1 bypasses every cache.
+app.get("/api/studio-health-board", async (req, res) => {
+  try {
+    const html = await buildStudioHealthBoardHtml({ force: !!req.query?.refresh });
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    if (req.query?.refresh) {
+      res.setHeader("Cache-Control", "no-store, max-age=0");
+    } else {
+      res.setHeader("Cache-Control", "public, max-age=0, s-maxage=3600, stale-while-revalidate=86400");
+    }
+    return res.status(200).send(html);
+  } catch (e) {
+    console.error("[studio-health-board] failed:", e);
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    return res
+      .status(500)
+      .send(`<!doctype html><meta charset="utf-8"><body style="font-family:system-ui;padding:40px;color:#b91c1c;">
+        <h1 style="margin:0 0 8px;">Studio Health Report — temporarily unavailable</h1>
+        <p style="color:#374151;">Failed to build the board: ${String(e.message)}</p></body>`);
+  }
+});
+
+// ─── Studio Health Report — daily email ──────────────────────────────────────
+// GET /api/studio-health-report → builds the Studio Health email and sends it via
+// the internal email API to STUDIO_HEALTH_EMAIL_TO/CC (kept separate from the VIN
+// daily-report recipients). Add ?preview=1 to render the HTML without sending.
+// Cron auth: only enforced when CRON_SECRET is set (so local/preview runs need no header).
+app.get("/api/studio-health-report", async (req, res) => {
+  const cronSecret = process.env.CRON_SECRET;
+  if (cronSecret && req.headers.authorization !== `Bearer ${cronSecret}`) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  try {
+    const { html, rooftops } = await buildStudioHealthHtml();
+
+    if (req.query?.preview) {
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      return res.status(200).send(html);
+    }
+
+    const to  = (process.env.STUDIO_HEALTH_EMAIL_TO || "").split(",").map(s => s.trim()).filter(Boolean);
+    if (to.length === 0) throw new Error("STUDIO_HEALTH_EMAIL_TO env var is not set");
+    const cc  = (process.env.STUDIO_HEALTH_EMAIL_CC || "").split(",").map(s => s.trim()).filter(Boolean);
+
+    const result = await sendDailyReport(html, {
+      to,
+      cc,
+      subject: `Studio Health Report - ${subjectStamp()}`,
+    });
+    return res.status(200).json({ ok: true, rooftops, result });
+  } catch (e) {
+    console.error("[studio-health-report] failed:", e);
+    return res.status(500).json({ error: e.message });
   }
 });
 
