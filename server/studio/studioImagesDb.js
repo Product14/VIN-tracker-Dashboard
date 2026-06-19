@@ -17,6 +17,22 @@
 
 import { query } from '../db.js'
 
+// Read-only queries are idempotent, so retry transient failures — chiefly the
+// connection-level errors (pool/pooler hiccups, cold-serverless connect timeouts)
+// that otherwise make the Images metrics/KPIs intermittently vanish.
+async function queryWithRetry(sql, params, retries = 2) {
+  let lastErr
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await query(sql, params)
+    } catch (e) {
+      lastErr = e
+      if (attempt < retries) await new Promise((r) => setTimeout(r, 300 * (attempt + 1)))
+    }
+  }
+  throw lastErr
+}
+
 // Turnaround (hours) for a row, NULL unless both timestamps are present and ordered.
 const TAT_HOURS = `
   CASE WHEN processed_at IS NOT NULL AND processed_at <> ''
@@ -119,7 +135,7 @@ export async function computeImagesMatrix({ publishing = 'all', tz } = {}) {
     ${aggs}
     FROM flags`
 
-  const { rows } = await query(sql, [zone])
+  const { rows } = await queryWithRetry(sql, [zone])
   const r = rows[0] || {}
 
   return [
@@ -153,7 +169,7 @@ export async function computeImagesKpis({ publishing = 'all' } = {}) {
     WHERE COALESCE(has_photos, 0) = 1
       ${publishingClause(publishing)}`
 
-  const { rows } = await query(sql)
+  const { rows } = await queryWithRetry(sql)
   const r = rows[0] || {}
   return {
     delivered: r.delivered ?? 0,
