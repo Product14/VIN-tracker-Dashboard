@@ -302,11 +302,27 @@ async function syncVins() {
   }
   await flush();   // final partial batch
 
-  // Step 3: Post-dedup staged count — used only for the completion log below.
-  // (The truncation sanity guard was removed: the source card's legitimate row
-  // count can change, so comparing against the live count produced false aborts.)
+  // Step 3: Post-dedup staged count — also the empty-pull guard below.
   const { rows: stagedRows } = await query("SELECT COUNT(DISTINCT dealer_vin_id)::int AS n FROM vins_staging");
   const stagedDistinct = stagedRows[0]?.n ?? 0;
+
+  // Empty-pull guard. Metabase occasionally returns a valid-but-empty CSV for this
+  // big, slow card on a transient query timeout — HTTP 200, Content-Type text/csv,
+  // zero data rows — which slips past the HTTP-error and JSON-error-body checks
+  // above. If we proceeded, the swap below would TRUNCATE the live `vins` table and
+  // refill it with nothing: dashboard wiped, scheduled report sent blank. Abort
+  // BEFORE the swap so the previous snapshot stays intact and the critical-sync
+  // failure propagates to runSync → the report then sends with cached data.
+  //
+  // This is a hard zero check, NOT the shrink-ratio guard removed in 727f5c4 (which
+  // false-aborted when the source card's row count legitimately dropped). Going from
+  // ~300k rows to 0 is never a legitimate state, so this cannot reintroduce that.
+  if (stagedDistinct === 0) {
+    throw new Error(
+      `[sync:VIN_DETAILS] aborting swap — staged 0 rows (${staged} streamed). ` +
+      `Source card likely returned an empty/degenerate CSV; keeping previous vins snapshot.`
+    );
+  }
 
   // Step 4: Atomic swap. The materialized views depend on the `vins` table OID, so
   // we keep its identity (TRUNCATE+INSERT in one transaction) instead of renaming.
