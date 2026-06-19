@@ -5,3 +5,7 @@ server/vins.db
 *.env
 !.env.example
 .claude/settings.local.json
+
+# Generated Studio Health artifacts
+studio-health.jpg
+studio-health-preview.html

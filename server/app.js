@@ -9,6 +9,8 @@ import { buildRooftopReportHtml, buildGroupReportHtml }     from "./emailTemplat
 import { sendReport, sendDailyReport }                      from "./emailClient.js";
 import { buildHtml as buildStudioHealthHtml, subjectStamp } from "./studio/studioHealthReport.js";
 import { buildBoardHtml as buildStudioHealthBoardHtml }     from "./studio/studioHealthBoard.js";
+import { htmlToJpeg }                                       from "./studio/renderImage.js";
+import { uploadJpegToSlack }                                from "./studio/slackClient.js";
 
 const app = express();
 app.use(cors());
@@ -4537,6 +4539,40 @@ app.get("/api/studio-health-report", async (req, res) => {
     return res.status(200).json({ ok: true, rooftops, result });
   } catch (e) {
     console.error("[studio-health-report] failed:", e);
+    return res.status(500).json({ error: e.message });
+  }
+});
+
+// ─── Studio Health Report — post to Slack as a JPEG ──────────────────────────
+// GET /api/studio-health-slack → renders the Studio Health email to a JPEG (headless
+// Chromium) and uploads it to the Slack channel (SLACK_CHANNEL_ID) via SLACK_BOT_TOKEN.
+// Add ?preview=1 to return the JPEG in the browser instead of posting (for QA).
+app.get("/api/studio-health-slack", async (req, res) => {
+  const cronSecret = process.env.CRON_SECRET;
+  if (cronSecret && req.headers.authorization !== `Bearer ${cronSecret}`) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  try {
+    const { html } = await buildStudioHealthHtml();
+    const jpeg = await htmlToJpeg(html);
+
+    if (req.query?.preview) {
+      res.setHeader("Content-Type", "image/jpeg");
+      res.setHeader("Cache-Control", "no-store");
+      return res.status(200).send(jpeg);
+    }
+
+    const stamp = subjectStamp();
+    const safe = stamp.replace(/[^\w]+/g, "-");
+    const result = await uploadJpegToSlack(jpeg, {
+      filename: `studio-health-${safe}.jpg`,
+      title: `Studio Health Report — ${stamp}`,
+      comment: `Studio Health Report — ${stamp}`,
+    });
+    return res.status(200).json({ ok: true, ...result });
+  } catch (e) {
+    console.error("[studio-health-slack] failed:", e);
     return res.status(500).json({ error: e.message });
   }
 });
