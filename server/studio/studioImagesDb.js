@@ -120,6 +120,7 @@ export async function computeImagesMatrix({ publishing = 'all', tz } = {}) {
       FROM vins
       WHERE received_at IS NOT NULL AND received_at <> ''
         AND COALESCE(has_photos, 0) = 1
+        AND COALESCE(output_processing_catalog, 1) = 1
         AND DATE(received_at::timestamptz AT TIME ZONE $1)
             >= (date_trunc('month', (NOW() AT TIME ZONE $1)) - INTERVAL '2 months')::date
         ${publishingClause(publishing)}
@@ -167,6 +168,7 @@ export async function computeImagesKpis({ publishing = 'all' } = {}) {
       )::int AS pendency_over6
     FROM vins
     WHERE COALESCE(has_photos, 0) = 1
+      AND COALESCE(output_processing_catalog, 1) = 1
       ${publishingClause(publishing)}`
 
   const { rows } = await queryWithRetry(sql)

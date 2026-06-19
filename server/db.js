@@ -43,6 +43,7 @@ export async function initSchema() {
       is_qc_on             SMALLINT,
       status_overall_status TEXT,
       customer_segment     TEXT,
+      output_processing_catalog SMALLINT,
       synced_at            TEXT
     );
     ALTER TABLE vins ADD COLUMN IF NOT EXISTS hold_reason TEXT DEFAULT '';
@@ -70,6 +71,11 @@ export async function initSchema() {
     -- Customer segment (Ent / Mid / SMB) from the VIN card — drives the Studio Health
     -- Images section's ENT/MID/SMB columns.
     ALTER TABLE vins ADD COLUMN IF NOT EXISTS customer_segment TEXT;
+    -- Catalog-output flag from the VIN card (CSV column outputProcessingList_catalog, 0/1).
+    -- The card emits non-catalog VINs with a blank delivery status; pending/funnel metrics scope
+    -- to COALESCE(output_processing_catalog,1)=1 so those rows don't inflate Not-Delivered counts.
+    -- NULL on legacy data is treated as in-funnel (1), mirroring is_publishing.
+    ALTER TABLE vins ADD COLUMN IF NOT EXISTS output_processing_catalog SMALLINT;
 
     -- Migration: swap PK from vin → dealer_vin_id on existing deployments.
     DO $$
@@ -278,26 +284,26 @@ export async function initSchema() {
       COUNT(*)::int                                                                                                            AS total,
       SUM(CASE WHEN COALESCE(v.has_photos,0)=1 THEN 1 ELSE 0 END)::int                                                       AS with_photos,
       SUM(CASE WHEN v.status = 'Delivered' AND COALESCE(v.has_photos,0)=1 THEN 1 ELSE 0 END)::int                            AS delivered_with_photos,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 THEN 1 ELSE 0 END)::int                           AS pending_with_photos,
+      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.output_processing_catalog,1)=1 AND COALESCE(v.has_photos,0)=1 THEN 1 ELSE 0 END)::int                           AS pending_with_photos,
       SUM(CASE WHEN v.status = 'Delivered' THEN 1 ELSE 0 END)::int                                                            AS processed,
       SUM(CASE WHEN v.status = 'Delivered' AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int                             AS processed_after_24h,
-      SUM(CASE WHEN v.status != 'Delivered' THEN 1 ELSE 0 END)::int                                                           AS not_processed,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS not_processed_after_24h,
+      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.output_processing_catalog,1)=1 THEN 1 ELSE 0 END)::int                                                           AS not_processed,
+      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.output_processing_catalog,1)=1 AND COALESCE(v.has_photos,0)=1 AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS not_processed_after_24h,
       MAX(rd.website_score)               AS website_score,
       MAX(rd.website_listing_url)         AS website_listing_url,
       MAX(rd.ims_integration_status)      AS ims_integration_status,
       MAX(rd.publishing_status)           AS publishing_status,
       MAX(COALESCE(v.is_publishing, 1))::int AS is_publishing,
       ROUND(AVG(v.vin_score)::numeric, 2) AS avg_inventory_score,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Upload Pending'      AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS bucket_upload_pending,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Processing Pending' AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Missing VIN Name'   AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS bucket_missing_vin_name,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Scheduled Push'     AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS bucket_scheduled_push,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Publishing Pending' AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'QC Pending'         AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'QC Hold'            AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS bucket_qc_hold,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Sold'               AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS bucket_sold,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Others'             AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS bucket_others
+      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.output_processing_catalog,1)=1 AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Upload Pending'      AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS bucket_upload_pending,
+      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.output_processing_catalog,1)=1 AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Processing Pending' AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
+      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.output_processing_catalog,1)=1 AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Missing VIN Name'   AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS bucket_missing_vin_name,
+      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.output_processing_catalog,1)=1 AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Scheduled Push'     AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS bucket_scheduled_push,
+      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.output_processing_catalog,1)=1 AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Publishing Pending' AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
+      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.output_processing_catalog,1)=1 AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'QC Pending'         AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
+      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.output_processing_catalog,1)=1 AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'QC Hold'            AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS bucket_qc_hold,
+      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.output_processing_catalog,1)=1 AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Sold'               AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS bucket_sold,
+      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.output_processing_catalog,1)=1 AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Others'             AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS bucket_others
     FROM vins v
     LEFT JOIN rooftop_details rd ON v.rooftop_id = rd.team_id
     LEFT JOIN enterprise_details ed ON v.enterprise_id = ed.enterprise_id
@@ -313,11 +319,11 @@ export async function initSchema() {
       COUNT(*)::int                                                                                                            AS total,
       SUM(CASE WHEN COALESCE(v.has_photos,0)=1 THEN 1 ELSE 0 END)::int                                                       AS with_photos,
       SUM(CASE WHEN v.status = 'Delivered' AND COALESCE(v.has_photos,0)=1 THEN 1 ELSE 0 END)::int                            AS delivered_with_photos,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 THEN 1 ELSE 0 END)::int                           AS pending_with_photos,
+      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.output_processing_catalog,1)=1 AND COALESCE(v.has_photos,0)=1 THEN 1 ELSE 0 END)::int                           AS pending_with_photos,
       SUM(CASE WHEN v.status = 'Delivered' THEN 1 ELSE 0 END)::int                                                            AS processed,
       SUM(CASE WHEN v.status = 'Delivered' AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int                             AS processed_after_24h,
-      SUM(CASE WHEN v.status != 'Delivered' THEN 1 ELSE 0 END)::int                                                           AS not_processed,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS not_processed_after_24h,
+      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.output_processing_catalog,1)=1 THEN 1 ELSE 0 END)::int                                                           AS not_processed,
+      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.output_processing_catalog,1)=1 AND COALESCE(v.has_photos,0)=1 AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS not_processed_after_24h,
       COUNT(DISTINCT v.rooftop_id)::int     AS rooftop_count,
       COUNT(DISTINCT CASE WHEN rd.ims_integration_status = 'false' THEN v.rooftop_id END)::int AS not_integrated_count,
       COUNT(DISTINCT CASE WHEN rd.publishing_status = 'false' THEN v.rooftop_id END)::int      AS publishing_disabled_count,
@@ -327,15 +333,15 @@ export async function initSchema() {
       ROUND(AVG(v.vin_score)::numeric, 2)       AS avg_inventory_score,
       MAX(ed.website_url)                   AS website_url,
       MAX(ed.type)                          AS account_type,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Upload Pending'      AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS bucket_upload_pending,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Processing Pending' AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Missing VIN Name'   AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS bucket_missing_vin_name,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Scheduled Push'     AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS bucket_scheduled_push,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Publishing Pending' AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'QC Pending'         AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'QC Hold'            AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS bucket_qc_hold,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Sold'               AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS bucket_sold,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Others'             AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS bucket_others
+      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.output_processing_catalog,1)=1 AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Upload Pending'      AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS bucket_upload_pending,
+      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.output_processing_catalog,1)=1 AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Processing Pending' AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS bucket_processing_pending,
+      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.output_processing_catalog,1)=1 AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Missing VIN Name'   AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS bucket_missing_vin_name,
+      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.output_processing_catalog,1)=1 AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Scheduled Push'     AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS bucket_scheduled_push,
+      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.output_processing_catalog,1)=1 AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Publishing Pending' AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS bucket_publishing_pending,
+      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.output_processing_catalog,1)=1 AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'QC Pending'         AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
+      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.output_processing_catalog,1)=1 AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'QC Hold'            AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS bucket_qc_hold,
+      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.output_processing_catalog,1)=1 AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Sold'               AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS bucket_sold,
+      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.output_processing_catalog,1)=1 AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Others'             AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS bucket_others
     FROM vins v
     LEFT JOIN enterprise_details ed ON v.enterprise_id = ed.enterprise_id
     LEFT JOIN rooftop_details rd    ON v.rooftop_id = rd.team_id
@@ -344,8 +350,12 @@ export async function initSchema() {
 
   // Unique indexes required for REFRESH MATERIALIZED VIEW CONCURRENTLY.
   // Without these, a refresh would take an exclusive lock blocking all reads.
+  // v_by_rooftop is GROUP BY (rooftop_id, enterprise_id), so the unique key is the
+  // PAIR — not rooftop_id alone. A rooftop_id that maps to >1 enterprise_id (e.g. a
+  // dealer mid-migration between enterprise accounts) would otherwise make this index
+  // un-buildable, failing the refresh / the MV rebuild on cold start.
   await pool.query(`
-    CREATE UNIQUE INDEX IF NOT EXISTS uix_mv_rooftop_id    ON v_by_rooftop(rooftop_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS uix_mv_rooftop_id    ON v_by_rooftop(rooftop_id, enterprise_id);
     CREATE UNIQUE INDEX IF NOT EXISTS uix_mv_enterprise_id ON v_by_enterprise(id);
   `);
 
