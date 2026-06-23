@@ -18,6 +18,7 @@
     { "path": "/api/send-daily-report",    "schedule": "0 12 * * *"   },
     { "path": "/api/process-report-queue", "schedule": "* 12-13 * * *" },
     { "path": "/api/cleanup-report-archive", "schedule": "0 3 * * *" },
+    { "path": "/api/capture-pendency-snapshot", "schedule": "45 6 * * *" },
     { "path": "/api/studio-health-report",   "schedule": "30 6 * * *" },
     { "path": "/api/studio-health-slack",    "schedule": "30 6 * * *" }
   ]

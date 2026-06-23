@@ -45,33 +45,11 @@ const SAMPLE_DATA = [
   { vin: "2C3CDXCT1EH223344", enterpriseId: "ENT-002", enterprise: "Westside Holdings", rooftopId: "RT-007", rooftop: "Valley Rides", rooftopType: "Independent", csm: "Sarah Miller", status: "Delivered", processedAt: "2026-04-07T01:00:00", receivedAt: "2026-04-06T22:00:00" },
 ];
 
-const NOW = new Date("2026-04-07T12:00:00");
-// Pendency threshold. Identifier names like `after24h`, `notProcessedAfter24`
-// were originally tied to a 24h Metabase flag; the threshold is now 6h,
-// computed from receivedAt/processedAt — names retained for backwards
-// compatibility with API contract / sort keys.
-const H6 = 6 * 60 * 60 * 1000;
-
-function isAfter6h(item) {
-  if (item.status === "Delivered") return (new Date(item.processedAt).getTime() - new Date(item.receivedAt).getTime()) >= H6;
-  return (NOW.getTime() - new Date(item.receivedAt).getTime()) >= H6;
-}
-
-function applyRawFilters(data, filters) {
-  return data.filter(d => {
-    if (filters.rooftopId && d.rooftopId !== filters.rooftopId) return false;
-    if (filters.rooftopType && d.rooftopType !== filters.rooftopType) return false;
-    if (filters.csm && d.csm !== filters.csm) return false;
-    if (filters.status && d.status !== filters.status) return false;
-    if (filters.after24h === true && !isAfter6h(d)) return false;
-    if (filters.after24h === false && isAfter6h(d)) return false;
-    if (filters.search) {
-      const s = filters.search.toLowerCase();
-      if (!d.vin.toLowerCase().includes(s) && !d.rooftop.toLowerCase().includes(s) && !d.csm.toLowerCase().includes(s)) return false;
-    }
-    return true;
-  });
-}
+// Pendency threshold is 6h. The per-VIN flag now comes from the server (the
+// Metabase card's `after_6_hrs`, served as `after24h`); the dashboard no longer
+// computes it client-side. Identifier names like `after24h` /
+// `notProcessedAfter24` are retained for backwards compatibility with the API
+// contract and sort keys.
 
 function Badge({ label, color }) {
   const colors = {
@@ -664,7 +642,7 @@ function RawTab({ data, loading, filters, setFilters, total, page, pageCount, on
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const { data } = await res.json();
       const headers = ["Enterprise ID", "Enterprise Name", "Team ID", "Rooftop Name", "Type", "CSM", "VIN", "Dealer VIN ID", "Has Photos", "Status", "Publishing", "After 6h?", "Source", "Received", "Delivered", "Reason Bucket", "Hold Reason", "VIN Score"];
-      const rows = data.map(d => [d.enterpriseId, d.enterprise, d.rooftopId, d.rooftop, d.rooftopType, d.csm, d.vin, d.dealerVinId ?? "", d.hasPhotos ? "Yes" : "No", d.status, d.isPublishing ? "On" : "Off", isAfter6h(d) ? "Yes" : "No", d.platform || "", d.receivedAt ? new Date(d.receivedAt).toLocaleString() : "", d.processedAt ? new Date(d.processedAt).toLocaleString() : "", d.reasonBucket || "", d.holdReason || "", d.vinScore != null ? Number(d.vinScore).toFixed(1) : ""]);
+      const rows = data.map(d => [d.enterpriseId, d.enterprise, d.rooftopId, d.rooftop, d.rooftopType, d.csm, d.vin, d.dealerVinId ?? "", d.hasPhotos ? "Yes" : "No", d.status, d.isPublishing ? "On" : "Off", d.after24h ? "Yes" : "No", d.platform || "", d.receivedAt ? new Date(d.receivedAt).toLocaleString() : "", d.processedAt ? new Date(d.processedAt).toLocaleString() : "", d.reasonBucket || "", d.holdReason || "", d.vinScore != null ? Number(d.vinScore).toFixed(1) : ""]);
       downloadCSV("vin-data.csv", headers, rows);
     } catch (err) {
       console.error("Export failed:", err);
@@ -738,7 +716,7 @@ function RawTab({ data, loading, filters, setFilters, total, page, pageCount, on
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6", textAlign: "center" }}>{d.hasPhotos ? <Badge label="Yes" color="green" /> : <Badge label="No" color="gray" />}</td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}><Badge label={d.status} color={d.status === "Delivered" ? "green" : "red"} /></td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6", textAlign: "center" }}>{d.isPublishing ? <Badge label="On" color="green" /> : <Badge label="Off" color="gray" />}</td>
-                <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6", textAlign: "center" }}>{isAfter6h(d) ? <Badge label="Yes" color="amber" /> : <Badge label="No" color="green" />}</td>
+                <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6", textAlign: "center" }}>{d.after24h ? <Badge label="Yes" color="amber" /> : <Badge label="No" color="green" />}</td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}>{d.platform ? <Truncated value={d.platform} maxWidth={140} /> : <span style={{ color: "#9ca3af" }}>—</span>}</td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6", whiteSpace: "nowrap", fontSize: 12 }}>{new Date(d.receivedAt).toLocaleString()}</td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6", whiteSpace: "nowrap", fontSize: 12 }}>{d.processedAt ? new Date(d.processedAt).toLocaleString() : "—"}</td>

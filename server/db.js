@@ -238,6 +238,19 @@ export async function initSchema() {
     CREATE INDEX IF NOT EXISTS idx_rrsd_day_reason
       ON rooftop_report_status_daily (report_day, error_reason)
       WHERE status IN ('skipped', 'error');
+
+    -- Daily pendency snapshot: one row per IST calendar day, written by the
+    -- /api/capture-pendency-snapshot cron (06:45 UTC / 12:15 PM IST). pending_total
+    -- and pending_over_6h mirror the Overview "Pending VINs" / "Pending VINs >6h"
+    -- KPIs (computeSummary totals.pendingWithPhotos / .notProcessedAfter24). Pendency
+    -- is otherwise overwritten in summary_cache each sync, so this is the only history
+    -- we keep — it powers the Trends tab. Tiny (~365 rows/yr); retained indefinitely.
+    CREATE TABLE IF NOT EXISTS pendency_daily_snapshot (
+      snapshot_date    DATE PRIMARY KEY,
+      pending_total    INTEGER NOT NULL,
+      pending_over_6h  INTEGER NOT NULL,
+      captured_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
   `);
 
   // Materialized views — created once (idempotent) and then LEFT IN PLACE.
@@ -255,22 +268,14 @@ export async function initSchema() {
   await pool.query(`DROP VIEW IF EXISTS v_totals, v_by_csm, v_by_type`).catch(() => {});
   await pool.query(`DROP VIEW IF EXISTS v_by_rooftop, v_by_enterprise`).catch(() => {});
 
-  // Pendency threshold: VIN counts as ">6h pending" when either it's still
-  // unprocessed and was received more than 6 hours ago, or it was eventually
-  // processed but took 6+ hours from receipt to processing. Mirrors the legacy
-  // Metabase `after_24_hrs` shape with the interval flipped to 6 hours; columns
-  // / aggregates downstream still use the legacy `*_after_24h` names.
-  const PENDENCY_PREDICATE = `(
-    (
-      (v.processed_at IS NULL OR v.processed_at = '')
-      AND v.received_at IS NOT NULL AND v.received_at <> ''
-      AND v.received_at::timestamptz + INTERVAL '6 hours' <= NOW()
-    ) OR (
-      v.processed_at IS NOT NULL AND v.processed_at <> ''
-      AND v.received_at IS NOT NULL AND v.received_at <> ''
-      AND v.processed_at::timestamptz >= v.received_at::timestamptz + INTERVAL '6 hours'
-    )
-  )`;
+  // Pendency threshold: VIN counts as ">6h pending" per the Metabase card's
+  // `after_6_hrs` flag, ingested into the `after_24h` column (legacy name kept so
+  // downstream `*_after_24h` aggregate names stay stable). The card owns the 6h
+  // SLA logic; we no longer recompute it from received_at/processed_at here, so
+  // the materialized views match the dashboard's per-VIN "After 6h?" column.
+  // NOTE: changing this definition requires dropping the MVs so the CREATE ...
+  // IF NOT EXISTS below rebuilds them — see migration 013.
+  const PENDENCY_PREDICATE = `(COALESCE(v.after_24h, 0) = 1)`;
 
   await pool.query(`
     CREATE MATERIALIZED VIEW IF NOT EXISTS v_by_rooftop AS

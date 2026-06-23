@@ -44,21 +44,15 @@ const cleanAfter24 = (v) => {
   return v ? 1 : 0;
 };
 
-// Pendency >6h predicate — VIN counts as pending past the 6h SLA when it's
-// either still unprocessed and was received >6h ago, or it was processed but
-// took ≥6h end-to-end. `alias` is the table alias prefix (`'v'` for `vins v`,
-// `''` for unaliased CTE projections that already select received_at /
-// processed_at). Mirrors the formula in server/db.js's PENDENCY_PREDICATE.
+// Pendency >6h predicate — now taken directly from the Metabase card's
+// `after_6_hrs` flag (stored in the legacy `after_24h` column), so the dashboard,
+// drill-downs and aggregations all share the card's single definition of the 6h
+// SLA. Previously recomputed from received_at/processed_at; the card now owns
+// that logic. `alias` is the table alias prefix (`'v'` for `vins v`, `''` for
+// unaliased CTE projections). Mirrors server/db.js's PENDENCY_PREDICATE.
 function pendencyPredicate6h(alias = 'v') {
   const a = alias ? `${alias}.` : '';
-  return `(
-    ((${a}processed_at IS NULL OR ${a}processed_at = '')
-       AND ${a}received_at IS NOT NULL AND ${a}received_at <> ''
-       AND ${a}received_at::timestamptz + INTERVAL '6 hours' <= NOW())
-    OR (${a}processed_at IS NOT NULL AND ${a}processed_at <> ''
-        AND ${a}received_at IS NOT NULL AND ${a}received_at <> ''
-        AND ${a}processed_at::timestamptz >= ${a}received_at::timestamptz + INTERVAL '6 hours')
-  )`;
+  return `(COALESCE(${a}after_24h, 0) = 1)`;
 }
 
 // Fetch from Metabase with optional per-attempt timeout and exponential back-off retry.
@@ -269,7 +263,11 @@ async function syncVins() {
     cols.enterpriseIds.push(row.enterpriseId ?? "");
     cols.rooftopIds.push(String(row.teamId ?? ""));
     cols.statuses.push(row.status ?? "");
-    cols.after24hs.push(cleanAfter24(row.after_24_hrs ?? row.after_24hrs ?? null));
+    // Pendency flag now comes from the card's `after_6_hrs` column (6h SLA, logic
+    // owned by Metabase). Old `after_24_hrs` names kept as fallbacks during the
+    // card swap; stored in the legacy `after_24h` column (renaming it would touch
+    // ~50 call sites — see the back-compat note in buildVinFilters).
+    cols.after24hs.push(cleanAfter24(row.after_6_hrs ?? row.after_6hrs ?? row.after_24_hrs ?? row.after_24hrs ?? null));
     cols.receivedAts.push(cleanDate(row.receivedAt));
     cols.processedAts.push(cleanDate(row.sentAt));
     cols.reasonBuckets.push(row.reason_bucket ?? "");
@@ -568,7 +566,7 @@ function toApiRow(r) {
     status:       r.status,
     reasonBucket: r.reason_bucket || null,
     holdReason:   r.hold_reason || null,
-    after24h:     r.after_24h !== null ? Boolean(r.after_24h) : null, // legacy — Metabase 24h flag, no longer authoritative; client uses receivedAt/processedAt with H6.
+    after24h:     r.after_24h !== null ? Boolean(r.after_24h) : null, // the card's after_6_hrs flag (legacy column/field name); authoritative — the client renders this directly as "After 6h?".
     hasPhotos:    r.has_photos !== null ? Boolean(r.has_photos) : false,
     receivedAt:   r.received_at,
     processedAt:  r.processed_at,
@@ -4500,6 +4498,56 @@ app.get("/api/cleanup-report-archive", async (req, res) => {
     return res.json({ ok: true, deleted: rowCount });
   } catch (e) {
     console.error("[cleanup-report-archive] error:", e?.message);
+    return res.status(500).json({ error: e?.message });
+  }
+});
+
+// ─── GET /api/capture-pendency-snapshot ──────────────────────────────────────
+// Daily cron (06:45 UTC / 12:15 PM IST, just after the morning sync). Persists one
+// pendency reading per IST day so the Trends tab has history — summary_cache is
+// overwritten every sync, so without this snapshot the trend can't be reconstructed.
+// We compute live (not from summary_cache) so the value is correct even if the
+// 06:30 sync hasn't finished refreshing the cache by 06:45. Both numbers match the
+// Overview "Pending VINs" / "Pending VINs >6h" cards exactly.
+app.get("/api/capture-pendency-snapshot", async (req, res) => {
+  const cronSecret = process.env.CRON_SECRET;
+  if (cronSecret && req.headers.authorization !== `Bearer ${cronSecret}`) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  try {
+    const { totals } = await computeSummary(null);
+    const pendingTotal  = totals.pendingWithPhotos ?? 0;
+    const pendingOver6h = totals.notProcessedAfter24 ?? 0;
+    const { rows } = await query(
+      `INSERT INTO pendency_daily_snapshot (snapshot_date, pending_total, pending_over_6h, captured_at)
+       VALUES ((NOW() AT TIME ZONE 'Asia/Kolkata')::date, $1, $2, NOW())
+       ON CONFLICT (snapshot_date) DO UPDATE
+         SET pending_total = $1, pending_over_6h = $2, captured_at = NOW()
+       RETURNING TO_CHAR(snapshot_date, 'YYYY-MM-DD') AS day`,
+      [pendingTotal, pendingOver6h]
+    );
+    const day = rows[0]?.day;
+    console.log(`[capture-pendency-snapshot] ${day} — total=${pendingTotal} over6h=${pendingOver6h}`);
+    return res.json({ ok: true, day, pendingTotal, pendingOver6h });
+  } catch (e) {
+    console.error("[capture-pendency-snapshot] error:", e?.message);
+    return res.status(500).json({ error: e?.message });
+  }
+});
+
+// ─── GET /api/trends/pendency ────────────────────────────────────────────────
+// Full daily pendency series (ascending). Dataset is tiny (~1 row/day), so the
+// frontend fetches it once and slices ranges client-side.
+app.get("/api/trends/pendency", async (req, res) => {
+  try {
+    const { rows } = await query(
+      `SELECT TO_CHAR(snapshot_date, 'YYYY-MM-DD') AS day, pending_total, pending_over_6h
+         FROM pendency_daily_snapshot
+        ORDER BY snapshot_date ASC`
+    );
+    return res.json({ rows });
+  } catch (e) {
+    console.error("[trends/pendency] error:", e?.message);
     return res.status(500).json({ error: e?.message });
   }
 });
