@@ -1153,6 +1153,7 @@ async function computeSummary(dateFilter, publishing) {
         SELECT
           v.status,
           v.has_photos,
+          v.after_24h,
           v.received_at,
           v.processed_at,
           v.reason_bucket,
