@@ -249,7 +249,7 @@ function funnelTable(rows) {
  * @param {Array}   data.adoption    [{ label, cols }] rows for the Adoption table
  * @returns {string} full HTML email string
  */
-export function buildStudioHealthHtml({ funnel, planCounts, images, three60, video, adoption, imagesKpis }) {
+export function buildStudioHealthHtml({ funnel, planCounts, images, three60, video, adoption, imagesKpis, slack = false }) {
   const dateLabel = new Date().toLocaleDateString('en-US', {
     timeZone: 'Asia/Kolkata',
     weekday: 'long',
@@ -258,14 +258,26 @@ export function buildStudioHealthHtml({ funnel, planCounts, images, three60, vid
     year: 'numeric',
   })
 
-  // Current-snapshot KPI cards for the Images section (omitted if KPIs unavailable).
-  const imagesKpiRow = imagesKpis
-    ? kpiRow([
-        kpiCard('VINs Delivered', fmtInt(imagesKpis.delivered), '', '#16a34a', '33.33%'),
-        kpiCard('Delivered &gt; 6 hrs', fmtInt(imagesKpis.deliveredOver6h), '', '#d97706', '33.34%'),
-        kpiCard('Pendency &gt; 6 hrs', fmtInt(imagesKpis.pendencyOver6h), '', '#dc2626', '33.33%'),
-      ])
-    : ''
+  // KPI cards for the Images section (omitted if KPIs unavailable). The Slack JPEG drops
+  // the metric table, so it shows 4 cards (incl. rolling-30 metrics); the email keeps its
+  // 3 current-snapshot cards above the table.
+  const fmtPct1 = (v) => (v == null ? '—' : `${Math.round(v)}%`)
+  const fmtHrs1 = (v) => (v == null ? '—' : String(Math.round(v)))
+  let imagesKpiRow = ''
+  if (imagesKpis && slack) {
+    imagesKpiRow = kpiRow([
+      kpiCard('VINs Delivered', fmtInt(imagesKpis.delivered), '', '#16a34a', '25%'),
+      kpiCard('Total Pendency', fmtInt(imagesKpis.pendencyTotal), '', '#dc2626', '25%'),
+      kpiCard('Delivered &lt; 6 hrs % (30d)', fmtPct1(imagesKpis.deliveredUnder6hPct30), '', '#16a34a', '25%'),
+      kpiCard('P95 Delivery (30d)', fmtHrs1(imagesKpis.p95Delivery30), '', '#d97706', '25%', 'hrs'),
+    ])
+  } else if (imagesKpis) {
+    imagesKpiRow = kpiRow([
+      kpiCard('VINs Delivered', fmtInt(imagesKpis.delivered), '', '#16a34a', '33.33%'),
+      kpiCard('Delivered &gt; 6 hrs', fmtInt(imagesKpis.deliveredOver6h), '', '#d97706', '33.34%'),
+      kpiCard('Pendency &gt; 6 hrs', fmtInt(imagesKpis.pendencyOver6h), '', '#dc2626', '33.33%'),
+    ])
+  }
 
   const planRow = kpiRow([
     kpiCard('Studio-Lite', fmtInt(planCounts.lite), `${pct(planCounts.lite, planCounts.total)} of Live Rooftops`, '#0284c7', '33.33%', `${fmtMoneyCompact(planCounts.liteArr)} ARR`),
@@ -331,7 +343,9 @@ export function buildStudioHealthHtml({ funnel, planCounts, images, three60, vid
                 ${sectionTitle('Plan', `Rooftops by plan tier · share of <strong style="color:${TEXT_DARK}; font-weight:700;">${fmtInt(planCounts.total)} Live rooftops</strong>`, SEC.plan)}
                 ${planRow}
 
-                ${tableSection('Images', 'Delivery health across segments & trend', SEC.images, images, imagesKpiRow)}
+                ${slack
+                  ? `${sectionTitle('Images', 'Delivery health — snapshot &amp; rolling 30d', SEC.images)}${imagesKpiRow}`
+                  : tableSection('Images', 'Delivery health across segments & trend', SEC.images, images, imagesKpiRow)}
                 ${tableSection('360', 'Delivery health across segments & trend', SEC.three60, three60)}
                 ${tableSection('Video', 'Delivery health across segments & trend', SEC.video, video)}
                 ${tableSection('Adoption', 'Adoption % across segments & trend', SEC.adoption, adoption)}

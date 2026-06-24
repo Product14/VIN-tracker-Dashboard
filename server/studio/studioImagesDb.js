@@ -150,9 +150,12 @@ export async function computeImagesMatrix({ publishing = 'all', tz } = {}) {
 /**
  * Current-snapshot Images KPIs over the WHOLE image cohort in `vins` (no date window —
  * the table is already the card's active-inventory window). Reuses the project's 6h SLA.
+ * Also returns a few rolling-30-day fields (anchored on received_at, consistent with the
+ * Images table) used by the Slack-image KPI cards.
  * @param {object} [opts]
  * @param {'all'|'on'|'off'} [opts.publishing='all']
- * @returns {Promise<{delivered:number, deliveredOver6h:number, pendencyOver6h:number}>}
+ * @returns {Promise<{delivered:number, deliveredOver6h:number, pendencyOver6h:number,
+ *   pendencyTotal:number, deliveredUnder6hPct30:(number|null), p95Delivery30:(number|null)}>}
  */
 export async function computeImagesKpis({ publishing = 'all' } = {}) {
   const sql = `
@@ -165,7 +168,27 @@ export async function computeImagesKpis({ publishing = 'all' } = {}) {
       COUNT(*) FILTER (
         WHERE status <> 'Delivered' AND received_at <> ''
           AND received_at::timestamptz + INTERVAL '6 hours' <= NOW()
-      )::int AS pendency_over6
+      )::int AS pendency_over6,
+      COUNT(*) FILTER (WHERE status <> 'Delivered')::int AS pendency_total,
+      -- Rolling 30 days on received_at: of VINs received in the window that are
+      -- Delivered, the share delivered in < 6h.
+      100.0 * COUNT(*) FILTER (
+          WHERE status = 'Delivered' AND received_at <> '' AND processed_at <> ''
+            AND received_at::timestamptz >= NOW() - INTERVAL '30 days'
+            AND processed_at::timestamptz >= received_at::timestamptz
+            AND processed_at::timestamptz < received_at::timestamptz + INTERVAL '6 hours'
+        )
+        / NULLIF(COUNT(*) FILTER (
+          WHERE status = 'Delivered' AND received_at <> ''
+            AND received_at::timestamptz >= NOW() - INTERVAL '30 days'
+        ), 0) AS pct_under6_30,
+      -- Rolling 30 days on received_at: P95 turnaround (hours) over Delivered VINs.
+      -- The received_at <> '' guard precedes the cast (empty strings error on ::timestamptz).
+      percentile_cont(0.95) WITHIN GROUP (ORDER BY ${TAT_HOURS}) FILTER (
+          WHERE status = 'Delivered' AND received_at <> ''
+            AND received_at::timestamptz >= NOW() - INTERVAL '30 days'
+            AND ${TAT_HOURS} IS NOT NULL
+      ) AS p95_30
     FROM vins
     WHERE COALESCE(has_photos, 0) = 1
       AND COALESCE(output_processing_catalog, 1) = 1
@@ -177,5 +200,8 @@ export async function computeImagesKpis({ publishing = 'all' } = {}) {
     delivered: r.delivered ?? 0,
     deliveredOver6h: r.delivered_over6 ?? 0,
     pendencyOver6h: r.pendency_over6 ?? 0,
+    pendencyTotal: r.pendency_total ?? 0,
+    deliveredUnder6hPct30: r.pct_under6_30 == null ? null : Number(r.pct_under6_30),
+    p95Delivery30: r.p95_30 == null ? null : Number(r.p95_30),
   }
 }

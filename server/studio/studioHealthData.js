@@ -16,7 +16,7 @@ import { pickGroup, pickMetric, pickMetricAnywhere, adoptionMatch } from './stud
  *                 provided, replaces the sheet-derived Images section. Other sections stay on the sheet.
  * @returns {Promise<object>} payload for buildStudioHealthHtml (async — may call the LLM)
  */
-export async function buildStudioHealthPayload({ rooftopRows, healthMap, adoptionMap, imagesOverride, imagesKpis }) {
+export async function buildStudioHealthPayload({ rooftopRows, healthMap, adoptionMap, imagesOverride, imagesKpis, slack = false }) {
   // Funnel is a cumulative lifecycle view (Contracted ⊇ PWS/Onboarding/Live); all
   // other rooftop math counts only operational rooftops (Live/Onboarding).
   const funnel = lifecycleFunnel(rooftopRows)
@@ -63,7 +63,8 @@ export async function buildStudioHealthPayload({ rooftopRows, healthMap, adoptio
   ]
 
   // Insights/commentary removed from the report — sections show metric tables only.
-  // imagesKpis (email-only, current-snapshot counts) is passed straight through; the
-  // board template ignores it.
-  return { funnel, planCounts: plan, images, three60, video, adoption, imagesKpis }
+  // imagesKpis (current-snapshot + rolling-30 counts) is passed straight through; the
+  // board template ignores it. `slack` switches the Images section to the cards-only
+  // layout in the template (Slack JPEG only).
+  return { funnel, planCounts: plan, images, three60, video, adoption, imagesKpis, slack }
 }

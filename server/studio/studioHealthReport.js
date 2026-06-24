@@ -32,13 +32,15 @@ async function kpisFromDb() {
   }
 }
 
-export async function buildHtml() {
+// `slack` (default false) tailors the Images section for the Slack JPEG: 4 KPI cards
+// (incl. rolling-30 metrics) and no metric table. The email passes nothing → unchanged.
+export async function buildHtml({ slack = false } = {}) {
   const [{ rooftopRows, healthMap, adoptionMap }, imagesOverride, imagesKpis] = await Promise.all([
     fetchStudioSources(),
     imagesFromDb(),
     kpisFromDb(),
   ])
-  const payload = await buildStudioHealthPayload({ rooftopRows, healthMap, adoptionMap, imagesOverride, imagesKpis })
+  const payload = await buildStudioHealthPayload({ rooftopRows, healthMap, adoptionMap, imagesOverride, imagesKpis, slack })
   return { html: buildStudioHealthHtml(payload), rooftops: rooftopRows.length }
 }
 

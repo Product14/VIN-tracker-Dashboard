@@ -34,7 +34,9 @@ const { buildHtml, subjectStamp } = await import('../server/studio/studioHealthR
 const { htmlToJpeg } = await import('../server/studio/renderImage.js')
 const { uploadJpegToSlack } = await import('../server/studio/slackClient.js')
 
-const { html } = await buildHtml()
+// slack:true → Images section shows the 4 KPI cards (incl. rolling-30) and no table,
+// matching the GET /api/studio-health-slack route.
+const { html } = await buildHtml({ slack: true })
 const jpeg = await htmlToJpeg(html)
 
 if (process.argv.includes('--preview')) {

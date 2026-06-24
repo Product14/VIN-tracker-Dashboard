@@ -4625,7 +4625,7 @@ app.get("/api/studio-health-slack", async (req, res) => {
   }
 
   try {
-    const { html } = await buildStudioHealthHtml();
+    const { html } = await buildStudioHealthHtml({ slack: true });
     const jpeg = await htmlToJpeg(html);
 
     if (req.query?.preview) {
