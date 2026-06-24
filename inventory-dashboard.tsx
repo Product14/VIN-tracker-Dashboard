@@ -338,6 +338,12 @@ function StatCard({ label, value, sub, color = "#6366f1", onClick, loading = fal
           <div className="shimmer-cell" style={{ height: compact ? 24 : 32, borderRadius: 6, width: "60%" }} />
           {sub !== undefined && <div className="shimmer-cell" style={{ height: 14, borderRadius: 4, width: "45%" }} />}
         </div>
+      ) : smallGrey ? (
+        // 360 cards: stack the grey % subtitle BELOW the number so it never wraps beside it.
+        <div>
+          <div style={{ fontSize: compact ? 22 : 28, fontWeight: 700, color }}>{typeof value === "number" ? value.toLocaleString() : value}</div>
+          {sub && <div style={{ fontSize: subSize, color: "#9ca3af", fontWeight: 500, marginTop: 3 }}>{sub}</div>}
+        </div>
       ) : (
         <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
           <div style={{ fontSize: compact ? 22 : 28, fontWeight: 700, color }}>{typeof value === "number" ? value.toLocaleString() : value}</div>
