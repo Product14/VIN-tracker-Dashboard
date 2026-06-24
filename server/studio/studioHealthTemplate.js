@@ -263,14 +263,28 @@ export function buildStudioHealthHtml({ funnel, planCounts, images, three60, vid
   // 3 current-snapshot cards above the table.
   const fmtPct1 = (v) => (v == null ? '—' : `${Math.round(v)}%`)
   const fmtHrs1 = (v) => (v == null ? '—' : String(Math.round(v)))
+  // Share-of-total: one decimal when under 1% so a tiny share doesn't collapse to "0%".
+  const pctOfTotal = (v, total) => {
+    if (!total) return '0%'
+    const p = (v / total) * 100
+    return p > 0 && p < 1 ? `${p.toFixed(1)}%` : `${Math.round(p)}%`
+  }
   let imagesKpiRow = ''
   if (imagesKpis && slack) {
-    imagesKpiRow = kpiRow([
-      kpiCard('VINs Delivered', fmtInt(imagesKpis.delivered), '', '#16a34a', '25%'),
-      kpiCard('Total Pendency', fmtInt(imagesKpis.pendencyTotal), '', '#dc2626', '25%'),
-      kpiCard('Delivered &lt; 6 hrs % (30d)', fmtPct1(imagesKpis.deliveredUnder6hPct30), '', '#16a34a', '25%'),
-      kpiCard('P95 Delivery (30d)', fmtHrs1(imagesKpis.p95Delivery30), '', '#d97706', '25%', 'hrs'),
-    ])
+    // The 3 current-snapshot cards (same as the email) + a second row of 3 new cards
+    // (Total Pendency + the two rolling-30 metrics). Grey sublines give each card context.
+    const k = imagesKpis
+    imagesKpiRow =
+      kpiRow([
+        kpiCard('VINs Delivered', fmtInt(k.delivered), 'Total', '#16a34a', '33.33%'),
+        kpiCard('Delivered &gt; 6 hrs', fmtInt(k.deliveredOver6h), `${pctOfTotal(k.deliveredOver6h, k.delivered)} of total`, '#d97706', '33.34%'),
+        kpiCard('Pendency &gt; 6 hrs', fmtInt(k.pendencyOver6h), `${pctOfTotal(k.pendencyOver6h, k.pendencyTotal)} of total pendency`, '#dc2626', '33.33%'),
+      ]) +
+      kpiRow([
+        kpiCard('Total Pendency', fmtInt(k.pendencyTotal), `${pctOfTotal(k.pendencyTotal, k.delivered + k.pendencyTotal)} of total`, '#dc2626', '33.33%'),
+        kpiCard('Delivered &lt; 6 hrs %', fmtPct1(k.deliveredUnder6hPct30), 'Rolling 30', '#16a34a', '33.34%'),
+        kpiCard('P95 Delivery', fmtHrs1(k.p95Delivery30), 'Rolling 30', '#d97706', '33.33%', 'hrs'),
+      ])
   } else if (imagesKpis) {
     imagesKpiRow = kpiRow([
       kpiCard('VINs Delivered', fmtInt(imagesKpis.delivered), '', '#16a34a', '33.33%'),
