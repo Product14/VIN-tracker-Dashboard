@@ -373,8 +373,14 @@ export function buildStudioHealthHtml({ funnel, planCounts, images, three60, vid
             <td style="padding:4px 4px 24px;">
               <table width="100%" cellpadding="0" cellspacing="0" border="0">
 
-                ${sectionTitle('Funnel — Contracted → Live', 'Accounts · Rooftops · ARR per lifecycle stage', SEC.funnel)}
-                ${funnelTable(funnel)}
+                ${
+                  // Funnel hidden in the Slack image (it starts from Plan); kept in the email.
+                  // To re-add it to the image, drop the `slack ? '' :` guard.
+                  slack
+                    ? ''
+                    : `${sectionTitle('Funnel — Contracted → Live', 'Accounts · Rooftops · ARR per lifecycle stage', SEC.funnel)}
+                ${funnelTable(funnel)}`
+                }
 
                 ${sectionTitle('Plan', `Rooftops by plan tier · share of <strong style="color:${TEXT_DARK}; font-weight:700;">${fmtInt(planCounts.total)} Live rooftops</strong>`, SEC.plan)}
                 ${planRow}
