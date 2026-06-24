@@ -134,7 +134,8 @@ async function fetchFromMetabase(url, label, retries = 3, timeoutMs = 0, format 
 const VIN_COLUMNS = `dealer_vin_id, vin, enterprise_id, rooftop_id, status, after_24h, received_at, processed_at,
        reason_bucket, hold_reason, has_photos, output_image_count, thumbnail_url, vdp_url, vehicle_price,
        make, model, year, trim, stock_number, vin_score, synced_at, vin_creation, condition, platform,
-       is_publishing, is_qc_on, status_overall_status, customer_segment, output_processing_catalog`;
+       is_publishing, is_qc_on, status_overall_status, customer_segment, output_processing_catalog,
+       spin_status, spin_after_6h, spin_sent_at, spin_reason_bucket, spin_qc_on, output_processing_spin`;
 
 async function syncVins() {
   console.log("[sync:VIN_DETAILS] fetching (CSV, streaming)…");
@@ -167,7 +168,9 @@ async function syncVins() {
       UNNEST($24::text[]),   UNNEST($25::text[]),
       UNNEST($26::smallint[]), UNNEST($27::smallint[]),
       UNNEST($28::text[]),   UNNEST($29::text[]),
-      UNNEST($30::smallint[])
+      UNNEST($30::smallint[]),
+      UNNEST($31::text[]),   UNNEST($32::smallint[]), UNNEST($33::text[]),
+      UNNEST($34::text[]),   UNNEST($35::smallint[]), UNNEST($36::smallint[])
   `;
 
   // Step 1: FRESH staging table — never touch live `vins` until the whole pull
@@ -192,6 +195,8 @@ async function syncVins() {
     years: [], trims: [], stockNumbers: [], vinScores: [], vinCreations: [],
     conditions: [], platforms: [], isPublishings: [], isQcOns: [], statusOveralls: [],
     customerSegments: [], outputProcessingCatalogs: [],
+    spinStatuses: [], spinAfter6hs: [], spinSentAts: [], spinReasonBuckets: [],
+    spinQcOns: [], outputProcessingSpins: [],
     syncedAts: [],
   });
 
@@ -216,6 +221,8 @@ async function syncVins() {
         cols.statusOveralls,
         cols.customerSegments,
         cols.outputProcessingCatalogs,
+        cols.spinStatuses, cols.spinAfter6hs, cols.spinSentAts,
+        cols.spinReasonBuckets, cols.spinQcOns, cols.outputProcessingSpins,
       ]);
       staged += inBatch;
       console.log(`[sync:VIN_DETAILS] staged batch ${batchNum} (${staged} rows so far)`);
@@ -295,6 +302,14 @@ async function syncVins() {
     cols.customerSegments.push(txt(row.customer_segment ?? row["Customer Segment"]));
     // Catalog-output flag (0/1). Missing on legacy cards → null (treated as in-funnel downstream).
     cols.outputProcessingCatalogs.push(cleanAfter24(row.outputProcessingList_catalog ?? null));
+    // 360 Spin funnel columns — parsed identically to their catalog counterparts (see VIN_COLUMNS).
+    // Stored only; no consumers yet. Missing on legacy cards → null/"" exactly like catalog.
+    cols.spinStatuses.push(row.spin_status ?? "");
+    cols.spinAfter6hs.push(cleanAfter24(row.spin_after_6_hrs ?? row.spin_after_6hrs ?? null));
+    cols.spinSentAts.push(cleanDate(row.spinSentAt));
+    cols.spinReasonBuckets.push(row.spin_reason_bucket ?? "");
+    cols.spinQcOns.push(cleanAfter24(row.spin_qc_on ?? null));
+    cols.outputProcessingSpins.push(cleanAfter24(row.outputProcessingList_spin ?? null));
     cols.syncedAts.push(syncedAt);
     if (++inBatch >= BATCH_SIZE) await flush();
   }

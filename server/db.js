@@ -76,6 +76,16 @@ export async function initSchema() {
     -- to COALESCE(output_processing_catalog,1)=1 so those rows don't inflate Not-Delivered counts.
     -- NULL on legacy data is treated as in-funnel (1), mirroring is_publishing.
     ALTER TABLE vins ADD COLUMN IF NOT EXISTS output_processing_catalog SMALLINT;
+    -- 360 Spin funnel columns from the VIN card, mirroring the catalog funnel one-to-one
+    -- (spin_status↔status, spin_after_6h↔after_24h, spin_sent_at↔processed_at,
+    -- spin_reason_bucket↔reason_bucket, spin_qc_on↔is_qc_on, output_processing_spin↔output_processing_catalog).
+    -- Ingested for storage only — no API/UI/summary consumers yet. NULL on legacy cards that don't emit them.
+    ALTER TABLE vins ADD COLUMN IF NOT EXISTS spin_status            TEXT;
+    ALTER TABLE vins ADD COLUMN IF NOT EXISTS spin_after_6h          SMALLINT;
+    ALTER TABLE vins ADD COLUMN IF NOT EXISTS spin_sent_at           TEXT;
+    ALTER TABLE vins ADD COLUMN IF NOT EXISTS spin_reason_bucket     TEXT;
+    ALTER TABLE vins ADD COLUMN IF NOT EXISTS spin_qc_on             SMALLINT;
+    ALTER TABLE vins ADD COLUMN IF NOT EXISTS output_processing_spin SMALLINT;
 
     -- Migration: swap PK from vin → dealer_vin_id on existing deployments.
     DO $$
