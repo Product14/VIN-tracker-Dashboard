@@ -11,6 +11,7 @@ import { fetchStudioSources } from './studioHealthSheets.js'
 import { buildStudioHealthPayload } from './studioHealthData.js'
 import { buildStudioHealthHtml } from './studioHealthTemplate.js'
 import { computeImagesMatrix, computeImagesKpis } from './studioImagesDb.js'
+import { computeThree60Matrix, computeThree60Kpis } from './studio360Db.js'
 
 // DB-driven Images rows; null on any DB error so the payload falls back to the sheet.
 async function imagesFromDb() {
@@ -32,15 +33,37 @@ async function kpisFromDb() {
   }
 }
 
+// DB-driven 360 (spin) rows; undefined on any DB error so the payload falls back to the sheet.
+async function three60FromDb() {
+  try {
+    return await computeThree60Matrix()
+  } catch (e) {
+    console.warn('[studio-health] 360 DB metrics failed, falling back to sheet —', e.message)
+    return undefined
+  }
+}
+
+// Current-snapshot 360 KPI cards; undefined on DB error so the report still renders.
+async function three60KpisFromDb() {
+  try {
+    return await computeThree60Kpis()
+  } catch (e) {
+    console.warn('[studio-health] 360 KPIs failed, omitting KPI cards —', e.message)
+    return undefined
+  }
+}
+
 // `slack` (default false) tailors the Images section for the Slack JPEG: 4 KPI cards
 // (incl. rolling-30 metrics) and no metric table. The email passes nothing → unchanged.
 export async function buildHtml({ slack = false } = {}) {
-  const [{ rooftopRows, healthMap, adoptionMap }, imagesOverride, imagesKpis] = await Promise.all([
+  const [{ rooftopRows, healthMap, adoptionMap }, imagesOverride, imagesKpis, three60Override, three60Kpis] = await Promise.all([
     fetchStudioSources(),
     imagesFromDb(),
     kpisFromDb(),
+    three60FromDb(),
+    three60KpisFromDb(),
   ])
-  const payload = await buildStudioHealthPayload({ rooftopRows, healthMap, adoptionMap, imagesOverride, imagesKpis, slack })
+  const payload = await buildStudioHealthPayload({ rooftopRows, healthMap, adoptionMap, imagesOverride, imagesKpis, three60Override, three60Kpis, slack })
   return { html: buildStudioHealthHtml(payload), rooftops: rooftopRows.length }
 }
 

@@ -16,7 +16,7 @@ import { pickGroup, pickMetric, pickMetricAnywhere, adoptionMatch } from './stud
  *                 provided, replaces the sheet-derived Images section. Other sections stay on the sheet.
  * @returns {Promise<object>} payload for buildStudioHealthHtml (async — may call the LLM)
  */
-export async function buildStudioHealthPayload({ rooftopRows, healthMap, adoptionMap, imagesOverride, imagesKpis, slack = false }) {
+export async function buildStudioHealthPayload({ rooftopRows, healthMap, adoptionMap, imagesOverride, imagesKpis, three60Override, three60Kpis, slack = false }) {
   // Funnel is a cumulative lifecycle view (Contracted ⊇ PWS/Onboarding/Live); all
   // other rooftop math counts only operational rooftops (Live/Onboarding).
   const funnel = lifecycleFunnel(rooftopRows)
@@ -43,8 +43,10 @@ export async function buildStudioHealthPayload({ rooftopRows, healthMap, adoptio
     { label: 'Avg Media Score', cols: pickMetricAnywhere(healthMap, 'media') },
   ]
 
-  // 360 & Video "Delivered %" is the Fulfillment row (spelled "Fullfillment" on 360).
-  const three60 = [
+  // 360 is DB-driven from the spin columns when an override is supplied
+  // (server/studio/studio360Db.js); otherwise fall back to the Studio Health sheet.
+  // "Delivered %" is the Fulfillment row (spelled "Fullfillment" on the sheet).
+  const three60 = three60Override || [
     { label: 'Delivered %', sub: '(Fulfillment)', cols: pickMetric(three60G, 'ful') },
     { label: 'Delivered (&lt;6 hrs) %', cols: pickMetric(three60G, '6hr') },
     { label: 'Pendency', cols: pickMetric(three60G, 'pendency') },
@@ -70,5 +72,5 @@ export async function buildStudioHealthPayload({ rooftopRows, healthMap, adoptio
   // imagesKpis (current-snapshot + rolling-30 counts) is passed straight through; the
   // board template ignores it. `slack` switches the Images section to the cards-only
   // layout in the template (Slack JPEG only).
-  return { funnel, planCounts: plan, images, three60, video, adoption, imagesKpis, adoptionKpis, slack }
+  return { funnel, planCounts: plan, images, three60, video, adoption, imagesKpis, three60Kpis, adoptionKpis, slack }
 }
