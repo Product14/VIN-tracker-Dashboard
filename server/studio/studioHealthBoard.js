@@ -8,6 +8,7 @@ import { fetchStudioSources } from './studioHealthSheets.js'
 import { buildStudioHealthPayload } from './studioHealthData.js'
 import { buildStudioHealthBoardHtml } from './studioHealthBoardTemplate.js'
 import { computeImagesMatrix } from './studioImagesDb.js'
+import { computeThree60Matrix } from './studio360Db.js'
 
 // DB-driven Images rows; null on any DB error so the payload falls back to the sheet.
 async function imagesFromDb() {
@@ -19,17 +20,28 @@ async function imagesFromDb() {
   }
 }
 
-// Build the board fresh: fetch the three sheets + the DB Images metrics in parallel,
+// DB-driven 360 (spin) rows; undefined on any DB error so the payload falls back to the sheet.
+async function three60FromDb() {
+  try {
+    return await computeThree60Matrix()
+  } catch (e) {
+    console.warn('[studio-health-board] 360 DB metrics failed, falling back to sheet —', e.message)
+    return undefined
+  }
+}
+
+// Build the board fresh: fetch the three sheets + the DB Images/360 metrics in parallel,
 // assemble the payload, render the HTML.
 async function buildFresh() {
-  const [{ rooftopRows, healthMap, adoptionMap }, imagesOverride] = await Promise.all([
+  const [{ rooftopRows, healthMap, adoptionMap }, imagesOverride, three60Override] = await Promise.all([
     fetchStudioSources(),
     imagesFromDb(),
+    three60FromDb(),
   ])
   // The funnel + plan (Row 1) are driven entirely by the rooftop tab — if it came back
   // unparseable, fail loudly rather than render a board full of zeros.
   if (!rooftopRows.length) throw new Error('Rooftop Level tab parsed to 0 rows')
-  const payload = await buildStudioHealthPayload({ rooftopRows, healthMap, adoptionMap, imagesOverride })
+  const payload = await buildStudioHealthPayload({ rooftopRows, healthMap, adoptionMap, imagesOverride, three60Override })
   return buildStudioHealthBoardHtml(payload)
 }
 
