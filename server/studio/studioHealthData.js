@@ -3,8 +3,8 @@
 // expects. Kept here (shared by the endpoint and the local tester) so the
 // metric → matcher wiring lives in exactly one place.
 
-import { planCounts, lifecycleFunnel } from './aggregations.js'
-import { liveRooftops } from './transform.js'
+import { planCounts, lifecycleFunnel, computeKpis } from './aggregations.js'
+import { liveRooftops, operationalRooftops } from './transform.js'
 import { pickGroup, pickMetric, pickMetricAnywhere, adoptionMatch } from './studioMetrics.js'
 
 /**
@@ -21,6 +21,10 @@ export async function buildStudioHealthPayload({ rooftopRows, healthMap, adoptio
   // other rooftop math counts only operational rooftops (Live/Onboarding).
   const funnel = lifecycleFunnel(rooftopRows)
   const plan = planCounts(liveRooftops(rooftopRows))
+
+  // Adoption KPI cards (Slack image only) — same counts the Studio Adoption dashboard
+  // shows, over the Live/Onboarding rooftop cohort. The template ignores this for email.
+  const adoptionKpis = computeKpis(operationalRooftops(rooftopRows))
 
   const imagesG = pickGroup(healthMap, 'image')
   const three60G = pickGroup(healthMap, '360')
@@ -66,5 +70,5 @@ export async function buildStudioHealthPayload({ rooftopRows, healthMap, adoptio
   // imagesKpis (current-snapshot + rolling-30 counts) is passed straight through; the
   // board template ignores it. `slack` switches the Images section to the cards-only
   // layout in the template (Slack JPEG only).
-  return { funnel, planCounts: plan, images, three60, video, adoption, imagesKpis, slack }
+  return { funnel, planCounts: plan, images, three60, video, adoption, imagesKpis, adoptionKpis, slack }
 }

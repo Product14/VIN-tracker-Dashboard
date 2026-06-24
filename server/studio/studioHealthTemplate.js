@@ -249,7 +249,7 @@ function funnelTable(rows) {
  * @param {Array}   data.adoption    [{ label, cols }] rows for the Adoption table
  * @returns {string} full HTML email string
  */
-export function buildStudioHealthHtml({ funnel, planCounts, images, three60, video, adoption, imagesKpis, slack = false }) {
+export function buildStudioHealthHtml({ funnel, planCounts, images, three60, video, adoption, imagesKpis, adoptionKpis, slack = false }) {
   const dateLabel = new Date().toLocaleDateString('en-US', {
     timeZone: 'Asia/Kolkata',
     weekday: 'long',
@@ -291,6 +291,24 @@ export function buildStudioHealthHtml({ funnel, planCounts, images, three60, vid
       kpiCard('Delivered &gt; 6 hrs', fmtInt(imagesKpis.deliveredOver6h), '', '#d97706', '33.34%'),
       kpiCard('Pendency &gt; 6 hrs', fmtInt(imagesKpis.pendencyOver6h), '', '#dc2626', '33.33%'),
     ])
+  }
+
+  // Adoption KPI cards (Slack image only): 6 cards in two rows of 3, matching the Studio
+  // Adoption dashboard. App adoption is measured vs active rooftops; the rest vs total.
+  let adoptionKpiRow = ''
+  if (adoptionKpis && slack) {
+    const a = adoptionKpis
+    adoptionKpiRow =
+      kpiRow([
+        kpiCard('Total Rooftops', fmtInt(a.total), 'Live &amp; OB', '#4f46e5', '33.33%'),
+        kpiCard('Active Rooftops', fmtInt(a.active), `${pct(a.active, a.total)} of total`, '#16a34a', '33.34%'),
+        kpiCard('App Adoption', fmtInt(a.app), `${pct(a.app, a.active)} of active`, '#2563eb', '33.33%'),
+      ]) +
+      kpiRow([
+        kpiCard('SmartView VDP Adoption', fmtInt(a.sv), `${pct(a.sv, a.total)} of total`, '#16a34a', '33.33%'),
+        kpiCard('SmartView VLP Adoption', fmtInt(a.svl), `${pct(a.svl, a.total)} of total`, '#d97706', '33.34%'),
+        kpiCard('Smart Campaign Adoption', fmtInt(a.sc), `${pct(a.sc, a.total)} of total`, '#7c3aed', '33.33%'),
+      ])
   }
 
   const planRow = kpiRow([
@@ -362,7 +380,9 @@ export function buildStudioHealthHtml({ funnel, planCounts, images, three60, vid
                   : tableSection('Images', 'Delivery health across segments & trend', SEC.images, images, imagesKpiRow)}
                 ${tableSection('360', 'Delivery health across segments & trend', SEC.three60, three60)}
                 ${tableSection('Video', 'Delivery health across segments & trend', SEC.video, video)}
-                ${tableSection('Adoption', 'Adoption % across segments & trend', SEC.adoption, adoption)}
+                ${slack
+                  ? `${sectionTitle('Adoption', 'Rooftop adoption — Live &amp; Onboarding', SEC.adoption)}${adoptionKpiRow}`
+                  : tableSection('Adoption', 'Adoption % across segments & trend', SEC.adoption, adoption)}
 
                 ${ctaHtml}
 
