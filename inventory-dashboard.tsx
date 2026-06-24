@@ -2534,6 +2534,12 @@ export default function Dashboard() {
     const saved = typeof window !== "undefined" ? localStorage.getItem("vin_module") : null;
     return saved === "studioHealth" || saved === "studio" || saved === "tracker360" ? saved : "vin";
   });
+  // Once the 360 module has been opened, keep <SpinDashboard> mounted (hidden) so its
+  // fetched data survives switching modules and back — otherwise it remounts and re-shows
+  // the loading screen each time (the catalog dashboard's state lives in this parent, so
+  // it already survives; SpinDashboard owns its own state and would be destroyed on unmount).
+  const [tracker360Opened, setTracker360Opened] = useState(module === "tracker360");
+  useEffect(() => { if (module === "tracker360") setTracker360Opened(true); }, [module]);
   const [page, setPage] = useState<"dashboard" | "admin">("dashboard");
   const [tab, setTab] = useState("Overview");
   // Date filtering is disabled — pinned to "all". The header toggle now controls
@@ -2925,9 +2931,15 @@ export default function Dashboard() {
         ))}
       </div>
 
-      {module === "tracker360" ? (
-        <SpinDashboard />
-      ) : module === "studioHealth" || module === "studio" ? (
+      {/* 360 Spin: mounted once first opened, then kept mounted (just hidden) so its
+          fetched data persists across module switches instead of reloading each time. */}
+      {tracker360Opened && (
+        <div style={{ display: module === "tracker360" ? undefined : "none" }}>
+          <SpinDashboard />
+        </div>
+      )}
+      {module === "tracker360" ? null
+       : module === "studioHealth" || module === "studio" ? (
         <iframe
           src={module === "studioHealth" ? STUDIO_HEALTH_URL : STUDIO_URL}
           title={module === "studioHealth" ? "Studio Health" : "Studio Adoption"}

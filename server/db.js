@@ -111,6 +111,11 @@ export async function initSchema() {
     CREATE INDEX IF NOT EXISTS idx_vins_reason_bucket     ON vins(reason_bucket);
     CREATE INDEX IF NOT EXISTS idx_vins_status_photos_24h ON vins(status, has_photos, after_24h);
     CREATE INDEX IF NOT EXISTS idx_vins_is_publishing     ON vins(is_publishing);
+    -- 360 spin VIN-Data drill-down indexes (parallel to the catalog ones above) so the
+    -- spin /api/vins list query doesn't seq-scan on output_processing_spin / spin_status / etc.
+    CREATE INDEX IF NOT EXISTS idx_vins_output_processing_spin ON vins(output_processing_spin);
+    CREATE INDEX IF NOT EXISTS idx_vins_spin_status_photos_6h  ON vins(spin_status, has_photos, spin_after_6h);
+    CREATE INDEX IF NOT EXISTS idx_vins_spin_reason_bucket     ON vins(spin_reason_bucket);
 
     CREATE TABLE IF NOT EXISTS rooftop_details (
       team_id                TEXT PRIMARY KEY,
