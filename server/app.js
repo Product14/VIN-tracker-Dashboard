@@ -50,9 +50,106 @@ const cleanAfter24 = (v) => {
 // SLA. Previously recomputed from received_at/processed_at; the card now owns
 // that logic. `alias` is the table alias prefix (`'v'` for `vins v`, `''` for
 // unaliased CTE projections). Mirrors server/db.js's PENDENCY_PREDICATE.
-function pendencyPredicate6h(alias = 'v') {
+function pendencyPredicate6h(alias = 'v', track = 'catalog') {
   const a = alias ? `${alias}.` : '';
-  return `(COALESCE(${a}after_24h, 0) = 1)`;
+  const col = track === 'spin' ? 'spin_after_6h' : 'after_24h';
+  return `(COALESCE(${a}${col}, 0) = 1)`;
+}
+
+// ─── 360 Spin track helpers ───────────────────────────────────────────────────
+// The dashboard serves two parallel "tracks": the default catalog funnel and the
+// 360 spin funnel. Spin reuses the same handlers/serializers/components; only the
+// underlying column set and the (smaller) reason-bucket set differ. `track` is
+// 'catalog' (default — every catalog code path is untouched) or 'spin'.
+
+// Resolve the per-track column names. NOTE: output_processing_spin uses COALESCE(...,0)
+// downstream (NULL = NOT requested — legacy cards never emitted spin), vs catalog's
+// COALESCE(...,1). is_publishing / has_photos / vin_score are shared, not resolved.
+function trackCols(track) {
+  const s = track === 'spin';
+  return {
+    status:  s ? 'spin_status'            : 'status',
+    reason:  s ? 'spin_reason_bucket'     : 'reason_bucket',
+    after6h: s ? 'spin_after_6h'          : 'after_24h',
+    sentAt:  s ? 'spin_sent_at'           : 'processed_at',
+    outProc: s ? 'output_processing_spin' : 'output_processing_catalog',
+    qcOn:    s ? 'spin_qc_on'             : 'is_qc_on',
+  };
+}
+
+// Full set of bucket output columns the serializers (toTotals/toCsmRow/toTypeRow/…)
+// read — always emitted so the frontend shape is stable across tracks.
+const ALL_BUCKET_COLS = [
+  'bucket_upload_pending', 'bucket_processing_pending', 'bucket_missing_vin_name',
+  'bucket_scheduled_push', 'bucket_publishing_pending', 'bucket_qc_pending',
+  'bucket_qc_hold', 'bucket_sold', 'bucket_others',
+];
+// Spin emits only these 6 (no Missing VIN Name / Scheduled Push / Publishing Pending).
+const SPIN_BUCKET_LABEL_BY_COL = {
+  bucket_sold: 'Sold', bucket_upload_pending: 'Upload Pending',
+  bucket_qc_hold: 'QC Hold', bucket_qc_pending: 'QC Pending',
+  bucket_processing_pending: 'Processing Pending', bucket_others: 'Others',
+};
+
+// Generate the 9 bucket SUM(CASE…) columns for the SPIN track: the 6 real spin
+// buckets guarded by `guard`, and the 3 catalog-only buckets zero-filled so the
+// shared serializers see every key. `guard` is the SQL predicate that precedes the
+// reason match (e.g. "spin_status != 'Delivered' AND output_processing_spin = 1 …").
+function spinBucketCols(guard) {
+  return ALL_BUCKET_COLS.map(col => (
+    SPIN_BUCKET_LABEL_BY_COL[col]
+      ? `SUM(CASE WHEN ${guard} AND spin_reason_bucket = '${SPIN_BUCKET_LABEL_BY_COL[col]}' THEN 1 ELSE 0 END)::int AS ${col}`
+      : `0::int AS ${col}`
+  )).join(',\n          ');
+}
+
+// Alias the materialized views' spin_* columns to the catalog-named columns the
+// rooftop/enterprise serializers expect (used by the 'all'-scope source path that
+// reads v_by_rooftop / v_by_enterprise). The 3 catalog-only buckets are zero-filled.
+const SPIN_MV_ALIAS_COLS = `
+        spin_requested              AS total,
+        spin_with_photos            AS with_photos,
+        spin_delivered_with_photos  AS delivered_with_photos,
+        spin_pending_with_photos    AS pending_with_photos,
+        spin_processed              AS processed,
+        0::int                      AS processed_after_24h,
+        spin_not_processed          AS not_processed,
+        spin_not_processed_after_24h AS not_processed_after_24h,
+        spin_bucket_upload_pending     AS bucket_upload_pending,
+        spin_bucket_processing_pending AS bucket_processing_pending,
+        0::int                         AS bucket_missing_vin_name,
+        0::int                         AS bucket_scheduled_push,
+        0::int                         AS bucket_publishing_pending,
+        spin_bucket_qc_pending         AS bucket_qc_pending,
+        spin_bucket_qc_hold            AS bucket_qc_hold,
+        spin_bucket_sold               AS bucket_sold,
+        spin_bucket_others             AS bucket_others`;
+
+// Spin inventory aggregate columns over `vins v` (used by the on/off-scope inline
+// CTE path), producing the same catalog-named columns scoped to the requested set.
+function spinAggCols() {
+  const REQ = `COALESCE(v.output_processing_spin,0)=1`;
+  const P   = pendencyPredicate6h('v', 'spin');
+  const G   = `${REQ} AND v.spin_status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND ${P}`;
+  const bk  = (label) => `SUM(CASE WHEN ${G} AND v.spin_reason_bucket = '${label}' THEN 1 ELSE 0 END)::int`;
+  return `
+        SUM(CASE WHEN ${REQ} THEN 1 ELSE 0 END)::int                                                  AS total,
+        SUM(CASE WHEN ${REQ} AND COALESCE(v.has_photos,0)=1 THEN 1 ELSE 0 END)::int                   AS with_photos,
+        SUM(CASE WHEN ${REQ} AND v.spin_status = 'Delivered'     AND COALESCE(v.has_photos,0)=1 THEN 1 ELSE 0 END)::int AS delivered_with_photos,
+        SUM(CASE WHEN ${REQ} AND v.spin_status = 'Not Delivered' AND COALESCE(v.has_photos,0)=1 THEN 1 ELSE 0 END)::int AS pending_with_photos,
+        SUM(CASE WHEN ${REQ} AND v.spin_status = 'Delivered'  THEN 1 ELSE 0 END)::int                 AS processed,
+        SUM(CASE WHEN ${REQ} AND v.spin_status = 'Delivered'  AND ${P} THEN 1 ELSE 0 END)::int        AS processed_after_24h,
+        SUM(CASE WHEN ${REQ} AND v.spin_status != 'Delivered' THEN 1 ELSE 0 END)::int                 AS not_processed,
+        SUM(CASE WHEN ${G} THEN 1 ELSE 0 END)::int                                                    AS not_processed_after_24h,
+        ${bk('Upload Pending')}     AS bucket_upload_pending,
+        ${bk('Processing Pending')} AS bucket_processing_pending,
+        0::int                      AS bucket_missing_vin_name,
+        0::int                      AS bucket_scheduled_push,
+        0::int                      AS bucket_publishing_pending,
+        ${bk('QC Pending')}         AS bucket_qc_pending,
+        ${bk('QC Hold')}            AS bucket_qc_hold,
+        ${bk('Sold')}               AS bucket_sold,
+        ${bk('Others')}             AS bucket_others`;
 }
 
 // Fetch from Metabase with optional per-attempt timeout and exponential back-off retry.
@@ -524,18 +621,22 @@ async function runSync() {
       // the old post/pre variants are dead. Refreshing on/off here (instead of
       // computing them per request) keeps them both fast and fresh: they're
       // rebuilt every sync alongside 'all', so they never go stale.
-      for (const pub of [null, 'on', 'off']) {
-        const key = pub ?? 'all';
-        try {
-          const payload = await computeSummary(null, pub);
-          await upsertSummaryCache(key, payload);
-        } catch (e) {
-          console.error(`[sync] summary precompute failed for publishing=${key}:`, e?.message);
+      // Precompute both tracks (catalog + 360 spin) × 3 publishing scopes = 6 keys.
+      // Spin keys are 'spin:'-prefixed; catalog keys stay 'all'/'on'/'off' unchanged.
+      for (const track of ['catalog', 'spin']) {
+        for (const pub of [null, 'on', 'off']) {
+          const key = (track === 'spin' ? 'spin:' : '') + (pub ?? 'all');
+          try {
+            const payload = await computeSummary(null, pub, track);
+            await upsertSummaryCache(key, payload);
+          } catch (e) {
+            console.error(`[sync] summary precompute failed for ${key}:`, e?.message);
+          }
         }
       }
       // Evict stale rows from the old date-filter scheme (post/pre) so the cache
-      // holds only the current all/on/off keys.
-      await query(`DELETE FROM summary_cache WHERE date_filter NOT IN ('all','on','off')`).catch(() => {});
+      // holds only the current catalog + spin keys.
+      await query(`DELETE FROM summary_cache WHERE date_filter NOT IN ('all','on','off','spin:all','spin:on','spin:off')`).catch(() => {});
       // Update meta in sync_state so GET /api/sync/status needs no vins scan.
       await query(`
         UPDATE sync_state
@@ -558,11 +659,13 @@ async function runSync() {
       } catch (e) {
         console.error(`[sync] MV refresh failed (vins swap already committed; recovers on next refresh):`, e?.message);
       }
-      try {
-        const filterPayload = await computeFilterOptions();
-        await upsertFilterCache(filterPayload);
-      } catch (e) {
-        console.error(`[sync] filter-options precompute failed:`, e?.message);
+      for (const track of ['catalog', 'spin']) {
+        try {
+          const filterPayload = await computeFilterOptions(track);
+          await upsertFilterCache(filterPayload, track === 'spin' ? 'spin' : 'global');
+        } catch (e) {
+          console.error(`[sync] filter-options precompute failed for ${track}:`, e?.message);
+        }
       }
     } else {
       await query(`UPDATE sync_state SET running = FALSE WHERE id = 'global'`);
@@ -622,6 +725,12 @@ function toTotals(r) {
     bucketQcPending:         r.bucket_qc_pending,
     bucketSold:              r.bucket_sold,
     bucketOthers:            r.bucket_others,
+    // 360 spin funnel scalars — only populated on the spin track (null for catalog).
+    // Drive the reordered spin Overview cards: Total → Requested → With Photos → Delivered → Pending.
+    spinRequested:           r.spin_requested ?? null,
+    spinWithPhotos:          r.spin_with_photos ?? null,
+    spinDeliveredWithPhotos: r.spin_delivered_with_photos ?? null,
+    spinPendingWithPhotos:   r.spin_pending_with_photos ?? null,
   };
 }
 
@@ -850,12 +959,38 @@ function getPublishingCondition(publishing, alias = '') {
 
 // Returns { prefix, from } for the rooftop aggregation source.
 // Joins report_history CTE (last 7 report days from snapshot) per rooftop for display columns.
-function buildRooftopSource(dateFilter, publishing) {
+function buildRooftopSource(dateFilter, publishing, track = 'catalog') {
   const dc = getDateCondition(dateFilter, 'v');
   const pc = getPublishingCondition(publishing, 'v');
   const scope = [dc, pc].filter(Boolean);
   let invCte = '', invSource;
-  if (scope.length) {
+  if (track === 'spin') {
+    // 360 track: 'all' scope reads the MV's spin_* columns (aliased to the catalog
+    // names the serializer expects); on/off scope computes spin aggregates inline.
+    invCte = scope.length
+      ? `rt AS (
+        SELECT v.rooftop_id, v.enterprise_id,
+          MAX(rd.team_name) AS name, MAX(rd.team_type) AS type, MAX(ed.poc_email) AS csm, MAX(ed.name) AS enterprise,
+          ${spinAggCols()},
+          MAX(rd.website_score) AS website_score, MAX(rd.website_listing_url) AS website_listing_url,
+          MAX(rd.ims_integration_status) AS ims_integration_status, MAX(rd.publishing_status) AS publishing_status,
+          ROUND(AVG(v.vin_score)::numeric, 2) AS avg_inventory_score
+        FROM vins v
+        LEFT JOIN rooftop_details rd ON v.rooftop_id = rd.team_id
+        LEFT JOIN enterprise_details ed ON v.enterprise_id = ed.enterprise_id
+        WHERE ${scope.join(' AND ')}
+        GROUP BY v.rooftop_id, v.enterprise_id
+      ),
+    `
+      : `rt AS (
+        SELECT rooftop_id, enterprise_id, name, type, csm, enterprise,
+          ${SPIN_MV_ALIAS_COLS},
+          website_score, website_listing_url, ims_integration_status, publishing_status, avg_inventory_score
+        FROM v_by_rooftop
+      ),
+    `;
+    invSource = 'rt';
+  } else if (scope.length) {
     invCte = `rt AS (
       SELECT
         v.rooftop_id,
@@ -933,12 +1068,42 @@ function buildRooftopSource(dateFilter, publishing) {
 // Returns { prefix, from } for the enterprise aggregation source.
 // Always embeds ENTERPRISE_STATUS_CTES so report_status is a real column
 // available for SQL-level filtering and sorting.
-function buildEnterpriseSource(dateFilter, publishing) {
+function buildEnterpriseSource(dateFilter, publishing, track = 'catalog') {
   const dc = getDateCondition(dateFilter, 'v');
   const pc = getPublishingCondition(publishing, 'v');
   const scope = [dc, pc].filter(Boolean);
   let invCte = '', invSource;
-  if (scope.length) {
+  if (track === 'spin') {
+    invCte = scope.length
+      ? `et AS (
+        SELECT v.enterprise_id AS id, MAX(ed.name) AS name, MAX(ed.poc_email) AS csm,
+          ${spinAggCols()},
+          COUNT(DISTINCT v.rooftop_id)::int AS rooftop_count,
+          COUNT(DISTINCT CASE WHEN rd.ims_integration_status = 'false' THEN v.rooftop_id END)::int AS not_integrated_count,
+          COUNT(DISTINCT CASE WHEN rd.publishing_status = 'false' THEN v.rooftop_id END)::int      AS publishing_disabled_count,
+          COUNT(DISTINCT CASE WHEN COALESCE(v.is_publishing,1)=1 THEN v.rooftop_id END)::int       AS publishing_on_rooftops,
+          COUNT(DISTINCT CASE WHEN COALESCE(v.is_publishing,1)=0 THEN v.rooftop_id END)::int       AS publishing_off_rooftops,
+          ROUND(AVG(rd.website_score)::numeric, 2) AS avg_website_score,
+          ROUND(AVG(v.vin_score)::numeric, 2)      AS avg_inventory_score,
+          MAX(ed.website_url) AS website_url, MAX(ed.type) AS account_type
+        FROM vins v
+        LEFT JOIN enterprise_details ed ON v.enterprise_id = ed.enterprise_id
+        LEFT JOIN rooftop_details rd    ON v.rooftop_id = rd.team_id
+        WHERE ${scope.join(' AND ')}
+        GROUP BY v.enterprise_id
+      ),
+    `
+      : `et AS (
+        SELECT id, name, csm,
+          ${SPIN_MV_ALIAS_COLS},
+          rooftop_count, not_integrated_count, publishing_disabled_count,
+          publishing_on_rooftops, publishing_off_rooftops,
+          avg_website_score, avg_inventory_score, website_url, account_type
+        FROM v_by_enterprise
+      ),
+    `;
+    invSource = 'et';
+  } else if (scope.length) {
     invCte = `et AS (
       SELECT
         v.enterprise_id                       AS id,
@@ -1058,8 +1223,19 @@ const SORT_MAP = {
   isPublishing: "v.is_publishing",
 };
 
-function buildVinSort({ sortBy, sortDir } = {}) {
-  const col = SORT_MAP[sortBy];
+// Spin variant: status/pendency/delivered/reason sorts target the spin columns.
+// received_at, vin_score, platform, is_publishing, vin, dealer_vin_id are shared.
+const SPIN_SORT_MAP = {
+  ...SORT_MAP,
+  status:       "v.spin_status",
+  after24h:     "v.spin_after_6h",
+  processedAt:  "v.spin_sent_at",
+  reasonBucket: "v.spin_reason_bucket",
+};
+
+function buildVinSort({ sortBy, sortDir } = {}, track = 'catalog') {
+  const map = track === 'spin' ? SPIN_SORT_MAP : SORT_MAP;
+  const col = map[sortBy];
   if (!col) return "v.received_at DESC NULLS LAST";
   return `${col} ${sortDir === "asc" ? "ASC" : "DESC"} NULLS LAST`;
 }
@@ -1079,10 +1255,27 @@ const VIN_SELECT = `
   ${VIN_FROM}
 `;
 
+// Spin variant: alias the spin columns to the catalog field names so toApiRow and
+// the RawTab renderer are reused unchanged. received_at / vin_score / vdp_url /
+// platform / hold_reason / is_publishing are shared.
+const VIN_SELECT_SPIN = `
+  SELECT v.vin, v.dealer_vin_id, v.enterprise_id, v.rooftop_id,
+         v.spin_status AS status, v.spin_after_6h AS after_24h, v.has_photos, v.received_at,
+         v.spin_sent_at AS processed_at, v.spin_reason_bucket AS reason_bucket, v.hold_reason,
+         v.synced_at, v.vin_score, v.vdp_url, v.platform,
+         COALESCE(v.is_publishing, 1) AS is_publishing, v.spin_qc_on AS is_qc_on,
+         rd.team_name AS rooftop, rd.team_type AS rooftop_type,
+         ed.name AS enterprise, ed.poc_email AS csm
+  ${VIN_FROM}
+`;
+
+const vinSelect = (track) => (track === 'spin' ? VIN_SELECT_SPIN : VIN_SELECT);
+
 // Builds a WHERE clause with PostgreSQL positional params ($1, $2, …).
 // Returns { where: string, params: any[] }.
-function buildVinFilters(queryParams) {
-  const { search, rooftop, rooftopId, rooftopType, csm, status, after24h, hasPhotos, hasVin, enterprise, enterpriseId, reasonBucket, dateFilter, publishing } = queryParams;
+function buildVinFilters(queryParams, track = 'catalog') {
+  const { search, rooftop, rooftopId, rooftopType, csm, status, after24h, hasPhotos, hasVin, enterprise, enterpriseId, reasonBucket, dateFilter, publishing, spinRequested } = queryParams;
+  const C = trackCols(track);
   const conditions = [];
   const params = [];
 
@@ -1098,18 +1291,22 @@ function buildVinFilters(queryParams) {
   if (rooftop)      conditions.push(`rd.team_name = ${p(rooftop)}`);
   if (rooftopType)  conditions.push(`rd.team_type = ${p(rooftopType)}`);
   if (csm)          conditions.push(`ed.poc_email = ${p(csm)}`);
-  if (status)       conditions.push(`v.status = ${p(status)}`);
+  if (status)       conditions.push(`v.${C.status} = ${p(status)}`);
   if (enterprise)   conditions.push(`ed.name = ${p(enterprise)}`);
+  // Spin "requested" scope — every spin table/drill-down is scoped to the 360 funnel.
+  if (track === 'spin' && (spinRequested === "true" || spinRequested === "1" || spinRequested === true)) {
+    conditions.push("COALESCE(v.output_processing_spin, 0) = 1");
+  }
   // Pendency >6h drill-down filter. Query param key `after24h` retained for
   // backwards compat — semantic now means ">6h" via pendencyPredicate6h.
-  const predicate = pendencyPredicate6h('v');
+  const predicate = pendencyPredicate6h('v', track);
   if (after24h === "true"  || after24h === "1") conditions.push(predicate);
   if (after24h === "false" || after24h === "0") conditions.push(`NOT ${predicate}`);
   if (hasPhotos === "true"  || hasPhotos === "1") conditions.push("COALESCE(v.has_photos, 0) = 1");
   if (hasPhotos === "false" || hasPhotos === "0") conditions.push("COALESCE(v.has_photos, 0) = 0");
   if (hasVin === "true"  || hasVin === "1") conditions.push("(v.vin IS NOT NULL AND v.vin != '')");
   if (hasVin === "false" || hasVin === "0") conditions.push("(v.vin IS NULL OR v.vin = '')");
-  if (reasonBucket) conditions.push(`v.reason_bucket = ${p(reasonBucket)}`);
+  if (reasonBucket) conditions.push(`v.${C.reason} = ${p(reasonBucket)}`);
   if (queryParams.inventoryScore === "Poor (<6)")      conditions.push("v.vin_score < 6");
   if (queryParams.inventoryScore === "Average (6–8)") conditions.push("(v.vin_score >= 6 AND v.vin_score < 8)");
   if (queryParams.inventoryScore === "Good (8+)")      conditions.push("v.vin_score >= 8");
@@ -1161,7 +1358,8 @@ app.post("/api/sync", async (_req, res) => {
 // Called at the end of each sync (to precompute all 3 variants) and as a
 // fallback in GET /api/summary when the cache is empty (first deploy).
 
-async function computeSummary(dateFilter, publishing) {
+async function computeSummary(dateFilter, publishing, track = 'catalog') {
+  if (track === 'spin') return computeSpinSummary(dateFilter, publishing);
   const dc = getDateCondition(dateFilter);
   const pc = getPublishingCondition(publishing);
   const scope = [dc, pc].filter(Boolean);
@@ -1368,6 +1566,187 @@ async function computeSummary(dateFilter, publishing) {
   };
 }
 
+// 360 spin summary — parallel to computeSummary but scoped to the spin funnel.
+// The Overview funnel is REORDERED: Total (global) → 360 Requested (output_processing_spin=1)
+// → With Photos (of requested) → Delivered → Pending. The by_csm / by_type / by_rooftop
+// aggregates run over the requested subset (`req`), so their "Inventory" column = 360 Requested.
+// Reuses the shared serializers (toTotals / toCsmRow / toTypeRow / toByRooftopRow); the 3
+// catalog-only buckets are zero-filled by spinBucketCols so the shape is stable.
+async function computeSpinSummary(dateFilter, publishing) {
+  const dc = getDateCondition(dateFilter);
+  const pc = getPublishingCondition(publishing);
+  const scope = [dc, pc].filter(Boolean);
+  const statsWhere = scope.length ? `WHERE ${scope.join(' AND ')}` : '';
+  const pend6h = pendencyPredicate6h('', 'spin');                              // (COALESCE(spin_after_6h,0)=1)
+  const reqBucketGuard = `spin_status != 'Delivered' AND COALESCE(has_photos,0)=1 AND ${pend6h}`;            // within req (already requested)
+  const totBucketGuard = `output_processing_spin = 1 AND spin_status != 'Delivered' AND COALESCE(has_photos,0)=1 AND ${pend6h}`; // over full base
+  const { rows } = await query(`
+    WITH
+      meta AS (
+        SELECT MAX(synced_at) AS last_sync, COUNT(*)::int AS total_rows FROM vins
+      ),
+      base AS MATERIALIZED (
+        SELECT
+          v.spin_status                          AS spin_status,
+          v.has_photos                           AS has_photos,
+          v.spin_after_6h                        AS spin_after_6h,
+          v.spin_reason_bucket                   AS spin_reason_bucket,
+          v.rooftop_id                           AS rooftop_id,
+          v.enterprise_id                        AS enterprise_id,
+          v.vin_score                            AS vin_score,
+          COALESCE(v.is_publishing, 1)           AS is_publishing,
+          COALESCE(v.output_processing_spin, 0)  AS output_processing_spin,
+          ed.poc_email,
+          rd.team_name,
+          rd.team_type,
+          rd.website_score,
+          rd.website_listing_url,
+          rd.ims_integration_status,
+          rd.publishing_status
+        FROM vins v
+        LEFT JOIN enterprise_details ed ON v.enterprise_id = ed.enterprise_id
+        LEFT JOIN rooftop_details rd    ON v.rooftop_id    = rd.team_id
+        ${statsWhere}
+      ),
+      req AS MATERIALIZED (
+        SELECT * FROM base WHERE output_processing_spin = 1
+      ),
+      totals AS (
+        SELECT
+          COUNT(*)::int                                                                                      AS total,
+          COUNT(DISTINCT enterprise_id)::int                                                                 AS enterprise_count,
+          SUM(CASE WHEN output_processing_spin = 1 THEN 1 ELSE 0 END)::int                                   AS spin_requested,
+          SUM(CASE WHEN output_processing_spin = 1 AND COALESCE(has_photos,0)=1 THEN 1 ELSE 0 END)::int      AS spin_with_photos,
+          SUM(CASE WHEN output_processing_spin = 1 AND spin_status = 'Delivered'     AND COALESCE(has_photos,0)=1 THEN 1 ELSE 0 END)::int AS spin_delivered_with_photos,
+          SUM(CASE WHEN output_processing_spin = 1 AND spin_status = 'Not Delivered' AND COALESCE(has_photos,0)=1 THEN 1 ELSE 0 END)::int AS spin_pending_with_photos,
+          SUM(CASE WHEN output_processing_spin = 1 AND spin_status = 'Delivered'  THEN 1 ELSE 0 END)::int    AS processed,
+          SUM(CASE WHEN output_processing_spin = 1 AND spin_status != 'Delivered' THEN 1 ELSE 0 END)::int    AS not_processed,
+          SUM(CASE WHEN ${totBucketGuard} THEN 1 ELSE 0 END)::int                                            AS not_processed_after_24h,
+          ${spinBucketCols(totBucketGuard)}
+        FROM base
+      ),
+      by_csm AS (
+        SELECT
+          poc_email                                                                                          AS name,
+          COUNT(DISTINCT rooftop_id)::int                                                                    AS rooftop_count,
+          COUNT(DISTINCT enterprise_id)::int                                                                 AS enterprise_count,
+          COUNT(*)::int                                                                                      AS total,
+          SUM(CASE WHEN COALESCE(has_photos,0)=1 THEN 1 ELSE 0 END)::int                                     AS with_photos,
+          SUM(CASE WHEN spin_status = 'Delivered'     AND COALESCE(has_photos,0)=1 THEN 1 ELSE 0 END)::int   AS delivered_with_photos,
+          SUM(CASE WHEN spin_status = 'Not Delivered' AND COALESCE(has_photos,0)=1 THEN 1 ELSE 0 END)::int   AS pending_with_photos,
+          SUM(CASE WHEN spin_status = 'Delivered' THEN 1 ELSE 0 END)::int                                    AS processed,
+          SUM(CASE WHEN spin_status = 'Delivered' AND ${pend6h} THEN 1 ELSE 0 END)::int                      AS processed_after_24h,
+          SUM(CASE WHEN spin_status != 'Delivered' THEN 1 ELSE 0 END)::int                                   AS not_processed,
+          SUM(CASE WHEN ${reqBucketGuard} THEN 1 ELSE 0 END)::int                                            AS not_processed_after_24h,
+          ROUND(AVG(website_score)::numeric, 2)                                                              AS avg_website_score,
+          ROUND(AVG(vin_score)::numeric, 2)                                                                  AS avg_inventory_score,
+          COUNT(DISTINCT CASE WHEN (website_listing_url IS NULL OR website_listing_url = '') THEN rooftop_id END)::int AS missing_website_count,
+          COUNT(DISTINCT CASE WHEN ims_integration_status = 'false' THEN rooftop_id END)::int               AS integrated_count,
+          COUNT(DISTINCT CASE WHEN publishing_status = 'false' THEN rooftop_id END)::int                    AS publishing_count,
+          COUNT(DISTINCT CASE WHEN is_publishing = 1 THEN rooftop_id END)::int                              AS publishing_on_rooftops,
+          COUNT(DISTINCT CASE WHEN is_publishing = 0 THEN rooftop_id END)::int                              AS publishing_off_rooftops,
+          ${spinBucketCols(reqBucketGuard)}
+        FROM req
+        GROUP BY poc_email
+      ),
+      by_type AS (
+        SELECT
+          team_type                                                                                          AS label,
+          COUNT(DISTINCT rooftop_id)::int                                                                    AS rooftop_count,
+          COUNT(DISTINCT enterprise_id)::int                                                                 AS enterprise_count,
+          COUNT(*)::int                                                                                      AS total,
+          SUM(CASE WHEN COALESCE(has_photos,0)=1 THEN 1 ELSE 0 END)::int                                     AS with_photos,
+          SUM(CASE WHEN spin_status = 'Delivered'     AND COALESCE(has_photos,0)=1 THEN 1 ELSE 0 END)::int   AS delivered_with_photos,
+          SUM(CASE WHEN spin_status = 'Not Delivered' AND COALESCE(has_photos,0)=1 THEN 1 ELSE 0 END)::int   AS pending_with_photos,
+          SUM(CASE WHEN spin_status = 'Delivered' THEN 1 ELSE 0 END)::int                                    AS processed,
+          SUM(CASE WHEN spin_status = 'Delivered' AND ${pend6h} THEN 1 ELSE 0 END)::int                      AS processed_after_24h,
+          SUM(CASE WHEN spin_status != 'Delivered' THEN 1 ELSE 0 END)::int                                   AS not_processed,
+          SUM(CASE WHEN ${reqBucketGuard} THEN 1 ELSE 0 END)::int                                            AS not_processed_after_24h,
+          ROUND(AVG(website_score)::numeric, 2)                                                              AS avg_website_score,
+          ROUND(AVG(vin_score)::numeric, 2)                                                                  AS avg_inventory_score,
+          COUNT(DISTINCT CASE WHEN (website_listing_url IS NULL OR website_listing_url = '') THEN rooftop_id END)::int AS missing_website_count,
+          COUNT(DISTINCT CASE WHEN ims_integration_status = 'false' THEN rooftop_id END)::int               AS integrated_count,
+          COUNT(DISTINCT CASE WHEN publishing_status = 'false' THEN rooftop_id END)::int                    AS publishing_count,
+          COUNT(DISTINCT CASE WHEN is_publishing = 1 THEN rooftop_id END)::int                              AS publishing_on_rooftops,
+          COUNT(DISTINCT CASE WHEN is_publishing = 0 THEN rooftop_id END)::int                              AS publishing_off_rooftops,
+          ${spinBucketCols(reqBucketGuard)}
+        FROM req
+        GROUP BY team_type
+      ),
+      by_bucket AS (
+        SELECT spin_reason_bucket AS label, COUNT(*)::int AS count
+        FROM req
+        WHERE spin_status != 'Delivered' AND COALESCE(has_photos,0)=1 AND ${pend6h}
+          AND spin_reason_bucket IS NOT NULL AND spin_reason_bucket != ''
+        GROUP BY spin_reason_bucket
+      ),
+      by_rooftop AS (
+        SELECT
+          rooftop_id,
+          MAX(enterprise_id)        AS enterprise_id,
+          MAX(team_name)            AS rooftop_name,
+          MAX(team_type)            AS rooftop_type,
+          MAX(poc_email)            AS csm,
+          MAX(website_listing_url)  AS website_listing_url,
+          SUM(CASE WHEN ${reqBucketGuard} THEN 1 ELSE 0 END)::int AS pending_after_24h,
+          ${spinBucketCols(reqBucketGuard)},
+          ROUND(AVG(website_score)::numeric, 2) AS avg_website_score,
+          ROUND(AVG(vin_score)::numeric, 2)     AS avg_inventory_score
+        FROM req
+        GROUP BY rooftop_id
+      ),
+      score_buckets AS (
+        SELECT
+          SUM(CASE WHEN avg_inventory_score IS NULL OR avg_inventory_score < 6 THEN 1 ELSE 0 END)::int AS poor,
+          SUM(CASE WHEN avg_inventory_score >= 6 AND avg_inventory_score < 8 THEN 1 ELSE 0 END)::int AS average,
+          SUM(CASE WHEN avg_inventory_score >= 8 THEN 1 ELSE 0 END)::int AS good
+        FROM by_rooftop
+      )
+    SELECT
+      (SELECT last_sync   FROM meta)                AS last_sync,
+      (SELECT total_rows  FROM meta)                AS total_rows,
+      (SELECT row_to_json(t) FROM totals t)         AS totals_json,
+      (SELECT json_agg(c ORDER BY c.rooftop_count DESC) FROM by_csm c) AS by_csm_json,
+      (SELECT json_agg(t ORDER BY
+          CASE t.label
+            WHEN 'Franchise Group'        THEN 1
+            WHEN 'Franchise Individual'   THEN 2
+            WHEN 'Independent Group'      THEN 3
+            WHEN 'Independent Individual' THEN 4
+            WHEN 'Others'                 THEN 5
+            ELSE 6
+          END, t.label)
+       FROM by_type t)                              AS by_type_json,
+      (SELECT json_agg(b ORDER BY
+          CASE b.label
+            WHEN 'Upload Pending'      THEN 1
+            WHEN 'Processing Pending'  THEN 2
+            WHEN 'QC Pending'          THEN 3
+            WHEN 'QC Hold'             THEN 4
+            WHEN 'Sold'                THEN 5
+            ELSE 6
+          END, b.label)
+       FROM by_bucket b)                            AS by_bucket_json,
+      (SELECT json_agg(r ORDER BY r.pending_after_24h DESC)
+       FROM (SELECT * FROM by_rooftop WHERE pending_after_24h > 0 ORDER BY pending_after_24h DESC LIMIT 20) r) AS by_rooftop_json,
+      (SELECT json_agg(r ORDER BY r.avg_inventory_score ASC, r.rooftop_name ASC)
+       FROM (SELECT * FROM by_rooftop WHERE avg_inventory_score IS NOT NULL ORDER BY avg_inventory_score ASC, rooftop_name ASC LIMIT 20) r) AS by_rooftop_lowest_inv_json,
+      (SELECT row_to_json(s) FROM score_buckets s) AS score_buckets_json
+  `);
+  const row = rows[0];
+  return {
+    lastSync:   row.last_sync  ?? null,
+    totalRows:  row.total_rows ?? 0,
+    totals:     toTotals(row.totals_json),
+    byCSM:      (row.by_csm_json    ?? []).map(toCsmRow),
+    byType:     (row.by_type_json   ?? []).map(toTypeRow),
+    byBucket:   (row.by_bucket_json ?? []).map(r => ({ label: r.label, count: r.count })),
+    byRooftop:                (row.by_rooftop_json          ?? []).map(toByRooftopRow),
+    byRooftopLowestInventory: (row.by_rooftop_lowest_inv_json ?? []).map(toByRooftopRow),
+    scoreBuckets:             row.score_buckets_json ?? { poor: 0, average: 0, good: 0 },
+  };
+}
+
 function toByRooftopRow(r) {
   return {
     rooftopId:               r.rooftop_id,
@@ -1406,11 +1785,12 @@ async function upsertSummaryCache(dateFilter, payload) {
 
 app.get("/api/summary", async (req, res) => {
   const publishing = req.query.publishing ?? null;
-  // The cache key is the publishing scope (all/on/off) — all three are precomputed
-  // and refreshed every sync. The date filter was retired (always 'all'), so it's
-  // no longer part of the cache key.
+  const track = req.query.track === 'spin' ? 'spin' : 'catalog';
+  // The cache key is the publishing scope (all/on/off), prefixed with 'spin:' for the
+  // 360 track — all six (3 catalog + 3 spin) are precomputed and refreshed every sync.
+  // The date filter was retired (always 'all'), so it's no longer part of the cache key.
   const scope    = (publishing === 'on' || publishing === 'off') ? publishing : null;
-  const cacheKey = scope ?? 'all';
+  const cacheKey = (track === 'spin' ? 'spin:' : '') + (scope ?? 'all');
   const { rows } = await query(
     'SELECT payload FROM summary_cache WHERE date_filter = $1',
     [cacheKey]
@@ -1420,7 +1800,7 @@ app.get("/api/summary", async (req, res) => {
   }
   // Cache not yet populated (e.g. first request right after a deploy, before the
   // first sync) — compute this scope on-demand and store it so the next is instant.
-  const payload = await computeSummary(null, scope);
+  const payload = await computeSummary(null, scope, track);
   await upsertSummaryCache(cacheKey, payload);
   res.json(payload);
 });
@@ -1429,7 +1809,30 @@ app.get("/api/summary", async (req, res) => {
 // Queries the materialized views (pre-aggregated at sync time) and returns the
 // shaped payload. Called at the end of each sync and as a fallback on cold start.
 
-async function computeFilterOptions() {
+async function computeFilterOptions(track = 'catalog') {
+  // Spin reads the MV's parallel spin_bucket_* columns; the 3 catalog-only buckets
+  // are FALSE for spin. Rooftop/type/csm/enterprise option lists are track-agnostic.
+  const bucketFlagsSelect = track === 'spin'
+    ? `
+        BOOL_OR(spin_bucket_upload_pending     > 0) AS bucket_upload_pending,
+        BOOL_OR(spin_bucket_processing_pending > 0) AS bucket_processing_pending,
+        FALSE                                       AS bucket_missing_vin_name,
+        FALSE                                       AS bucket_scheduled_push,
+        FALSE                                       AS bucket_publishing_pending,
+        BOOL_OR(spin_bucket_qc_pending         > 0) AS bucket_qc_pending,
+        BOOL_OR(spin_bucket_qc_hold            > 0) AS bucket_qc_hold,
+        BOOL_OR(spin_bucket_sold               > 0) AS bucket_sold,
+        BOOL_OR(spin_bucket_others             > 0) AS bucket_others`
+    : `
+        BOOL_OR(bucket_upload_pending      > 0) AS bucket_upload_pending,
+        BOOL_OR(bucket_processing_pending  > 0) AS bucket_processing_pending,
+        BOOL_OR(bucket_missing_vin_name    > 0) AS bucket_missing_vin_name,
+        BOOL_OR(bucket_scheduled_push      > 0) AS bucket_scheduled_push,
+        BOOL_OR(bucket_publishing_pending  > 0) AS bucket_publishing_pending,
+        BOOL_OR(bucket_qc_pending          > 0) AS bucket_qc_pending,
+        BOOL_OR(bucket_qc_hold             > 0) AS bucket_qc_hold,
+        BOOL_OR(bucket_sold                > 0) AS bucket_sold,
+        BOOL_OR(bucket_others              > 0) AS bucket_others`;
   const [
     rooftopNamesRes,
     rooftopTypesRes,
@@ -1446,19 +1849,7 @@ async function computeFilterOptions() {
     query("SELECT DISTINCT enterprise_id AS id, enterprise AS name FROM v_by_rooftop WHERE enterprise IS NOT NULL ORDER BY enterprise"),
     query("SELECT DISTINCT csm  FROM v_by_enterprise WHERE csm  IS NOT NULL ORDER BY csm"),
     query("SELECT DISTINCT account_type FROM v_by_enterprise WHERE account_type IS NOT NULL ORDER BY account_type"),
-    query(`
-      SELECT
-        BOOL_OR(bucket_upload_pending      > 0) AS bucket_upload_pending,
-        BOOL_OR(bucket_processing_pending  > 0) AS bucket_processing_pending,
-        BOOL_OR(bucket_missing_vin_name    > 0) AS bucket_missing_vin_name,
-        BOOL_OR(bucket_scheduled_push      > 0) AS bucket_scheduled_push,
-        BOOL_OR(bucket_publishing_pending  > 0) AS bucket_publishing_pending,
-        BOOL_OR(bucket_qc_pending          > 0) AS bucket_qc_pending,
-        BOOL_OR(bucket_qc_hold             > 0) AS bucket_qc_hold,
-        BOOL_OR(bucket_sold                > 0) AS bucket_sold,
-        BOOL_OR(bucket_others              > 0) AS bucket_others
-      FROM v_by_rooftop
-    `),
+    query(`SELECT ${bucketFlagsSelect} FROM v_by_rooftop`),
     query(`
       SELECT
         BOOL_OR(not_integrated_count      > 0) AS has_not_integrated,
@@ -1491,12 +1882,12 @@ async function computeFilterOptions() {
   };
 }
 
-async function upsertFilterCache(payload) {
+async function upsertFilterCache(payload, id = 'global') {
   await query(
     `INSERT INTO filter_cache (id, payload, computed_at)
-     VALUES ('global', $1, NOW())
-     ON CONFLICT (id) DO UPDATE SET payload = $1, computed_at = NOW()`,
-    [JSON.stringify(payload)]
+     VALUES ($1, $2, NOW())
+     ON CONFLICT (id) DO UPDATE SET payload = $2, computed_at = NOW()`,
+    [id, JSON.stringify(payload)]
   );
 }
 
@@ -1504,9 +1895,11 @@ async function upsertFilterCache(payload) {
 // Serves from filter_cache (precomputed at end of each sync) — trivial lookup.
 // Falls back to computing on-demand if cache is empty (first deploy).
 
-app.get("/api/filter-options", async (_req, res) => {
+app.get("/api/filter-options", async (req, res) => {
+  const track   = req.query.track === 'spin' ? 'spin' : 'catalog';
+  const cacheId = track === 'spin' ? 'spin' : 'global';
   const [cacheRes, syncRes] = await Promise.all([
-    query("SELECT payload, computed_at FROM filter_cache WHERE id = 'global'"),
+    query("SELECT payload, computed_at FROM filter_cache WHERE id = $1", [cacheId]),
     query("SELECT completed_at FROM sync_state WHERE id = 'global'"),
   ]);
 
@@ -1529,8 +1922,8 @@ app.get("/api/filter-options", async (_req, res) => {
 
   if (hasValidShape && isFresh) return res.json(cached);
 
-  const payload = await computeFilterOptions();
-  await upsertFilterCache(payload);
+  const payload = await computeFilterOptions(track);
+  await upsertFilterCache(payload, cacheId);
   res.json(payload);
 });
 
@@ -1540,13 +1933,14 @@ app.get("/api/vins", async (req, res) => {
   const page     = Math.max(1, parseInt(req.query.page)     || 1);
   const pageSize = Math.min(500, Math.max(10, parseInt(req.query.pageSize) || 50));
   const offset   = (page - 1) * pageSize;
+  const track    = req.query.track === 'spin' ? 'spin' : 'catalog';
 
-  const { where, params } = buildVinFilters(req.query);
-  const orderBy = buildVinSort(req.query);
+  const { where, params } = buildVinFilters(req.query, track);
+  const orderBy = buildVinSort(req.query, track);
 
   const [countRes, rowsRes] = await Promise.all([
     query(`SELECT COUNT(*)::int AS n ${VIN_FROM} ${where}`, params),
-    query(`${VIN_SELECT} ${where} ORDER BY ${orderBy} LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+    query(`${vinSelect(track)} ${where} ORDER BY ${orderBy} LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
       [...params, pageSize, offset]),
   ]);
 
@@ -1668,7 +2062,7 @@ app.get("/api/rooftops", async (req, res) => {
   const pageSize = Math.min(500, Math.max(10, parseInt(req.query.pageSize) || 50));
   const offset   = (page - 1) * pageSize;
 
-  const { prefix, from } = buildRooftopSource(req.query.dateFilter, req.query.publishing);
+  const { prefix, from } = buildRooftopSource(req.query.dateFilter, req.query.publishing, req.query.track === 'spin' ? 'spin' : 'catalog');
   const { where, params } = buildRooftopFilters(req.query);
   const sortCol = ROOFTOP_SORT_MAP[req.query.sortBy] ?? "not_processed_after_24h";
   const sortDir = req.query.sortDir === "asc" ? "ASC" : "DESC";
@@ -1690,7 +2084,7 @@ app.get("/api/rooftops", async (req, res) => {
 });
 
 app.get("/api/rooftops/export", async (req, res) => {
-  const { prefix, from } = buildRooftopSource(req.query.dateFilter, req.query.publishing);
+  const { prefix, from } = buildRooftopSource(req.query.dateFilter, req.query.publishing, req.query.track === 'spin' ? 'spin' : 'catalog');
   const { where, params } = buildRooftopFilters(req.query);
   const sortCol = ROOFTOP_SORT_MAP[req.query.sortBy] ?? "not_processed_after_24h";
   const sortDir = req.query.sortDir === "asc" ? "ASC" : "DESC";
@@ -1892,7 +2286,7 @@ app.get("/api/enterprises", async (req, res) => {
   const pageSize = Math.min(500, Math.max(10, parseInt(req.query.pageSize) || 50));
   const offset   = (page - 1) * pageSize;
 
-  const { prefix, from } = buildEnterpriseSource(req.query.dateFilter, req.query.publishing);
+  const { prefix, from } = buildEnterpriseSource(req.query.dateFilter, req.query.publishing, req.query.track === 'spin' ? 'spin' : 'catalog');
   const { where, params } = buildEnterpriseFilters(req.query);
   const sortCol = ENTERPRISE_SORT_MAP[req.query.sortBy] ?? "not_processed_after_24h";
   const sortDir = req.query.sortDir === "asc" ? "ASC" : "DESC";
@@ -1914,7 +2308,7 @@ app.get("/api/enterprises", async (req, res) => {
 });
 
 app.get("/api/enterprises/export", async (req, res) => {
-  const { prefix, from } = buildEnterpriseSource(req.query.dateFilter, req.query.publishing);
+  const { prefix, from } = buildEnterpriseSource(req.query.dateFilter, req.query.publishing, req.query.track === 'spin' ? 'spin' : 'catalog');
   const { where, params } = buildEnterpriseFilters(req.query);
   const sortCol = ENTERPRISE_SORT_MAP[req.query.sortBy] ?? "not_processed_after_24h";
   const sortDir = req.query.sortDir === "asc" ? "ASC" : "DESC";
@@ -1926,9 +2320,10 @@ app.get("/api/enterprises/export", async (req, res) => {
 // ─── GET /api/vins/export ─────────────────────────────────────────────────────
 
 app.get("/api/vins/export", async (req, res) => {
-  const { where, params } = buildVinFilters(req.query);
-  const orderBy = buildVinSort(req.query);
-  const { rows } = await query(`${VIN_SELECT} ${where} ORDER BY ${orderBy}`, params);
+  const track = req.query.track === 'spin' ? 'spin' : 'catalog';
+  const { where, params } = buildVinFilters(req.query, track);
+  const orderBy = buildVinSort(req.query, track);
+  const { rows } = await query(`${vinSelect(track)} ${where} ORDER BY ${orderBy}`, params);
   res.json({ data: rows.map(toApiRow) });
 });
 
