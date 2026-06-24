@@ -233,8 +233,15 @@ async function syncVins() {
     inBatch = 0;
   };
 
-  // Step 2: fetch + stream-parse. 180s connect/read timeout, mirroring the old pull.
-  const res = await fetch(csvUrl, { signal: AbortSignal.timeout(180000) });
+  // Step 2: fetch + stream-parse. 270s connect/read timeout. The expanded card's
+  // query is slow to EXECUTE (~2.3 min to first byte) before streaming begins, so
+  // the old 180s budget aborted mid-stream (~300k of ~425k rows) and the swap never
+  // ran. Raised toward Vercel's 300s function maxDuration (vercel.json) to let the
+  // query + full stream finish, leaving ~30s headroom for the swap + summary
+  // precompute. NOTE: this is a stopgap — the durable fix is speeding up the card
+  // query; if the whole sync (rooftops + enterprises + this fetch + swap + summary)
+  // still exceeds 300s on Vercel, the function will be killed regardless.
+  const res = await fetch(csvUrl, { signal: AbortSignal.timeout(270000) });
   if (!res.ok) throw new Error(`[sync:VIN_DETAILS] HTTP ${res.status}`);
   // Metabase delivers query errors (timeouts, failed/expired cards) as a JSON body
   // even on the CSV endpoint, often with a 2xx — detect via content-type and surface
