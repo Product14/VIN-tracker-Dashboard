@@ -317,8 +317,12 @@ export function buildStudioHealthHtml({ funnel, planCounts, images, three60, vid
     kpiCard('Studio-Others', fmtInt(planCounts.others), `${pct(planCounts.others, planCounts.total)} of Live Rooftops`, '#64748b', '33.33%', `${fmtMoneyCompact(planCounts.othersArr)} ARR`),
   ])
 
+  // Wider canvas for the Slack JPEG; the email stays email-width (800).
+  const pageW = slack ? 1040 : 800
+
   const dashboardUrl =(process.env.STUDIO_HEALTH_DASHBOARD_URL || 'https://analytics.spyne.ai/studio').replace(/\/$/, '')
-  const ctaHtml = dashboardUrl
+  // The CTA is a clickable link — useful in the email, pointless in the Slack image (a JPEG), so drop it there.
+  const ctaHtml = (dashboardUrl && !slack)
     ? `
     <tr>
       <td style="padding:32px 0 8px; text-align:center;">
@@ -344,7 +348,7 @@ export function buildStudioHealthHtml({ funnel, planCounts, images, three60, vid
     <tr>
       <td align="center">
 
-        <table width="800" cellpadding="0" cellspacing="0" border="0" style="max-width:800px; width:100%;">
+        <table width="${pageW}" cellpadding="0" cellspacing="0" border="0" style="max-width:${pageW}px; width:100%;">
 
           <!-- Header -->
           <tr>

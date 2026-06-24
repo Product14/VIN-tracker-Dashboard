@@ -29,11 +29,12 @@ async function launch() {
 /**
  * @param {string} html  full HTML document
  * @param {object} [opts]
- * @param {number} [opts.width=820]               viewport width (email is ~800px wide)
+ * @param {number} [opts.width=1080]              viewport width (must exceed the template's
+ *                                                slack page width, currently 1040px)
  * @param {number} [opts.deviceScaleFactor=2]     retina crispness
  * @returns {Promise<Buffer>} JPEG bytes
  */
-export async function htmlToJpeg(html, { width = 820, deviceScaleFactor = 2 } = {}) {
+export async function htmlToJpeg(html, { width = 1080, deviceScaleFactor = 2 } = {}) {
   const browser = await launch()
   try {
     const page = await browser.newPage()
