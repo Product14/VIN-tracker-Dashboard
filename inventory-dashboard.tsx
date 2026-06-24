@@ -322,13 +322,17 @@ function ClickableNum({ value, color, onClick, title = "" }) {
   );
 }
 
-function StatCard({ label, value, sub, color = "#6366f1", onClick, loading = false, compact = false }: { label: string; value: any; sub?: string; color?: string; onClick?: any; loading?: boolean; compact?: boolean }) {
+function StatCard({ label, value, sub, color = "#6366f1", onClick, loading = false, compact = false, smallGrey = false }: { label: string; value: any; sub?: string; color?: string; onClick?: any; loading?: boolean; compact?: boolean; smallGrey?: boolean }) {
   const interactive = !!onClick;
+  // smallGrey shrinks the grey label + sub text (used on the 360 cards where the
+  // longer "% of 360 requested" subtitles would otherwise wrap).
+  const labelSize = smallGrey ? 11 : (compact ? 12 : 13);
+  const subSize   = smallGrey ? 10 : (compact ? 12 : 13);
   return (
     <div onClick={!loading ? onClick : undefined} style={{ background: "#fff", borderRadius: 12, padding: compact ? "12px 16px" : "20px 24px", boxShadow: "0 1px 3px rgba(0,0,0,0.08)", border: "1px solid #e5e7eb", flex: 1, minWidth: 160, cursor: interactive && !loading ? "pointer" : "default", transition: "all 0.15s" }}
       onMouseEnter={e => { if (interactive && !loading) { e.currentTarget.style.boxShadow = "0 4px 12px rgba(0,0,0,0.12)"; e.currentTarget.style.transform = "translateY(-2px)"; } }}
       onMouseLeave={e => { if (interactive && !loading) { e.currentTarget.style.boxShadow = "0 1px 3px rgba(0,0,0,0.08)"; e.currentTarget.style.transform = "translateY(0)"; } }}>
-      <div style={{ fontSize: compact ? 12 : 13, color: "#6b7280", fontWeight: 500, marginBottom: 4 }}>{label}</div>
+      <div style={{ fontSize: labelSize, color: "#6b7280", fontWeight: 500, marginBottom: 4 }}>{label}</div>
       {loading ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 4 }}>
           <div className="shimmer-cell" style={{ height: compact ? 24 : 32, borderRadius: 6, width: "60%" }} />
@@ -337,7 +341,7 @@ function StatCard({ label, value, sub, color = "#6366f1", onClick, loading = fal
       ) : (
         <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
           <div style={{ fontSize: compact ? 22 : 28, fontWeight: 700, color }}>{typeof value === "number" ? value.toLocaleString() : value}</div>
-          {sub && <div style={{ fontSize: compact ? 12 : 13, color: "#9ca3af", fontWeight: 500 }}>({sub})</div>}
+          {sub && <div style={{ fontSize: subSize, color: "#9ca3af", fontWeight: 500 }}>({sub})</div>}
         </div>
       )}
       {interactive && !loading && <div style={{ fontSize: 11, color: "#a5b4fc", marginTop: compact ? 4 : 6 }}>Click to view details →</div>}
@@ -471,7 +475,7 @@ function SearchableSelect({ value, onChange, options, placeholder = "All", clear
   );
 }
 
-function FilterBar({ filters, setFilters, rooftopOptions = [], typeOptions = [], csmOptions = [], enterpriseObjects = [], buckets = BUCKETS }) {
+function FilterBar({ filters, setFilters, rooftopOptions = [], typeOptions = [], csmOptions = [], enterpriseObjects = [], buckets = BUCKETS, hidePublishing = false }) {
   // Build id→name and name→id maps for display vs filter
   const enterpriseIdToName = useMemo(() => Object.fromEntries(enterpriseObjects.map(e => [e.id, e.name])), [enterpriseObjects]);
   const enterpriseNameToId = useMemo(() => Object.fromEntries(enterpriseObjects.map(e => [e.name, e.id])), [enterpriseObjects]);
@@ -555,12 +559,14 @@ function FilterBar({ filters, setFilters, rooftopOptions = [], typeOptions = [],
           options={["Poor (<6)", "Average (6–8)", "Good (8+)"]}
           placeholder="All VIN Scores"
         />
+        {!hidePublishing && (
         <SearchableSelect
           value={filters.publishing === "on" ? "Publishing On" : filters.publishing === "off" ? "Publishing Off" : null}
           onChange={v => setFilters(f => ({ ...f, publishing: v === null ? null : v === "Publishing On" ? "on" : "off" }))}
           options={["Publishing On", "Publishing Off"]}
           placeholder="All Publishing"
         />
+        )}
         {activeCount > 0 && (
           <button onClick={() => setFilters({ search: "", enterpriseId: null, rooftopId: null, rooftopType: null, csm: null, status: null, after24h: null, hasPhotos: null, hasVin: null, reasonBucket: null, inventoryScore: null, publishing: null })}
             style={{ padding: "7px 14px", borderRadius: 8, border: "1px solid #fca5a5", background: "#fef2f2", color: "#dc2626", fontSize: 13, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>
@@ -604,7 +610,7 @@ function TableShimmer({ cols, rows = 10 }: { cols: number; rows?: number }) {
   );
 }
 
-function RawTab({ data, loading, filters, setFilters, total, page, pageCount, onPageChange, rooftopOptions, typeOptions, csmOptions, enterpriseObjects = [], sortCol, sortDir, onSortChange, publishing = "all", buckets = BUCKETS }) {
+function RawTab({ data, loading, filters, setFilters, total, page, pageCount, onPageChange, rooftopOptions, typeOptions, csmOptions, enterpriseObjects = [], sortCol, sortDir, onSortChange, publishing = "all", buckets = BUCKETS, hidePublishing = false }) {
   const [downloading, setDownloading] = useState(false);
 
   const handleSort = (col) => {
@@ -622,7 +628,7 @@ function RawTab({ data, loading, filters, setFilters, total, page, pageCount, on
     { key: "dealerVinId", label: "Dealer VIN ID", numeric: true },
     { key: "hasPhotos",   label: "Has Photos",    numeric: true },
     { key: "status",      label: "Status" },
-    { key: "isPublishing", label: "Publishing", numeric: true },
+    ...(hidePublishing ? [] : [{ key: "isPublishing", label: "Publishing", numeric: true }]),
     { key: "after24h",    label: "After 6h?", numeric: true },
     { key: "platform",    label: "Source" },
     { key: "receivedAt",  label: "Received" },
@@ -653,8 +659,8 @@ function RawTab({ data, loading, filters, setFilters, total, page, pageCount, on
       const res = await fetch(`${API_BASE}/api/vins/export?${params}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const { data } = await res.json();
-      const headers = ["Enterprise ID", "Enterprise Name", "Team ID", "Rooftop Name", "Type", "CSM", "VIN", "Dealer VIN ID", "Has Photos", "Status", "Publishing", "After 6h?", "Source", "Received", "Delivered", "Reason Bucket", "Hold Reason", "VIN Score"];
-      const rows = data.map(d => [d.enterpriseId, d.enterprise, d.rooftopId, d.rooftop, d.rooftopType, d.csm, d.vin, d.dealerVinId ?? "", d.hasPhotos ? "Yes" : "No", d.status, d.isPublishing ? "On" : "Off", d.after24h ? "Yes" : "No", d.platform || "", d.receivedAt ? new Date(d.receivedAt).toLocaleString() : "", d.processedAt ? new Date(d.processedAt).toLocaleString() : "", d.reasonBucket || "", d.holdReason || "", d.vinScore != null ? Number(d.vinScore).toFixed(1) : ""]);
+      const headers = ["Enterprise ID", "Enterprise Name", "Team ID", "Rooftop Name", "Type", "CSM", "VIN", "Dealer VIN ID", "Has Photos", "Status", ...(hidePublishing ? [] : ["Publishing"]), "After 6h?", "Source", "Received", "Delivered", "Reason Bucket", "Hold Reason", "VIN Score"];
+      const rows = data.map(d => [d.enterpriseId, d.enterprise, d.rooftopId, d.rooftop, d.rooftopType, d.csm, d.vin, d.dealerVinId ?? "", d.hasPhotos ? "Yes" : "No", d.status, ...(hidePublishing ? [] : [d.isPublishing ? "On" : "Off"]), d.after24h ? "Yes" : "No", d.platform || "", d.receivedAt ? new Date(d.receivedAt).toLocaleString() : "", d.processedAt ? new Date(d.processedAt).toLocaleString() : "", d.reasonBucket || "", d.holdReason || "", d.vinScore != null ? Number(d.vinScore).toFixed(1) : ""]);
       downloadCSV("vin-data.csv", headers, rows);
     } catch (err) {
       console.error("Export failed:", err);
@@ -673,7 +679,7 @@ function RawTab({ data, loading, filters, setFilters, total, page, pageCount, on
           {downloading ? "⟳ Downloading…" : "↓ Download CSV"}
         </button>
       </div>
-      <FilterBar filters={filters} setFilters={setFilters} rooftopOptions={rooftopOptions} typeOptions={typeOptions} csmOptions={csmOptions} enterpriseObjects={enterpriseObjects} buckets={buckets} />
+      <FilterBar filters={filters} setFilters={setFilters} rooftopOptions={rooftopOptions} typeOptions={typeOptions} csmOptions={csmOptions} enterpriseObjects={enterpriseObjects} buckets={buckets} hidePublishing={hidePublishing} />
       <div style={{ maxHeight: "calc(100vh - 260px)", overflow: "auto", borderRadius: 10, border: "1px solid #e5e7eb" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
           <thead>
@@ -687,9 +693,9 @@ function RawTab({ data, loading, filters, setFilters, total, page, pageCount, on
             </tr>
           </thead>
           <tbody className={loading && data.length > 0 ? "tbody-loading" : ""}>
-            {loading && data.length === 0 && <TableShimmer cols={17} />}
+            {loading && data.length === 0 && <TableShimmer cols={cols.length + 1} />}
             {!loading && data.length === 0 && (
-              <tr><td colSpan={17} style={{ padding: 40, textAlign: "center", color: "#9ca3af", fontSize: 14 }}>No records match the current filters.</td></tr>
+              <tr><td colSpan={cols.length + 1} style={{ padding: 40, textAlign: "center", color: "#9ca3af", fontSize: 14 }}>No records match the current filters.</td></tr>
             )}
             {data.map((d, i) => (
               <tr key={d.vin} style={{ background: i % 2 === 0 ? "#fff" : "#f9fafb" }}>
@@ -727,7 +733,7 @@ function RawTab({ data, loading, filters, setFilters, total, page, pageCount, on
                 </td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6", textAlign: "center" }}>{d.hasPhotos ? <Badge label="Yes" color="green" /> : <Badge label="No" color="gray" />}</td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}><Badge label={d.status} color={d.status === "Delivered" ? "green" : "red"} /></td>
-                <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6", textAlign: "center" }}>{d.isPublishing ? <Badge label="On" color="green" /> : <Badge label="Off" color="gray" />}</td>
+                {!hidePublishing && <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6", textAlign: "center" }}>{d.isPublishing ? <Badge label="On" color="green" /> : <Badge label="Off" color="gray" />}</td>}
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6", textAlign: "center" }}>{d.after24h ? <Badge label="Yes" color="amber" /> : <Badge label="No" color="green" />}</td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6" }}>{d.platform ? <Truncated value={d.platform} maxWidth={140} /> : <span style={{ color: "#9ca3af" }}>—</span>}</td>
                 <td style={{ padding: "10px 14px", borderBottom: "1px solid #f3f4f6", whiteSpace: "nowrap", fontSize: 12 }}>{new Date(d.receivedAt).toLocaleString()}</td>
@@ -762,7 +768,7 @@ function RawTab({ data, loading, filters, setFilters, total, page, pageCount, on
   );
 }
 
-function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterpriseOptions = [], bucketFlags = {}, rows, total, page, pageCount, loading, onPageChange, onDrillDown, filters, setFilters, sortCol, sortDir, onSortChange, reportDates = [], publishing = "all", buckets = BUCKETS }: any) {
+function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterpriseOptions = [], bucketFlags = {}, rows, total, page, pageCount, loading, onPageChange, onDrillDown, filters, setFilters, sortCol, sortDir, onSortChange, reportDates = [], publishing = "all", buckets = BUCKETS, hidePublishing = false }: any) {
   const [downloading, setDownloading] = useState(false);
   const [reportDatesExpanded, setReportDatesExpanded] = useState(false);
   const row1Ref = useRef<HTMLTableRowElement>(null);
@@ -798,7 +804,7 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
     { key: "notProcessedAfter24",    label: "Pending VINs >6h",   numeric: true },
     ...activeBuckets.map(b => ({ key: b.key, label: b.label, numeric: true })),
     { key: "imsIntegrationStatus",   label: "IMS Integration",  numeric: true, noSort: true },
-    { key: "publishingStatus",       label: "Publishing",       numeric: true, noSort: true },
+    ...(hidePublishing ? [] : [{ key: "publishingStatus", label: "Publishing", numeric: true, noSort: true }]),
   ];
 
   const tdStyle = { padding: "10px 14px", borderBottom: "1px solid #f3f4f6" };
@@ -893,12 +899,14 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
             options={["Yes", "No"]}
             placeholder="IMS Integration"
           />
+          {!hidePublishing && (
           <SearchableSelect
             value={filters.publishingStatus}
             onChange={v => setFilters(f => ({ ...f, publishingStatus: v }))}
             options={["Yes", "No"]}
             placeholder="Publishing"
           />
+          )}
           <SearchableSelect
             value={filters.websiteUrl}
             onChange={v => setFilters(f => ({ ...f, websiteUrl: v }))}
@@ -1074,7 +1082,7 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
                     </td>
                   ))}
                   <td style={{ ...tdStyle, textAlign: "center" }}><StatusBadge value={r.imsIntegrationStatus} /></td>
-                  <td style={{ ...tdStyle, textAlign: "center" }}><StatusBadge value={r.publishingStatus} /></td>
+                  {!hidePublishing && <td style={{ ...tdStyle, textAlign: "center" }}><StatusBadge value={r.publishingStatus} /></td>}
                   {visibleDates.map((d: string) => {
                     const entry = (r.reportHistory ?? []).find((h: any) => h.date === d);
                     if (!entry) return <td key={d} style={{ ...tdStyle, textAlign: "center", color: "#9ca3af" }}>—</td>;
@@ -1130,7 +1138,7 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
   );
 }
 
-function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = false, hasPublishingDisabled = false, bucketFlags = {}, rows, total, page, pageCount, loading, onPageChange, onDrillDown, filters = DEFAULT_ENTERPRISE_FILTERS, setFilters = (_f) => {}, sortCol, sortDir, onSortChange, reportDates = [], publishing = "all", buckets = BUCKETS }: any) {
+function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = false, hasPublishingDisabled = false, bucketFlags = {}, rows, total, page, pageCount, loading, onPageChange, onDrillDown, filters = DEFAULT_ENTERPRISE_FILTERS, setFilters = (_f) => {}, sortCol, sortDir, onSortChange, reportDates = [], publishing = "all", buckets = BUCKETS, hidePublishing = false }: any) {
   const [downloading, setDownloading] = useState(false);
   const [reportDatesExpanded, setReportDatesExpanded] = useState(false);
   const row1Ref = useRef<HTMLTableRowElement>(null);
@@ -1149,9 +1157,9 @@ function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = f
     .sort((a, b) => rows.reduce((s, r) => s + (r[b.key] ?? 0), 0) - rows.reduce((s, r) => s + (r[a.key] ?? 0), 0));
   const pendencyColSpan = 1 + activeBuckets.length;
   const showNotIntegrated      = hasNotIntegrated;
-  const showPublishingDisabled = hasPublishingDisabled;
+  const showPublishingDisabled = !hidePublishing && hasPublishingDisabled;
   // Self-activating publishing split: surfaces once publishing-OFF rooftops exist.
-  const showPublishingSplit    = rows.some((r: any) => (r.publishingOffRooftops ?? 0) > 0);
+  const showPublishingSplit    = !hidePublishing && rows.some((r: any) => (r.publishingOffRooftops ?? 0) > 0);
   const cols = [
     { key: "id",                  label: "Enterprise ID" },
     { key: "name",                label: "Enterprise Name" },
@@ -1604,7 +1612,7 @@ function CSMTab({ csms, onDrillDown }) {
 }
 
 
-function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRooftopDrillDown, loading = false, defaultSortCol = "notProcessedAfter24", buckets = BUCKETS }) {
+function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRooftopDrillDown, loading = false, defaultSortCol = "notProcessedAfter24", buckets = BUCKETS, hidePublishing = false }) {
   const [sortCol, setSortCol] = useState(defaultSortCol);
   const [sortDir, setSortDir] = useState("desc");
 
@@ -1618,11 +1626,11 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
     .filter(b => rows.some(r => (r[b.key] ?? 0) > 0))
     .sort((a, b) => rows.reduce((s, r) => s + (r[b.key] ?? 0), 0) - rows.reduce((s, r) => s + (r[a.key] ?? 0), 0));
   const showIntegrated  = rows.some(r => (r.integratedCount ?? 0) > 0);
-  const showPublishing  = rows.some(r => (r.publishingCount ?? 0) > 0);
+  const showPublishing  = !hidePublishing && rows.some(r => (r.publishingCount ?? 0) > 0);
   // Self-activating publishing split: only surfaces once publishing-OFF rooftops
   // exist in the data (i.e. after the expanded VIN card lands). Sourced from the
   // per-VIN is_publishing flag.
-  const showPublishingSplit = rows.some(r => (r.publishingOffRooftops ?? 0) > 0);
+  const showPublishingSplit = !hidePublishing && rows.some(r => (r.publishingOffRooftops ?? 0) > 0);
   const pendencyColSpan = activeBuckets.length;
   const row1Ref = useRef<HTMLTableRowElement>(null);
   const [row1H, setRow1H] = useState(0);
@@ -1904,11 +1912,11 @@ function OverviewTab({ totals, byType, byCSM, byBucket = [], onDrillDown, onRoof
           // "Total Inventory" drills to ALL vins (spinRequested:false overrides the default);
           // the rest stay scoped to the requested set.
           <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
-            <StatCard label="Total Inventory" value={totals.total} color="#6366f1" onClick={() => onDrillDown({ spinRequested: false })} loading={loading} />
-            <StatCard label="360 Requested" value={totals.spinRequested ?? 0} sub={totals.total > 0 ? `${pct(totals.spinRequested ?? 0, totals.total)} of total` : ""} color="#8b5cf6" onClick={() => onDrillDown({})} loading={loading} />
-            <StatCard label="With Photos" value={totals.spinWithPhotos ?? 0} sub={`${pct(totals.spinWithPhotos ?? 0, totals.spinRequested ?? 0)} of 360 requested`} color="#0ea5e9" onClick={() => onDrillDown({ hasPhotos: true })} loading={loading} />
-            <StatCard label="360 Delivered" value={totals.spinDeliveredWithPhotos ?? 0} sub={`${pct(totals.spinDeliveredWithPhotos ?? 0, totals.spinWithPhotos ?? 0)} of with photos`} color="#22c55e" onClick={() => onDrillDown({ status: "Delivered", hasPhotos: true })} loading={loading} />
-            <StatCard label="360 Pending" value={totals.spinPendingWithPhotos ?? 0} sub={`${pct(totals.spinPendingWithPhotos ?? 0, totals.spinWithPhotos ?? 0)} of with photos`} color="#ef4444" onClick={() => onDrillDown({ status: "Not Delivered", hasPhotos: true })} loading={loading} />
+            <StatCard smallGrey label="Total Inventory" value={totals.total} color="#6366f1" onClick={() => onDrillDown({ spinRequested: false })} loading={loading} />
+            <StatCard smallGrey label="360 Requested" value={totals.spinRequested ?? 0} sub={totals.total > 0 ? `${pct(totals.spinRequested ?? 0, totals.total)} of total` : ""} color="#8b5cf6" onClick={() => onDrillDown({})} loading={loading} />
+            <StatCard smallGrey label="With Photos" value={totals.spinWithPhotos ?? 0} sub={`${pct(totals.spinWithPhotos ?? 0, totals.spinRequested ?? 0)} of 360 requested`} color="#0ea5e9" onClick={() => onDrillDown({ hasPhotos: true })} loading={loading} />
+            <StatCard smallGrey label="360 Delivered" value={totals.spinDeliveredWithPhotos ?? 0} sub={`${pct(totals.spinDeliveredWithPhotos ?? 0, totals.spinWithPhotos ?? 0)} of with photos`} color="#22c55e" onClick={() => onDrillDown({ status: "Delivered", hasPhotos: true })} loading={loading} />
+            <StatCard smallGrey label="360 Pending" value={totals.spinPendingWithPhotos ?? 0} sub={`${pct(totals.spinPendingWithPhotos ?? 0, totals.spinWithPhotos ?? 0)} of with photos`} color="#ef4444" onClick={() => onDrillDown({ status: "Not Delivered", hasPhotos: true })} loading={loading} />
           </div>
         ) : (
         <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
@@ -1919,8 +1927,8 @@ function OverviewTab({ totals, byType, byCSM, byBucket = [], onDrillDown, onRoof
         </div>
         )}
       </div>
-      <SummaryTable title="By Rooftop Type" rows={byType} colorHeader="#6366f1" filterKey="rooftopType" onDrillDown={onDrillDown} onRooftopDrillDown={onRooftopDrillDown} loading={loading} defaultSortCol={null} buckets={buckets} />
-      <SummaryTable title="By CSM" rows={byCSM} colorHeader="#0ea5e9" filterKey="csm" onDrillDown={onDrillDown} onRooftopDrillDown={onRooftopDrillDown} loading={loading} defaultSortCol="notProcessedAfter24" buckets={buckets} />
+      <SummaryTable title="By Rooftop Type" rows={byType} colorHeader="#6366f1" filterKey="rooftopType" onDrillDown={onDrillDown} onRooftopDrillDown={onRooftopDrillDown} loading={loading} defaultSortCol={null} buckets={buckets} hidePublishing={spin} />
+      <SummaryTable title="By CSM" rows={byCSM} colorHeader="#0ea5e9" filterKey="csm" onDrillDown={onDrillDown} onRooftopDrillDown={onRooftopDrillDown} loading={loading} defaultSortCol="notProcessedAfter24" buckets={buckets} hidePublishing={spin} />
     </div>
   );
 }
@@ -2297,7 +2305,8 @@ function ReportCoverageTab({ rows, loading, onRooftopDrillDown, totalActiveRooft
 // buckets. Self-contained state so it never collides with the catalog dashboard.
 function SpinDashboard() {
   const [tab, setTab] = useState("Overview");
-  const [pubScope, setPubScope] = useState<"all" | "on" | "off">("all");
+  // 360 has no publishing scope toggle — always 'all' (publishing isn't a spin concept).
+  const [pubScope] = useState<"all" | "on" | "off">("all");
   const pubScopeRef = useRef(pubScope);
   pubScopeRef.current = pubScope;
 
@@ -2455,23 +2464,6 @@ function SpinDashboard() {
               {lastSync && <span style={{ color: "#9ca3af" }}> · synced {timeAgo(lastSync)}</span>}
             </span>
           )}
-          <div style={{ display: "flex", gap: 2, background: "#f3f4f6", borderRadius: 8, padding: 3 }}>
-            {([
-              { key: "all", label: "All"            },
-              { key: "on",  label: "Publishing On"  },
-              { key: "off", label: "Publishing Off" },
-            ] as const).map(({ key, label }) => (
-              <button key={key} onClick={() => setPubScope(key)}
-                style={{
-                  padding: "5px 14px", borderRadius: 6, border: "none", cursor: "pointer", fontSize: 12, fontWeight: 600,
-                  background: pubScope === key ? (key === "on" ? "#166534" : key === "off" ? "#6b7280" : "#374151") : "transparent",
-                  color: pubScope === key ? "#fff" : "#6b7280",
-                  boxShadow: pubScope === key ? "0 1px 3px rgba(0,0,0,0.15)" : "none", transition: "all 0.15s",
-                }}>
-                {label}
-              </button>
-            ))}
-          </div>
         </div>
       </div>
 
@@ -2491,6 +2483,7 @@ function SpinDashboard() {
       {tab === "Rooftop View" && (
         <RooftopTab
           buckets={SPIN_BUCKETS}
+          hidePublishing
           typeOptions={fo.rooftopTypes ?? []}
           csmOptions={fo.rooftopCSMs ?? []}
           enterpriseOptions={(fo.enterprises ?? []).map((e: any) => e.name)}
@@ -2506,6 +2499,7 @@ function SpinDashboard() {
       {tab === "Enterprise View" && (
         <EnterpriseTab
           buckets={SPIN_BUCKETS}
+          hidePublishing
           csmOptions={fo.enterpriseCSMs ?? []}
           typeOptions={fo.enterpriseTypes ?? []}
           hasNotIntegrated={fo.hasNotIntegrated ?? false}
@@ -2522,6 +2516,7 @@ function SpinDashboard() {
       {tab === "VIN Data" && (
         <RawTab
           buckets={SPIN_BUCKETS}
+          hidePublishing
           data={rawData} loading={rawLoading}
           filters={rawFilters} setFilters={(f: any) => { setRawFilters(f); setRawPage(1); }}
           total={rawTotal} page={rawPage} pageCount={rawPageCount}
