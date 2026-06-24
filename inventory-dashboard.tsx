@@ -278,6 +278,18 @@ const BUCKETS = [
   { key: "bucketOthers",            label: "Others" },
 ];
 
+// 360 spin reason buckets — a subset of BUCKETS (no Missing VIN Name / Scheduled Push /
+// Publishing Pending). Reuses the same camelCase keys so the shared components/serializers
+// work unchanged; passed as the `buckets` prop on the 360 track.
+const SPIN_BUCKETS = [
+  { key: "bucketUploadPending",     label: "Upload Pending" },
+  { key: "bucketProcessingPending", label: "Processing Pending" },
+  { key: "bucketQcPending",         label: "QC Pending" },
+  { key: "bucketQcHold",            label: "QC Hold" },
+  { key: "bucketSold",              label: "Sold" },
+  { key: "bucketOthers",            label: "Others" },
+];
+
 const REPORT_REASONS = [
   { key: "reasonNoRecipient",        label: "No Recipient",       reasonCode: "no_recipient" },
   { key: "reasonImsOff",             label: "IMS Disabled",       reasonCode: "ims_off" },
@@ -459,7 +471,7 @@ function SearchableSelect({ value, onChange, options, placeholder = "All", clear
   );
 }
 
-function FilterBar({ filters, setFilters, rooftopOptions = [], typeOptions = [], csmOptions = [], enterpriseObjects = [] }) {
+function FilterBar({ filters, setFilters, rooftopOptions = [], typeOptions = [], csmOptions = [], enterpriseObjects = [], buckets = BUCKETS }) {
   // Build id→name and name→id maps for display vs filter
   const enterpriseIdToName = useMemo(() => Object.fromEntries(enterpriseObjects.map(e => [e.id, e.name])), [enterpriseObjects]);
   const enterpriseNameToId = useMemo(() => Object.fromEntries(enterpriseObjects.map(e => [e.name, e.id])), [enterpriseObjects]);
@@ -534,7 +546,7 @@ function FilterBar({ filters, setFilters, rooftopOptions = [], typeOptions = [],
         <SearchableSelect
           value={filters.reasonBucket}
           onChange={v => setFilters(f => ({ ...f, reasonBucket: v }))}
-          options={BUCKETS.map(b => b.label)}
+          options={buckets.map(b => b.label)}
           placeholder="All Buckets"
         />
         <SearchableSelect
@@ -592,7 +604,7 @@ function TableShimmer({ cols, rows = 10 }: { cols: number; rows?: number }) {
   );
 }
 
-function RawTab({ data, loading, filters, setFilters, total, page, pageCount, onPageChange, rooftopOptions, typeOptions, csmOptions, enterpriseObjects = [], sortCol, sortDir, onSortChange, publishing = "all" }) {
+function RawTab({ data, loading, filters, setFilters, total, page, pageCount, onPageChange, rooftopOptions, typeOptions, csmOptions, enterpriseObjects = [], sortCol, sortDir, onSortChange, publishing = "all", buckets = BUCKETS }) {
   const [downloading, setDownloading] = useState(false);
 
   const handleSort = (col) => {
@@ -661,7 +673,7 @@ function RawTab({ data, loading, filters, setFilters, total, page, pageCount, on
           {downloading ? "⟳ Downloading…" : "↓ Download CSV"}
         </button>
       </div>
-      <FilterBar filters={filters} setFilters={setFilters} rooftopOptions={rooftopOptions} typeOptions={typeOptions} csmOptions={csmOptions} enterpriseObjects={enterpriseObjects} />
+      <FilterBar filters={filters} setFilters={setFilters} rooftopOptions={rooftopOptions} typeOptions={typeOptions} csmOptions={csmOptions} enterpriseObjects={enterpriseObjects} buckets={buckets} />
       <div style={{ maxHeight: "calc(100vh - 260px)", overflow: "auto", borderRadius: 10, border: "1px solid #e5e7eb" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
           <thead>
@@ -750,7 +762,7 @@ function RawTab({ data, loading, filters, setFilters, total, page, pageCount, on
   );
 }
 
-function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterpriseOptions = [], bucketFlags = {}, rows, total, page, pageCount, loading, onPageChange, onDrillDown, filters, setFilters, sortCol, sortDir, onSortChange, reportDates = [], publishing = "all" }: any) {
+function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterpriseOptions = [], bucketFlags = {}, rows, total, page, pageCount, loading, onPageChange, onDrillDown, filters, setFilters, sortCol, sortDir, onSortChange, reportDates = [], publishing = "all", buckets = BUCKETS }: any) {
   const [downloading, setDownloading] = useState(false);
   const [reportDatesExpanded, setReportDatesExpanded] = useState(false);
   const row1Ref = useRef<HTMLTableRowElement>(null);
@@ -765,7 +777,7 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
     else { onSortChange(null, "asc"); }
   };
 
-  const activeBuckets = BUCKETS
+  const activeBuckets = buckets
     .filter(b => bucketFlags[b.key])
     .sort((a, b) => rows.reduce((s, r) => s + (r[b.key] ?? 0), 0) - rows.reduce((s, r) => s + (r[a.key] ?? 0), 0));
   const pendencyColSpan = 1 + activeBuckets.length;
@@ -1118,7 +1130,7 @@ function RooftopTab({ typeOptions: types = [], csmOptions: csms = [], enterprise
   );
 }
 
-function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = false, hasPublishingDisabled = false, bucketFlags = {}, rows, total, page, pageCount, loading, onPageChange, onDrillDown, filters = DEFAULT_ENTERPRISE_FILTERS, setFilters = (_f) => {}, sortCol, sortDir, onSortChange, reportDates = [], publishing = "all" }: any) {
+function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = false, hasPublishingDisabled = false, bucketFlags = {}, rows, total, page, pageCount, loading, onPageChange, onDrillDown, filters = DEFAULT_ENTERPRISE_FILTERS, setFilters = (_f) => {}, sortCol, sortDir, onSortChange, reportDates = [], publishing = "all", buckets = BUCKETS }: any) {
   const [downloading, setDownloading] = useState(false);
   const [reportDatesExpanded, setReportDatesExpanded] = useState(false);
   const row1Ref = useRef<HTMLTableRowElement>(null);
@@ -1132,7 +1144,7 @@ function EnterpriseTab({ csmOptions = [], typeOptions = [], hasNotIntegrated = f
 
   const SCORE_OPTIONS = ["Poor (<6)", "Average (6–8)", "Good (8+)"];
 
-  const activeBuckets = BUCKETS
+  const activeBuckets = buckets
     .filter(b => bucketFlags[b.key])
     .sort((a, b) => rows.reduce((s, r) => s + (r[b.key] ?? 0), 0) - rows.reduce((s, r) => s + (r[a.key] ?? 0), 0));
   const pendencyColSpan = 1 + activeBuckets.length;
@@ -1592,7 +1604,7 @@ function CSMTab({ csms, onDrillDown }) {
 }
 
 
-function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRooftopDrillDown, loading = false, defaultSortCol = "notProcessedAfter24" }) {
+function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRooftopDrillDown, loading = false, defaultSortCol = "notProcessedAfter24", buckets = BUCKETS }) {
   const [sortCol, setSortCol] = useState(defaultSortCol);
   const [sortDir, setSortDir] = useState("desc");
 
@@ -1602,7 +1614,7 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
     else { setSortCol(null); setSortDir("asc"); }
   };
 
-  const activeBuckets = BUCKETS
+  const activeBuckets = buckets
     .filter(b => rows.some(r => (r[b.key] ?? 0) > 0))
     .sort((a, b) => rows.reduce((s, r) => s + (r[b.key] ?? 0), 0) - rows.reduce((s, r) => s + (r[a.key] ?? 0), 0));
   const showIntegrated  = rows.some(r => (r.integratedCount ?? 0) > 0);
@@ -1648,7 +1660,7 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
       avgWebsiteScore: null,
       avgInventoryScore: null,
     };
-    BUCKETS.forEach(b => { obj[b.key] = (t[b.key] ?? 0) + (r[b.key] ?? 0); });
+    buckets.forEach(b => { obj[b.key] = (t[b.key] ?? 0) + (r[b.key] ?? 0); });
     return obj;
   }, { total: 0, enterpriseCount: 0, withPhotos: 0, deliveredWithPhotos: 0, pendingWithPhotos: 0, processed: 0, processedAfter24: 0, notProcessed: 0, notProcessedAfter24: 0, rooftopCount: 0, integratedCount: 0, publishingCount: 0, publishingOnRooftops: 0, publishingOffRooftops: 0, missingWebsiteCount: 0 } as any);
   const totRate = (totRow.pendingWithPhotos ?? 0) === 0 ? 0 : (totRow.notProcessedAfter24 / totRow.pendingWithPhotos) * 100;
@@ -1850,8 +1862,10 @@ function SummaryTable({ title, rows, colorHeader, filterKey, onDrillDown, onRoof
   );
 }
 
-function OverviewTab({ totals, byType, byCSM, byBucket = [], onDrillDown, onRooftopDrillDown, loading = false }) {
+function OverviewTab({ totals, byType, byCSM, byBucket = [], onDrillDown, onRooftopDrillDown, loading = false, variant = "catalog", buckets = BUCKETS }) {
   const activeBuckets = byBucket;
+  const spin = variant === "spin";
+  const pct = (n: number, d: number) => (d > 0 ? `${((n / d) * 100).toFixed(0)}%` : "");
   return (
     <div>
       <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 28 }}>
@@ -1861,7 +1875,7 @@ function OverviewTab({ totals, byType, byCSM, byBucket = [], onDrillDown, onRoof
             style={{ display: "inline-flex", alignItems: "center", gap: 10, background: "#fff", borderRadius: 10, padding: "10px 16px", border: "1px solid #e5e7eb", boxShadow: "0 1px 3px rgba(0,0,0,0.08)", cursor: loading ? "default" : "pointer", transition: "all 0.15s" }}
             onMouseEnter={e => { if (!loading) { e.currentTarget.style.boxShadow = "0 4px 12px rgba(0,0,0,0.12)"; e.currentTarget.style.transform = "translateY(-2px)"; } }}
             onMouseLeave={e => { if (!loading) { e.currentTarget.style.boxShadow = "0 1px 3px rgba(0,0,0,0.08)"; e.currentTarget.style.transform = "translateY(0)"; } }}>
-            <div style={{ fontSize: 15, fontWeight: 600, color: "#374151" }}>Pending VINs &gt;6h</div>
+            <div style={{ fontSize: 15, fontWeight: 600, color: "#374151" }}>{spin ? "360 Pending >6h" : "Pending VINs >6h"}</div>
             {loading
               ? <div className="shimmer-cell" style={{ height: 28, width: 50, borderRadius: 6 }} />
               : <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
@@ -1885,15 +1899,28 @@ function OverviewTab({ totals, byType, byCSM, byBucket = [], onDrillDown, onRoof
           )}
         </div>
         {/* Row 2: Remaining KPI cards */}
+        {spin ? (
+          // 360 funnel: Total → 360 Requested → With Photos (of requested) → Delivered → Pending.
+          // "Total Inventory" drills to ALL vins (spinRequested:false overrides the default);
+          // the rest stay scoped to the requested set.
+          <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
+            <StatCard label="Total Inventory" value={totals.total} color="#6366f1" onClick={() => onDrillDown({ spinRequested: false })} loading={loading} />
+            <StatCard label="360 Requested" value={totals.spinRequested ?? 0} sub={totals.total > 0 ? `${pct(totals.spinRequested ?? 0, totals.total)} of total` : ""} color="#8b5cf6" onClick={() => onDrillDown({})} loading={loading} />
+            <StatCard label="With Photos" value={totals.spinWithPhotos ?? 0} sub={`${pct(totals.spinWithPhotos ?? 0, totals.spinRequested ?? 0)} of 360 requested`} color="#0ea5e9" onClick={() => onDrillDown({ hasPhotos: true })} loading={loading} />
+            <StatCard label="360 Delivered" value={totals.spinDeliveredWithPhotos ?? 0} sub={`${pct(totals.spinDeliveredWithPhotos ?? 0, totals.spinWithPhotos ?? 0)} of with photos`} color="#22c55e" onClick={() => onDrillDown({ status: "Delivered", hasPhotos: true })} loading={loading} />
+            <StatCard label="360 Pending" value={totals.spinPendingWithPhotos ?? 0} sub={`${pct(totals.spinPendingWithPhotos ?? 0, totals.spinWithPhotos ?? 0)} of with photos`} color="#ef4444" onClick={() => onDrillDown({ status: "Not Delivered", hasPhotos: true })} loading={loading} />
+          </div>
+        ) : (
         <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
           <StatCard label="Total Inventory" value={totals.total} color="#6366f1" onClick={() => onDrillDown({})} loading={loading} />
           <StatCard label="With Photos" value={totals.withPhotos ?? 0} sub={totals.total > 0 ? `${(((totals.withPhotos ?? 0) / totals.total) * 100).toFixed(0)}% of total` : ""} color="#0ea5e9" onClick={() => onDrillDown({ hasPhotos: true })} loading={loading} />
           <StatCard label="VIN Delivered" value={totals.deliveredWithPhotos ?? 0} sub={totals.withPhotos > 0 ? `${(((totals.deliveredWithPhotos ?? 0) / totals.withPhotos) * 100).toFixed(0)}% of with photos` : ""} color="#22c55e" onClick={() => onDrillDown({ status: "Delivered", hasPhotos: true })} loading={loading} />
           <StatCard label="Pending VINs" value={totals.pendingWithPhotos ?? 0} sub={totals.withPhotos > 0 ? `${(((totals.pendingWithPhotos ?? 0) / totals.withPhotos) * 100).toFixed(0)}% of with photos` : ""} color="#ef4444" onClick={() => onDrillDown({ status: "Not Delivered", hasPhotos: true })} loading={loading} />
         </div>
+        )}
       </div>
-      <SummaryTable title="By Rooftop Type" rows={byType} colorHeader="#6366f1" filterKey="rooftopType" onDrillDown={onDrillDown} onRooftopDrillDown={onRooftopDrillDown} loading={loading} defaultSortCol={null} />
-      <SummaryTable title="By CSM" rows={byCSM} colorHeader="#0ea5e9" filterKey="csm" onDrillDown={onDrillDown} onRooftopDrillDown={onRooftopDrillDown} loading={loading} defaultSortCol="notProcessedAfter24" />
+      <SummaryTable title="By Rooftop Type" rows={byType} colorHeader="#6366f1" filterKey="rooftopType" onDrillDown={onDrillDown} onRooftopDrillDown={onRooftopDrillDown} loading={loading} defaultSortCol={null} buckets={buckets} />
+      <SummaryTable title="By CSM" rows={byCSM} colorHeader="#0ea5e9" filterKey="csm" onDrillDown={onDrillDown} onRooftopDrillDown={onRooftopDrillDown} loading={loading} defaultSortCol="notProcessedAfter24" buckets={buckets} />
     </div>
   );
 }
@@ -1907,6 +1934,9 @@ function timeAgo(isoString: string): string {
 }
 
 const DEFAULT_FILTERS = { search: "", enterpriseId: null, rooftopId: null, rooftopType: null, csm: null, status: null, after24h: null, hasPhotos: null, hasVin: null, reasonBucket: null, inventoryScore: null, publishing: null };
+// 360 track VIN-Data filters — same as catalog plus spinRequested:true so every spin
+// VIN list / drill-down is scoped to the requested set (output_processing_spin=1).
+const SPIN_DEFAULT_FILTERS = { ...DEFAULT_FILTERS, spinRequested: true };
 const DEFAULT_ROOFTOP_FILTERS = { search: "", rooftopType: null, csm: null, enterprise: null, websiteScore: null, inventoryScore: null, imsIntegration: null, publishingStatus: null, websiteUrl: null, reportStatus: null, reportReason: null as string | null, reportDay: null as string | null };
 const DEFAULT_ENTERPRISE_FILTERS = { search: "", csm: null, accountType: null, websiteScore: null, inventoryScore: null, reportStatus: null, reportReason: null as string | null };
 
@@ -2260,6 +2290,250 @@ function ReportCoverageTab({ rows, loading, onRooftopDrillDown, totalActiveRooft
   );
 }
 
+// ─── 360 Spin Dashboard ─────────────────────────────────────────────────────
+// Native replacement for the old 360-tracker iframe. Reuses the catalog tab
+// components (OverviewTab / RooftopTab / EnterpriseTab / RawTab / SummaryTable)
+// but every read hits the API with `track=spin` and renders the spin reason
+// buckets. Self-contained state so it never collides with the catalog dashboard.
+function SpinDashboard() {
+  const [tab, setTab] = useState("Overview");
+  const [pubScope, setPubScope] = useState<"all" | "on" | "off">("all");
+  const pubScopeRef = useRef(pubScope);
+  pubScopeRef.current = pubScope;
+
+  const [summary, setSummary] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [summaryLoading, setSummaryLoading] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+  const [lastSync, setLastSync] = useState<string | null>(null);
+  const [filterOptions, setFilterOptions] = useState<any>(null);
+
+  const [rawFilters, setRawFilters] = useState(SPIN_DEFAULT_FILTERS);
+  const [rooftopFilters, setRooftopFilters] = useState(DEFAULT_ROOFTOP_FILTERS);
+  const [enterpriseFilters, setEnterpriseFilters] = useState(DEFAULT_ENTERPRISE_FILTERS);
+
+  const rawAbortRef = useRef<AbortController | null>(null);
+  const [rawData, setRawData] = useState<any[]>([]);
+  const [rawPage, setRawPage] = useState(1);
+  const [rawPageCount, setRawPageCount] = useState(1);
+  const [rawTotal, setRawTotal] = useState(0);
+  const [rawLoading, setRawLoading] = useState(false);
+  const [rawSortCol, setRawSortCol] = useState<string | null>(null);
+  const [rawSortDir, setRawSortDir] = useState<"asc" | "desc">("asc");
+
+  const [rooftopRows, setRooftopRows] = useState<any[]>([]);
+  const [rooftopPage, setRooftopPage] = useState(1);
+  const [rooftopPageCount, setRooftopPageCount] = useState(1);
+  const [rooftopTotal, setRooftopTotal] = useState(0);
+  const [rooftopLoading, setRooftopLoading] = useState(false);
+  const [rooftopSortCol, setRooftopSortCol] = useState<string | null>("notProcessedAfter24");
+  const [rooftopSortDir, setRooftopSortDir] = useState<"asc" | "desc">("desc");
+  const [reportDates, setReportDates] = useState<string[]>([]);
+
+  const [enterpriseRows, setEnterpriseRows] = useState<any[]>([]);
+  const [enterprisePage, setEnterprisePage] = useState(1);
+  const [enterprisePageCount, setEnterprisePageCount] = useState(1);
+  const [enterpriseTotal, setEnterpriseTotal] = useState(0);
+  const [enterpriseLoading, setEnterpriseLoading] = useState(false);
+  const [enterpriseSortCol, setEnterpriseSortCol] = useState<string | null>("notProcessedAfter24");
+  const [enterpriseSortDir, setEnterpriseSortDir] = useState<"asc" | "desc">("desc");
+
+  const tabs = ["Overview", "Enterprise View", "Rooftop View", "VIN Data"];
+
+  const loadSummary = useCallback((showLoader = false) => {
+    if (showLoader) setSummaryLoading(true);
+    const _pub = pubScopeRef.current !== "all" ? `&publishing=${pubScopeRef.current}` : "";
+    return fetch(`${API_BASE}/api/summary?dateFilter=all&track=spin${_pub}`)
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+      .then(json => { setSummary(json); setLastSync(json.lastSync); setSummaryLoading(false); return json; })
+      .catch(err => { setSummaryLoading(false); setFetchError(err.message); });
+  }, []);
+
+  const loadFilterOptions = useCallback(() => (
+    fetch(`${API_BASE}/api/filter-options?track=spin`)
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+      .then(json => setFilterOptions(json)).catch(() => {})
+  ), []);
+
+  const loadRooftopPage = useCallback((page: number, filters: any, sortCol: string | null, sortDir: string) => {
+    setRooftopLoading(true);
+    const params = new URLSearchParams({ page: String(page), pageSize: "50", dateFilter: "all", track: "spin" });
+    if (filters.search)         params.set("search",         filters.search);
+    if (filters.rooftopType)    params.set("type",           filters.rooftopType);
+    if (filters.csm)            params.set("csm",            filters.csm);
+    if (filters.enterprise)     params.set("enterprise",     filters.enterprise);
+    if (filters.inventoryScore) params.set("inventoryScore", filters.inventoryScore);
+    if (sortCol) { params.set("sortBy", sortCol); params.set("sortDir", sortDir); }
+    if (pubScopeRef.current !== "all") params.set("publishing", pubScopeRef.current);
+    fetch(`${API_BASE}/api/rooftops?${params}`)
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+      .then(({ data, total, pageCount, reportDates: dates }) => {
+        setRooftopRows(data); setRooftopTotal(total); setRooftopPageCount(pageCount); setRooftopPage(page);
+        if (dates) setReportDates(dates); setRooftopLoading(false);
+      })
+      .catch(err => { setFetchError(err.message); setRooftopLoading(false); });
+  }, []);
+
+  const loadEnterprisePage = useCallback((page: number, filters: any, sortCol: string | null, sortDir: string) => {
+    setEnterpriseLoading(true);
+    const params = new URLSearchParams({ page: String(page), pageSize: "50", dateFilter: "all", track: "spin" });
+    if (filters.search)         params.set("search",         filters.search);
+    if (filters.csm)            params.set("csm",            filters.csm);
+    if (filters.accountType)    params.set("accountType",    filters.accountType);
+    if (filters.inventoryScore) params.set("inventoryScore", filters.inventoryScore);
+    if (sortCol) { params.set("sortBy", sortCol); params.set("sortDir", sortDir); }
+    if (pubScopeRef.current !== "all") params.set("publishing", pubScopeRef.current);
+    fetch(`${API_BASE}/api/enterprises?${params}`)
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+      .then(({ data, total, pageCount, reportDates: dates }) => {
+        setEnterpriseRows(data); setEnterpriseTotal(total); setEnterprisePageCount(pageCount); setEnterprisePage(page);
+        if (dates) setReportDates(dates); setEnterpriseLoading(false);
+      })
+      .catch(err => { setFetchError(err.message); setEnterpriseLoading(false); });
+  }, []);
+
+  const loadRawPage = useCallback((page: number, filters: any, sortCol: string | null = null, sortDir: string = "asc") => {
+    if (rawAbortRef.current) rawAbortRef.current.abort();
+    rawAbortRef.current = new AbortController();
+    setRawData([]); setRawLoading(true);
+    const params = new URLSearchParams({ page: String(page), pageSize: "50", dateFilter: "all", track: "spin" });
+    if (filters.spinRequested) params.set("spinRequested", "true");
+    if (filters.search)       params.set("search",       filters.search);
+    if (filters.enterpriseId) params.set("enterpriseId", filters.enterpriseId);
+    if (filters.rooftopId)    params.set("rooftopId",    filters.rooftopId);
+    if (filters.rooftopType)  params.set("rooftopType",  filters.rooftopType);
+    if (filters.csm)          params.set("csm",          filters.csm);
+    if (filters.status)       params.set("status",       filters.status);
+    if (filters.after24h !== null) params.set("after24h", filters.after24h ? "true" : "false");
+    if (filters.hasPhotos !== null && filters.hasPhotos !== undefined) params.set("hasPhotos", filters.hasPhotos ? "true" : "false");
+    if (filters.hasVin !== null && filters.hasVin !== undefined) params.set("hasVin", filters.hasVin ? "true" : "false");
+    if (filters.reasonBucket)   params.set("reasonBucket",   filters.reasonBucket);
+    if (filters.inventoryScore) params.set("inventoryScore", filters.inventoryScore);
+    const _pub = filters.publishing || (pubScopeRef.current !== "all" ? pubScopeRef.current : null);
+    if (_pub) params.set("publishing", _pub);
+    if (sortCol) { params.set("sortBy", sortCol); params.set("sortDir", sortDir); }
+    fetch(`${API_BASE}/api/vins?${params}`, { signal: rawAbortRef.current.signal })
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+      .then(({ data, total, pageCount }) => { setRawData(data); setRawTotal(total); setRawPageCount(pageCount); setRawLoading(false); })
+      .catch(err => { if (err.name === "AbortError") return; setFetchError(err.message); setRawLoading(false); });
+  }, []);
+
+  useEffect(() => {
+    loadFilterOptions();
+    loadSummary().then(() => setLoading(false));
+  }, []);
+  useEffect(() => { if (!loading) loadSummary(true); }, [pubScope]);
+  useEffect(() => { if (tab === "Rooftop View") loadRooftopPage(1, rooftopFilters, rooftopSortCol, rooftopSortDir); }, [tab, rooftopFilters, rooftopSortCol, rooftopSortDir, pubScope]);
+  useEffect(() => { if (tab === "Enterprise View") loadEnterprisePage(1, enterpriseFilters, enterpriseSortCol, enterpriseSortDir); }, [tab, enterpriseFilters, enterpriseSortCol, enterpriseSortDir, pubScope]);
+  useEffect(() => { if (tab === "VIN Data") loadRawPage(rawPage, rawFilters, rawSortCol, rawSortDir); }, [tab, rawPage, rawFilters, rawSortCol, rawSortDir, pubScope]);
+
+  const handleDrillDown = useCallback((filters: any) => { setRawFilters({ ...SPIN_DEFAULT_FILTERS, ...filters }); setRawPage(1); setTab("VIN Data"); }, []);
+  const handleRooftopDrillDown = useCallback((filters: any) => { setRooftopFilters({ ...DEFAULT_ROOFTOP_FILTERS, ...filters }); setTab("Rooftop View"); }, []);
+  const handleRawSort = useCallback((col: string | null, dir: "asc" | "desc") => { setRawSortCol(col); setRawSortDir(dir); setRawPage(1); }, []);
+  const handleRooftopSort = useCallback((col: string | null, dir: "asc" | "desc") => { setRooftopSortCol(col); setRooftopSortDir(dir); }, []);
+  const handleEnterpriseSort = useCallback((col: string | null, dir: "asc" | "desc") => { setEnterpriseSortCol(col); setEnterpriseSortDir(dir); }, []);
+
+  const s = summary ?? EMPTY_SUMMARY;
+  const fo = filterOptions ?? {};
+  const rooftopOptions    = (fo.rooftops    ?? []) as { id: string; name: string; enterprise_id: string }[];
+  const typeOptions       = (fo.rooftopTypes ?? []) as string[];
+  const csmOptions        = useMemo(() => [...new Set((s.byCSM ?? []).map((r: any) => r.name))].sort() as string[], [s.byCSM]);
+  const enterpriseObjects = (fo.enterprises ?? []) as { id: string; name: string }[];
+
+  return (
+    <>
+      <div style={{ marginBottom: 24, display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+        <div>
+          <h1 style={{ fontSize: 22, fontWeight: 800, color: "#111827", margin: 0 }}>360 Spin Dashboard</h1>
+          <p style={{ fontSize: 13, color: "#6b7280", margin: "4px 0 0" }}>Tracking 360 spin processing across rooftops and CSMs — click any number to drill down</p>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, paddingTop: 4 }}>
+          {!loading && fetchError && <span style={{ fontSize: 12, color: "#dc2626" }} title={fetchError}>⚠ {fetchError}</span>}
+          {!loading && summary && (
+            <span style={{ fontSize: 12, color: "#16a34a" }}>
+              ● {(summary?.totalRows ?? 0).toLocaleString()} records
+              {lastSync && <span style={{ color: "#9ca3af" }}> · synced {timeAgo(lastSync)}</span>}
+            </span>
+          )}
+          <div style={{ display: "flex", gap: 2, background: "#f3f4f6", borderRadius: 8, padding: 3 }}>
+            {([
+              { key: "all", label: "All"            },
+              { key: "on",  label: "Publishing On"  },
+              { key: "off", label: "Publishing Off" },
+            ] as const).map(({ key, label }) => (
+              <button key={key} onClick={() => setPubScope(key)}
+                style={{
+                  padding: "5px 14px", borderRadius: 6, border: "none", cursor: "pointer", fontSize: 12, fontWeight: 600,
+                  background: pubScope === key ? (key === "on" ? "#166534" : key === "off" ? "#6b7280" : "#374151") : "transparent",
+                  color: pubScope === key ? "#fff" : "#6b7280",
+                  boxShadow: pubScope === key ? "0 1px 3px rgba(0,0,0,0.15)" : "none", transition: "all 0.15s",
+                }}>
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div style={{ display: "flex", gap: 4, marginBottom: 24, background: "#f3f4f6", borderRadius: 10, padding: 4, width: "fit-content" }}>
+        {tabs.map(t => (
+          <button key={t} onClick={() => setTab(t)} style={{
+            padding: "8px 20px", borderRadius: 8, border: "none", cursor: "pointer", fontSize: 14, fontWeight: 600,
+            background: tab === t ? "#fff" : "transparent", color: tab === t ? "#111827" : "#6b7280",
+            boxShadow: tab === t ? "0 1px 3px rgba(0,0,0,0.1)" : "none", transition: "all 0.15s"
+          }}>
+            {t}
+          </button>
+        ))}
+      </div>
+
+      {tab === "Overview" && <OverviewTab variant="spin" buckets={SPIN_BUCKETS} totals={s.totals} byType={s.byType} byCSM={s.byCSM} byBucket={s.byBucket ?? []} onDrillDown={handleDrillDown} onRooftopDrillDown={handleRooftopDrillDown} loading={loading || summaryLoading} />}
+      {tab === "Rooftop View" && (
+        <RooftopTab
+          buckets={SPIN_BUCKETS}
+          typeOptions={fo.rooftopTypes ?? []}
+          csmOptions={fo.rooftopCSMs ?? []}
+          enterpriseOptions={(fo.enterprises ?? []).map((e: any) => e.name)}
+          bucketFlags={fo.bucketFlags ?? {}}
+          rows={rooftopRows} total={rooftopTotal} page={rooftopPage} pageCount={rooftopPageCount} loading={rooftopLoading}
+          onPageChange={(p) => loadRooftopPage(Math.max(1, Math.min(p, rooftopPageCount)), rooftopFilters, rooftopSortCol, rooftopSortDir)}
+          onDrillDown={handleDrillDown}
+          filters={rooftopFilters} setFilters={setRooftopFilters}
+          sortCol={rooftopSortCol} sortDir={rooftopSortDir} onSortChange={handleRooftopSort}
+          reportDates={reportDates} publishing={pubScope}
+        />
+      )}
+      {tab === "Enterprise View" && (
+        <EnterpriseTab
+          buckets={SPIN_BUCKETS}
+          csmOptions={fo.enterpriseCSMs ?? []}
+          typeOptions={fo.enterpriseTypes ?? []}
+          hasNotIntegrated={fo.hasNotIntegrated ?? false}
+          hasPublishingDisabled={fo.hasPublishingDisabled ?? false}
+          bucketFlags={fo.bucketFlags ?? {}}
+          rows={enterpriseRows} total={enterpriseTotal} page={enterprisePage} pageCount={enterprisePageCount} loading={enterpriseLoading}
+          onPageChange={(p) => loadEnterprisePage(Math.max(1, Math.min(p, enterprisePageCount)), enterpriseFilters, enterpriseSortCol, enterpriseSortDir)}
+          onDrillDown={handleDrillDown}
+          filters={enterpriseFilters} setFilters={setEnterpriseFilters}
+          sortCol={enterpriseSortCol} sortDir={enterpriseSortDir} onSortChange={handleEnterpriseSort}
+          reportDates={reportDates} publishing={pubScope}
+        />
+      )}
+      {tab === "VIN Data" && (
+        <RawTab
+          buckets={SPIN_BUCKETS}
+          data={rawData} loading={rawLoading}
+          filters={rawFilters} setFilters={(f: any) => { setRawFilters(f); setRawPage(1); }}
+          total={rawTotal} page={rawPage} pageCount={rawPageCount}
+          onPageChange={(p: number) => setRawPage(Math.max(1, Math.min(p, rawPageCount)))}
+          rooftopOptions={rooftopOptions} typeOptions={typeOptions} csmOptions={csmOptions} enterpriseObjects={enterpriseObjects}
+          sortCol={rawSortCol} sortDir={rawSortDir} onSortChange={handleRawSort} publishing={pubScope}
+        />
+      )}
+    </>
+  );
+}
+
 export default function Dashboard() {
   const [module, setModule] = useState<"studioHealth" | "vin" | "studio" | "tracker360">(() => {
     const saved = typeof window !== "undefined" ? localStorage.getItem("vin_module") : null;
@@ -2334,7 +2608,6 @@ export default function Dashboard() {
   // prod (vercel rewrite) and proxied to the Express server in dev (vite.config.js).
   const STUDIO_HEALTH_URL = `${API_BASE}/api/studio-health-board`;
   const STUDIO_URL = "https://studio-adoption.vercel.app/";
-  const TRACKER_360_URL = "https://360-tracker-dashboard-tau.vercel.app/";
   // Track whether the initial mount load has completed so the dateFilter
   // effect can safely skip its first run (mount effect handles it).
   const initialLoadDone = useRef(false);
@@ -2657,10 +2930,12 @@ export default function Dashboard() {
         ))}
       </div>
 
-      {module === "studioHealth" || module === "studio" || module === "tracker360" ? (
+      {module === "tracker360" ? (
+        <SpinDashboard />
+      ) : module === "studioHealth" || module === "studio" ? (
         <iframe
-          src={module === "studioHealth" ? STUDIO_HEALTH_URL : module === "studio" ? STUDIO_URL : TRACKER_360_URL}
-          title={module === "studioHealth" ? "Studio Health" : module === "studio" ? "Studio Adoption" : "360 Tracker"}
+          src={module === "studioHealth" ? STUDIO_HEALTH_URL : STUDIO_URL}
+          title={module === "studioHealth" ? "Studio Health" : "Studio Adoption"}
           style={{ width: "100%", height: "calc(100vh - 120px)", border: "none", borderRadius: 12, background: "#fff" }}
         />
       ) : (

@@ -287,6 +287,29 @@ export async function initSchema() {
   // IF NOT EXISTS below rebuilds them — see migration 013.
   const PENDENCY_PREDICATE = `(COALESCE(v.after_24h, 0) = 1)`;
 
+  // ── 360 spin aggregate columns (parallel to the catalog columns above) ──
+  // Appended to BOTH materialized views so one MV row serves catalog and spin.
+  // The 360 funnel is scoped to the "requested" set (output_processing_spin=1, NULL→0,
+  // unlike catalog's NULL→1). Spin pendency uses spin_after_6h; only the 6 spin reason
+  // buckets exist. NOTE: changing these requires dropping the MVs — see migration 015.
+  const SPIN_REQ        = `COALESCE(v.output_processing_spin,0)=1`;
+  const SPIN_PEND6H     = `(COALESCE(v.spin_after_6h,0)=1)`;
+  const SPIN_PEND_GUARD = `${SPIN_REQ} AND v.spin_status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND ${SPIN_PEND6H}`;
+  const SPIN_MV_COLS = `
+      SUM(CASE WHEN ${SPIN_REQ} THEN 1 ELSE 0 END)::int                                                  AS spin_requested,
+      SUM(CASE WHEN ${SPIN_REQ} AND COALESCE(v.has_photos,0)=1 THEN 1 ELSE 0 END)::int                   AS spin_with_photos,
+      SUM(CASE WHEN ${SPIN_REQ} AND v.spin_status = 'Delivered'     AND COALESCE(v.has_photos,0)=1 THEN 1 ELSE 0 END)::int AS spin_delivered_with_photos,
+      SUM(CASE WHEN ${SPIN_REQ} AND v.spin_status = 'Not Delivered' AND COALESCE(v.has_photos,0)=1 THEN 1 ELSE 0 END)::int AS spin_pending_with_photos,
+      SUM(CASE WHEN ${SPIN_REQ} AND v.spin_status = 'Delivered'  THEN 1 ELSE 0 END)::int                 AS spin_processed,
+      SUM(CASE WHEN ${SPIN_REQ} AND v.spin_status != 'Delivered' THEN 1 ELSE 0 END)::int                 AS spin_not_processed,
+      SUM(CASE WHEN ${SPIN_PEND_GUARD} THEN 1 ELSE 0 END)::int                                           AS spin_not_processed_after_24h,
+      SUM(CASE WHEN ${SPIN_PEND_GUARD} AND v.spin_reason_bucket = 'Upload Pending'     THEN 1 ELSE 0 END)::int AS spin_bucket_upload_pending,
+      SUM(CASE WHEN ${SPIN_PEND_GUARD} AND v.spin_reason_bucket = 'Processing Pending' THEN 1 ELSE 0 END)::int AS spin_bucket_processing_pending,
+      SUM(CASE WHEN ${SPIN_PEND_GUARD} AND v.spin_reason_bucket = 'QC Pending'         THEN 1 ELSE 0 END)::int AS spin_bucket_qc_pending,
+      SUM(CASE WHEN ${SPIN_PEND_GUARD} AND v.spin_reason_bucket = 'QC Hold'            THEN 1 ELSE 0 END)::int AS spin_bucket_qc_hold,
+      SUM(CASE WHEN ${SPIN_PEND_GUARD} AND v.spin_reason_bucket = 'Sold'               THEN 1 ELSE 0 END)::int AS spin_bucket_sold,
+      SUM(CASE WHEN ${SPIN_PEND_GUARD} AND v.spin_reason_bucket = 'Others'             THEN 1 ELSE 0 END)::int AS spin_bucket_others`;
+
   await pool.query(`
     CREATE MATERIALIZED VIEW IF NOT EXISTS v_by_rooftop AS
     SELECT
@@ -318,7 +341,8 @@ export async function initSchema() {
       SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.output_processing_catalog,1)=1 AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'QC Pending'         AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
       SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.output_processing_catalog,1)=1 AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'QC Hold'            AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS bucket_qc_hold,
       SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.output_processing_catalog,1)=1 AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Sold'               AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS bucket_sold,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.output_processing_catalog,1)=1 AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Others'             AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS bucket_others
+      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.output_processing_catalog,1)=1 AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Others'             AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS bucket_others,
+${SPIN_MV_COLS}
     FROM vins v
     LEFT JOIN rooftop_details rd ON v.rooftop_id = rd.team_id
     LEFT JOIN enterprise_details ed ON v.enterprise_id = ed.enterprise_id
@@ -356,7 +380,8 @@ export async function initSchema() {
       SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.output_processing_catalog,1)=1 AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'QC Pending'         AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS bucket_qc_pending,
       SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.output_processing_catalog,1)=1 AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'QC Hold'            AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS bucket_qc_hold,
       SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.output_processing_catalog,1)=1 AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Sold'               AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS bucket_sold,
-      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.output_processing_catalog,1)=1 AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Others'             AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS bucket_others
+      SUM(CASE WHEN v.status != 'Delivered' AND COALESCE(v.output_processing_catalog,1)=1 AND COALESCE(v.has_photos,0)=1 AND v.reason_bucket = 'Others'             AND ${PENDENCY_PREDICATE} THEN 1 ELSE 0 END)::int AS bucket_others,
+${SPIN_MV_COLS}
     FROM vins v
     LEFT JOIN enterprise_details ed ON v.enterprise_id = ed.enterprise_id
     LEFT JOIN rooftop_details rd    ON v.rooftop_id = rd.team_id
