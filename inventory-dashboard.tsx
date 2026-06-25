@@ -2920,8 +2920,8 @@ export default function Dashboard() {
         {([
           { key: "studioHealth", label: "Studio Health"   },
           { key: "vin",          label: "VIN Tracker"     },
-          { key: "studio",       label: "Studio Adoption" },
           { key: "tracker360",   label: "360 Tracker"     },
+          { key: "studio",       label: "Studio Adoption" },
         ] as const).map(({ key, label }) => (
           <button key={key} onClick={() => setModule(key)}
             style={{
