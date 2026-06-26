@@ -65,12 +65,21 @@ const COLS = [
 
 // ─── Partials ───────────────────────────────────────────────────────────────
 
-function kpiCard(label, value, sub, labelColor, width, valueAside) {
+function kpiCard(label, value, sub, labelColor, width, valueAside, compare) {
+  const aside = valueAside ? `<span style="font-size:17px; font-weight:700; color:${TEXT_MUTED}; margin-left:9px;">${valueAside}</span>` : ''
+  // With `compare` (e.g. "80% May'26") the value row becomes value-left / "vs …" grey-right
+  // (Images/360 rolling-30 slack cards); otherwise the plain value div is kept (email-safe).
+  const valueRow = compare
+    ? `<table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:6px;"><tr>
+            <td valign="bottom" style="font-size:46px; font-weight:800; color:${TEXT_DARK}; line-height:1.0; white-space:nowrap;">${value}${aside}</td>
+            <td valign="bottom" align="right" style="font-size:13px; font-weight:600; color:${TEXT_MUTED}; white-space:nowrap; padding:0 0 8px 8px;">vs ${compare}</td>
+          </tr></table>`
+    : `<div style="font-size:46px; font-weight:800; color:${TEXT_DARK}; line-height:1.05; margin-top:6px;">${value}${aside}</div>`
   return `
     <td width="${width}" valign="top" style="padding:6px;">
       <div style="background:${CARD_BG}; border:1px solid ${BORDER}; border-radius:12px; padding:15px 18px;">
         <div style="font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:0.06em; color:${labelColor};">${label}</div>
-        <div style="font-size:46px; font-weight:800; color:${TEXT_DARK}; line-height:1.05; margin-top:6px;">${value}${valueAside ? `<span style="font-size:17px; font-weight:700; color:${TEXT_MUTED}; margin-left:9px;">${valueAside}</span>` : ''}</div>
+        ${valueRow}
         ${sub ? `<div style="font-size:13px; color:${TEXT_MUTED}; margin-top:6px;">${sub}</div>` : ''}
       </div>
     </td>`
@@ -269,6 +278,26 @@ export function buildStudioHealthHtml({ funnel, planCounts, images, three60, vid
     const p = (v / total) * 100
     return p > 0 && p < 1 ? `${p.toFixed(1)}%` : `${Math.round(p)}%`
   }
+
+  // "vs <last month>" reference for the rolling-30 cards: the previous calendar month's
+  // value, read straight from the matrix M-1 column (same metric + timezone as the table,
+  // so it stays consistent), plus a month label like "May'26" in the bucketing timezone.
+  const prevMonthLabel = (() => {
+    const tz = process.env.STUDIO_HEALTH_TZ || 'America/New_York'
+    const p = new Intl.DateTimeFormat('en-US', { timeZone: tz, year: 'numeric', month: 'numeric' }).formatToParts(new Date())
+    const y = Number(p.find((x) => x.type === 'year').value)
+    const m = Number(p.find((x) => x.type === 'month').value)
+    const d = new Date(Date.UTC(y, m - 1, 1))
+    d.setUTCMonth(d.getUTCMonth() - 1)
+    return `${d.toLocaleString('en-US', { month: 'short', timeZone: 'UTC' })}'${String(d.getUTCFullYear()).slice(-2)}`
+  })()
+  const m1Of = (rows, match) => {
+    const v = rows?.find((r) => r.label.includes(match))?.cols?.m1
+    return v && v !== '—' ? v : null
+  }
+  const cmpPct = (rows) => { const v = m1Of(rows, '6 hrs) %'); return v ? `${v} ${prevMonthLabel}` : '' }
+  const cmpP95 = (rows) => { const v = m1Of(rows, 'P95'); return v ? `${v} hrs ${prevMonthLabel}` : '' }
+
   let imagesKpiRow = ''
   if (imagesKpis && slack) {
     // The 3 current-snapshot cards (same as the email) + a second row of 3 new cards
@@ -282,8 +311,8 @@ export function buildStudioHealthHtml({ funnel, planCounts, images, three60, vid
       ]) +
       kpiRow([
         kpiCard('Total Pendency', fmtInt(k.pendencyTotal), `${pctOfTotal(k.pendencyTotal, k.delivered + k.pendencyTotal)} of total`, '#dc2626', '33.33%'),
-        kpiCard('Delivered &lt; 6 hrs %', fmtPct1(k.deliveredUnder6hPct30), 'Rolling 30', '#16a34a', '33.34%'),
-        kpiCard('P95 Delivery', fmtHrs1(k.p95Delivery30), 'Rolling 30', '#d97706', '33.33%', 'hrs'),
+        kpiCard('Delivered &lt; 6 hrs %', fmtPct1(k.deliveredUnder6hPct30), 'Rolling 30', '#16a34a', '33.34%', '', cmpPct(images)),
+        kpiCard('P95 Delivery', fmtHrs1(k.p95Delivery30), 'Rolling 30', '#d97706', '33.33%', 'hrs', cmpP95(images)),
       ])
   } else if (imagesKpis) {
     imagesKpiRow = kpiRow([
@@ -307,8 +336,8 @@ export function buildStudioHealthHtml({ funnel, planCounts, images, three60, vid
       ]) +
       kpiRow([
         kpiCard('Total Pendency', fmtInt(k.pendencyTotal), `${pctOfTotal(k.pendencyTotal, k.delivered + k.pendencyTotal)} of total`, '#dc2626', '33.33%'),
-        kpiCard('Delivered &lt; 6 hrs %', fmtPct1(k.deliveredUnder6hPct30), 'Rolling 30', '#16a34a', '33.34%'),
-        kpiCard('P95 Delivery', fmtHrs1(k.p95Delivery30), 'Rolling 30', '#d97706', '33.33%', 'hrs'),
+        kpiCard('Delivered &lt; 6 hrs %', fmtPct1(k.deliveredUnder6hPct30), 'Rolling 30', '#16a34a', '33.34%', '', cmpPct(three60)),
+        kpiCard('P95 Delivery', fmtHrs1(k.p95Delivery30), 'Rolling 30', '#d97706', '33.33%', 'hrs', cmpP95(three60)),
       ])
   } else if (three60Kpis) {
     three60KpiRow = kpiRow([
