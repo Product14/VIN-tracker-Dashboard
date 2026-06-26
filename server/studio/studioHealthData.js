@@ -16,7 +16,7 @@ import { pickGroup, pickMetric, pickMetricAnywhere, adoptionMatch } from './stud
  *                 provided, replaces the sheet-derived Images section. Other sections stay on the sheet.
  * @returns {Promise<object>} payload for buildStudioHealthHtml (async — may call the LLM)
  */
-export async function buildStudioHealthPayload({ rooftopRows, healthMap, adoptionMap, imagesOverride, imagesKpis, three60Override, three60Kpis, slack = false }) {
+export async function buildStudioHealthPayload({ rooftopRows, healthMap, adoptionMap, imagesOverride, imagesKpis, three60Override, three60Kpis, videoSlack, slack = false }) {
   // Funnel is a cumulative lifecycle view (Contracted ⊇ PWS/Onboarding/Live); all
   // other rooftop math counts only operational rooftops (Live/Onboarding).
   const funnel = lifecycleFunnel(rooftopRows)
@@ -60,6 +60,24 @@ export async function buildStudioHealthPayload({ rooftopRows, healthMap, adoptio
     { label: 'P95 Delivery Time (hrs)', cols: pickMetric(videoG, 'p95') },
   ]
 
+  // Video KPI cards (Slack image only) — sourced from the purpose-built "Video Slack"
+  // sheet tab (one row of named columns). undefined when the tab is missing/unparseable,
+  // so the template falls back to the Video table. counts default 0; pct/p95 → null ("—").
+  const num = (v) => {
+    const n = Number(String(v ?? '').replace(/,/g, '').trim())
+    return Number.isFinite(n) ? n : null
+  }
+  const videoKpis = videoSlack
+    ? {
+        videosDelivered: num(videoSlack.vid_del) ?? 0,
+        deliveredOver12h: num(videoSlack.videos_delivered_after_12hrs) ?? 0,
+        pendencyOver12h: num(videoSlack.pending_after_12hrs) ?? 0,
+        pendencyTotal: num(videoSlack.qc_pending) ?? 0,
+        deliveredUnder12hPct30: num(videoSlack.videos_delivered_under_12hrs_pct_rolling30),
+        p95Delivery30: num(videoSlack.p95_delivery_hrs_rolling30),
+      }
+    : undefined
+
   const adoption = [
     { label: 'App', cols: pickMetric(pickGroup(adoptionMap, 'app'), adoptionMatch) },
     { label: 'SmartView VDP', cols: pickMetric(pickGroup(adoptionMap, 'smartview'), adoptionMatch) },
@@ -72,5 +90,5 @@ export async function buildStudioHealthPayload({ rooftopRows, healthMap, adoptio
   // imagesKpis (current-snapshot + rolling-30 counts) is passed straight through; the
   // board template ignores it. `slack` switches the Images section to the cards-only
   // layout in the template (Slack JPEG only).
-  return { funnel, planCounts: plan, images, three60, video, adoption, imagesKpis, three60Kpis, adoptionKpis, slack }
+  return { funnel, planCounts: plan, images, three60, video, adoption, imagesKpis, three60Kpis, videoKpis, adoptionKpis, slack }
 }

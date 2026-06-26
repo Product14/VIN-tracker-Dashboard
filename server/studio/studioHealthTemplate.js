@@ -68,10 +68,10 @@ const COLS = [
 function kpiCard(label, value, sub, labelColor, width, valueAside) {
   return `
     <td width="${width}" valign="top" style="padding:6px;">
-      <div style="background:${CARD_BG}; border:1px solid ${BORDER}; border-radius:12px; padding:18px 20px;">
+      <div style="background:${CARD_BG}; border:1px solid ${BORDER}; border-radius:12px; padding:15px 18px;">
         <div style="font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:0.06em; color:${labelColor};">${label}</div>
-        <div style="font-size:34px; font-weight:800; color:${TEXT_DARK}; line-height:1.1; margin-top:10px;">${value}${valueAside ? `<span style="font-size:15px; font-weight:700; color:${TEXT_MUTED}; margin-left:9px;">${valueAside}</span>` : ''}</div>
-        ${sub ? `<div style="font-size:13px; color:${TEXT_MUTED}; margin-top:7px;">${sub}</div>` : ''}
+        <div style="font-size:46px; font-weight:800; color:${TEXT_DARK}; line-height:1.05; margin-top:6px;">${value}${valueAside ? `<span style="font-size:17px; font-weight:700; color:${TEXT_MUTED}; margin-left:9px;">${valueAside}</span>` : ''}</div>
+        ${sub ? `<div style="font-size:13px; color:${TEXT_MUTED}; margin-top:6px;">${sub}</div>` : ''}
       </div>
     </td>`
 }
@@ -249,7 +249,7 @@ function funnelTable(rows) {
  * @param {Array}   data.adoption    [{ label, cols }] rows for the Adoption table
  * @returns {string} full HTML email string
  */
-export function buildStudioHealthHtml({ funnel, planCounts, images, three60, video, adoption, imagesKpis, three60Kpis, adoptionKpis, slack = false }) {
+export function buildStudioHealthHtml({ funnel, planCounts, images, three60, video, adoption, imagesKpis, three60Kpis, videoKpis, adoptionKpis, slack = false }) {
   const dateLabel = new Date().toLocaleDateString('en-US', {
     timeZone: 'Asia/Kolkata',
     weekday: 'long',
@@ -316,6 +316,24 @@ export function buildStudioHealthHtml({ funnel, planCounts, images, three60, vid
       kpiCard('Delivered &gt; 6 hrs', fmtInt(three60Kpis.deliveredOver6h), '', '#d97706', '33.34%'),
       kpiCard('Pendency &gt; 6 hrs', fmtInt(three60Kpis.pendencyOver6h), '', '#dc2626', '33.33%'),
     ])
+  }
+
+  // Video KPI cards (Slack image only): 6 cards mirroring Images/360, sourced from the
+  // "Video Slack" sheet tab. No email branch — the email/board Video stays a table.
+  let videoKpiRow = ''
+  if (videoKpis && slack) {
+    const k = videoKpis
+    videoKpiRow =
+      kpiRow([
+        kpiCard('Videos Delivered', fmtInt(k.videosDelivered), 'Total', '#16a34a', '33.33%'),
+        kpiCard('Delivered &gt; 12 hrs', fmtInt(k.deliveredOver12h), `${pctOfTotal(k.deliveredOver12h, k.videosDelivered)} of total`, '#d97706', '33.34%'),
+        kpiCard('Pendency &gt; 12 hrs', fmtInt(k.pendencyOver12h), `${pctOfTotal(k.pendencyOver12h, k.pendencyTotal)} of total pendency`, '#dc2626', '33.33%'),
+      ]) +
+      kpiRow([
+        kpiCard('Total Pendency', fmtInt(k.pendencyTotal), `${pctOfTotal(k.pendencyTotal, k.videosDelivered + k.pendencyTotal)} of total`, '#dc2626', '33.33%'),
+        kpiCard('Delivered &lt; 12 hrs %', fmtPct1(k.deliveredUnder12hPct30), 'Rolling 30', '#16a34a', '33.34%'),
+        kpiCard('P95 Delivery', fmtHrs1(k.p95Delivery30), 'Rolling 30', '#d97706', '33.33%', 'hrs'),
+      ])
   }
 
   // Adoption KPI cards (Slack image only): 6 cards in two rows of 3, matching the Studio
@@ -416,7 +434,9 @@ export function buildStudioHealthHtml({ funnel, planCounts, images, three60, vid
                 ${slack
                   ? `${sectionTitle('360', 'Delivery health — snapshot &amp; rolling 30d', SEC.three60)}${three60KpiRow}`
                   : tableSection('360', 'Delivery health across segments & trend', SEC.three60, three60, three60KpiRow)}
-                ${tableSection('Video', 'Delivery health across segments & trend', SEC.video, video)}
+                ${slack && videoKpis
+                  ? `${sectionTitle('Video', 'Delivery health — snapshot &amp; rolling 30d', SEC.video)}${videoKpiRow}`
+                  : tableSection('Video', 'Delivery health across segments & trend', SEC.video, video)}
                 ${slack
                   ? `${sectionTitle('Adoption', 'Rooftop adoption — Live &amp; Onboarding', SEC.adoption)}${adoptionKpiRow}`
                   : tableSection('Adoption', 'Adoption % across segments & trend', SEC.adoption, adoption)}

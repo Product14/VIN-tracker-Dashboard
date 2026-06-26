@@ -6,6 +6,7 @@
 //   • Rooftop Level   (gid 0)          → plan tiers + funnel (header-keyed CSV)
 //   • Studio Health   (gid 1632148391) → Images / 360 / Video delivery metrics (matrix)
 //   • Studio Adoption (gid 1323822955) → App / SmartView VDP / SmartMatch adoption % (matrix)
+//   • Video Slack     (gid 2048613166) → Video KPI cards for the Slack image (header-keyed, 1 row)
 
 import Papa from 'papaparse'
 import { normalizeRows } from './transform.js'
@@ -23,6 +24,7 @@ const exportCsvUrl = (gid) =>
 const ROOFTOP_CSV_URL = process.env.SHEET_CSV_URL || gvizUrl(0)
 const STUDIO_HEALTH_CSV_URL = process.env.STUDIO_HEALTH_CSV_URL || exportCsvUrl('1632148391')
 const STUDIO_ADOPTION_CSV_URL = process.env.STUDIO_ADOPTION_CSV_URL || exportCsvUrl('1323822955')
+const VIDEO_SLACK_CSV_URL = process.env.VIDEO_SLACK_CSV_URL || exportCsvUrl('2048613166')
 
 // Reliable CSV fetch: per-attempt timeout (so a hung Google request can't stall the
 // whole function) + retries with linear backoff for transient upstream errors, and a
@@ -51,19 +53,26 @@ async function fetchCsv(url, { label = 'sheet', retries = 2, timeoutMs = 10000 }
 }
 
 /**
- * Fetch + parse all three tabs into the shape buildStudioHealthPayload() expects.
- * @returns {Promise<{ rooftopRows: Array, healthMap: Map, adoptionMap: Map }>}
+ * Fetch + parse the sheet tabs into the shape buildStudioHealthPayload() expects.
+ * The Video Slack tab is best-effort (slack-image only) — a failure yields null
+ * instead of aborting the whole report, so the Video section falls back to its table.
+ * @returns {Promise<{ rooftopRows: Array, healthMap: Map, adoptionMap: Map, videoSlack: (object|null) }>}
  */
 export async function fetchStudioSources() {
-  const [rooftopCsv, healthCsv, adoptionCsv] = await Promise.all([
+  const [rooftopCsv, healthCsv, adoptionCsv, videoSlackCsv] = await Promise.all([
     fetchCsv(ROOFTOP_CSV_URL, { label: 'Rooftop Level' }),
     fetchCsv(STUDIO_HEALTH_CSV_URL, { label: 'Studio Health' }),
     fetchCsv(STUDIO_ADOPTION_CSV_URL, { label: 'Studio Adoption' }),
+    fetchCsv(VIDEO_SLACK_CSV_URL, { label: 'Video Slack' }).catch(() => null),
   ])
 
   const rooftopRows = normalizeRows(Papa.parse(rooftopCsv, { header: true, skipEmptyLines: true }).data)
   const healthMap = parseMatrix(Papa.parse(healthCsv, { header: false, skipEmptyLines: false }).data)
   const adoptionMap = parseMatrix(Papa.parse(adoptionCsv, { header: false, skipEmptyLines: false }).data)
+  // Header-keyed single-row tab → one object of named KPI columns (null if the fetch failed).
+  const videoSlack = videoSlackCsv
+    ? Papa.parse(videoSlackCsv, { header: true, skipEmptyLines: true }).data[0] || null
+    : null
 
-  return { rooftopRows, healthMap, adoptionMap }
+  return { rooftopRows, healthMap, adoptionMap, videoSlack }
 }
