@@ -429,16 +429,16 @@ export function buildStudioHealthHtml({ funnel, planCounts, images, three60, vid
                 ${planRow}
 
                 ${slack
-                  ? `${sectionTitle('Images', 'Delivery health — snapshot &amp; rolling 30d', SEC.images)}${imagesKpiRow}`
+                  ? `${sectionTitle('Images', '', SEC.images)}${imagesKpiRow}`
                   : tableSection('Images', 'Delivery health across segments & trend', SEC.images, images, imagesKpiRow)}
                 ${slack
-                  ? `${sectionTitle('360', 'Delivery health — snapshot &amp; rolling 30d', SEC.three60)}${three60KpiRow}`
+                  ? `${sectionTitle('360', '', SEC.three60)}${three60KpiRow}`
                   : tableSection('360', 'Delivery health across segments & trend', SEC.three60, three60, three60KpiRow)}
                 ${slack && videoKpis
-                  ? `${sectionTitle('Video', 'Delivery health — snapshot &amp; rolling 30d', SEC.video)}${videoKpiRow}`
+                  ? `${sectionTitle('Video', '', SEC.video)}${videoKpiRow}`
                   : tableSection('Video', 'Delivery health across segments & trend', SEC.video, video)}
                 ${slack
-                  ? `${sectionTitle('Adoption', 'Rooftop adoption — Live &amp; Onboarding', SEC.adoption)}${adoptionKpiRow}`
+                  ? `${sectionTitle('Adoption', '', SEC.adoption)}${adoptionKpiRow}`
                   : tableSection('Adoption', 'Adoption % across segments & trend', SEC.adoption, adoption)}
 
                 ${ctaHtml}
