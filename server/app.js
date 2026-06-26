@@ -4123,7 +4123,7 @@ async function handleProcessReportQueue(req, res) {
           AND COALESCE(output_processing_catalog,1)=1`,
       [id, tz, yesterdayStr]
     );
-    return Number(r.pending_count) > 1;
+    return Number(r.pending_count) > 10;
   }
 
   // ── Step 3: Process each row ───────────────────────────────────────────────
@@ -4191,7 +4191,7 @@ async function handleProcessReportQueue(req, res) {
         if (!imsOff) {
           if (await hasStalePendingVins("rooftop_id", rooftop_id, tz, yesterdayStr)) {
             await query(`UPDATE report_queue SET status='skipped', entity_id=$2, entity_name=$3, error_reason='pending_vins', processed_at=NOW() WHERE id=$1`, [id, rooftop_id, rt.team_name]);
-            console.log(`[process-queue] rooftop ${rooftop_id} skipped — pending VINs > 1`);
+            console.log(`[process-queue] rooftop ${rooftop_id} skipped — pending VINs > 10`);
             skippedCount++; continue;
           }
         }
@@ -4208,9 +4208,9 @@ async function handleProcessReportQueue(req, res) {
             console.log(`[process-queue] rooftop ${rooftop_id} skipped — IMS off, no vehicles in last 90 days`);
             skippedCount++; continue;
           }
-          if (data.inv90.invPending > 1) {
+          if (data.inv90.invPending > 10) {
             await query(`UPDATE report_queue SET status='skipped', entity_id=$2, entity_name=$3, error_reason='pending_vins', processed_at=NOW() WHERE id=$1`, [id, rooftop_id, rt.team_name]);
-            console.log(`[process-queue] rooftop ${rooftop_id} skipped — IMS off, 90-day pending VINs > 1`);
+            console.log(`[process-queue] rooftop ${rooftop_id} skipped — IMS off, 90-day pending VINs > 10`);
             skippedCount++; continue;
           }
         } else {
@@ -4297,9 +4297,9 @@ async function handleProcessReportQueue(req, res) {
             console.log(`[process-queue] enterprise ${enterprise_id} skipped — IMS on, no active inventory`);
             skippedCount++; continue;
           }
-          if (data.invKpis.invPending > 5) {
+          if (data.invKpis.invPending > 10) {
             await query(`UPDATE report_queue SET status='skipped', entity_id=$2, entity_name=$3, error_reason='pending_vins', processed_at=NOW() WHERE id=$1`, [id, enterprise_id, ent.name]);
-            console.log(`[process-queue] enterprise ${enterprise_id} skipped — IMS on, inventory pending VINs > 5`);
+            console.log(`[process-queue] enterprise ${enterprise_id} skipped — IMS on, inventory pending VINs > 10`);
             skippedCount++; continue;
           }
         } else {
@@ -4308,9 +4308,9 @@ async function handleProcessReportQueue(req, res) {
             console.log(`[process-queue] enterprise ${enterprise_id} skipped — IMS off, no vehicles in last 90 days`);
             skippedCount++; continue;
           }
-          if (data.invKpis.invPending > 5) {
+          if (data.invKpis.invPending > 10) {
             await query(`UPDATE report_queue SET status='skipped', entity_id=$2, entity_name=$3, error_reason='pending_vins', processed_at=NOW() WHERE id=$1`, [id, enterprise_id, ent.name]);
-            console.log(`[process-queue] enterprise ${enterprise_id} skipped — inventory pending VINs > 5`);
+            console.log(`[process-queue] enterprise ${enterprise_id} skipped — inventory pending VINs > 10`);
             skippedCount++; continue;
           }
         }
