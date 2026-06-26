@@ -2624,7 +2624,7 @@ async function computeRooftopDailyReport(rooftopId, yesterday, timezone = "Ameri
       SELECT
         COUNT(*)                                              AS received,
         COUNT(*) FILTER (WHERE status = 'Delivered')         AS inv_delivered,
-        COUNT(*) FILTER (WHERE status != 'Delivered')        AS inv_pending,
+        COUNT(*) FILTER (WHERE status != 'Delivered' AND COALESCE(output_processing_catalog,1)=1)        AS inv_pending,
         -- 90-day delivered cohort: TTL (days), avg media score, avg TAT (hours)
         ROUND(AVG(
           EXTRACT(EPOCH FROM (processed_at::timestamptz - vin_creation::timestamptz)) / 86400.0
@@ -2681,7 +2681,7 @@ async function computeRooftopDailyReport(rooftopId, yesterday, timezone = "Ameri
            WHEN lower(condition) = 'used' THEN 'Used'
            ELSE 'Unmarked' END                                                       AS cond,
       COUNT(*) FILTER (WHERE status = 'Delivered' AND COALESCE(has_photos, 0) = 1)   AS with_photos,
-      COUNT(*) FILTER (WHERE COALESCE(has_photos, 0) = 1 AND status != 'Delivered')  AS pending,
+      COUNT(*) FILTER (WHERE COALESCE(has_photos, 0) = 1 AND status != 'Delivered' AND COALESCE(output_processing_catalog,1)=1)  AS pending,
       COUNT(*) FILTER (WHERE COALESCE(has_photos, 0) = 0)                            AS no_photos
     FROM vins
     WHERE rooftop_id = $1
@@ -2942,7 +2942,7 @@ async function computeGroupDailyReport(enterpriseId, yesterday, timezone = "Amer
         COUNT(*)                                                                          AS total_active,
         COUNT(*) FILTER (WHERE COALESCE(has_photos, 0) = 1)                             AS with_photos,
         COUNT(*) FILTER (WHERE status = 'Delivered' AND COALESCE(has_photos, 0) = 1)    AS inv_delivered,
-        COUNT(*) FILTER (WHERE status != 'Delivered' AND COALESCE(has_photos, 0) = 1)   AS inv_pending,
+        COUNT(*) FILTER (WHERE status != 'Delivered' AND COALESCE(has_photos, 0) = 1 AND COALESCE(output_processing_catalog,1)=1)   AS inv_pending,
         ROUND(AVG(EXTRACT(EPOCH FROM (processed_at::timestamptz - vin_creation::timestamptz))/86400.0)
           FILTER (WHERE status='Delivered' AND COALESCE(has_photos,0)=1
                   AND vin_creation IS NOT NULL AND processed_at IS NOT NULL
@@ -2981,7 +2981,7 @@ async function computeGroupDailyReport(enterpriseId, yesterday, timezone = "Amer
         COUNT(*)                                                                            AS total_active,
         COUNT(*) FILTER (WHERE COALESCE(v.has_photos, 0) = 1)                             AS with_photos,
         COUNT(*) FILTER (WHERE v.status = 'Delivered' AND COALESCE(v.has_photos, 0) = 1)  AS inv_delivered,
-        COUNT(*) FILTER (WHERE v.status != 'Delivered' AND COALESCE(v.has_photos, 0) = 1) AS inv_pending,
+        COUNT(*) FILTER (WHERE v.status != 'Delivered' AND COALESCE(v.has_photos, 0) = 1 AND COALESCE(v.output_processing_catalog,1)=1) AS inv_pending,
         COUNT(*) FILTER (WHERE lower(v.condition)='new'  AND v.status='Delivered' AND COALESCE(v.has_photos,0)=1) AS new_wp,
         COUNT(*) FILTER (WHERE lower(v.condition)='new'  AND COALESCE(v.has_photos,0)=0)                          AS new_np,
         COUNT(*) FILTER (WHERE lower(v.condition)='used' AND v.status='Delivered' AND COALESCE(v.has_photos,0)=1) AS used_wp,
@@ -3034,7 +3034,7 @@ async function computeGroupDailyReport(enterpriseId, yesterday, timezone = "Amer
       SELECT
         COUNT(*) FILTER (WHERE COALESCE(has_photos,0) = 1)                            AS received,
         COUNT(*) FILTER (WHERE status = 'Delivered'  AND COALESCE(has_photos,0) = 1)  AS inv_delivered,
-        COUNT(*) FILTER (WHERE status != 'Delivered' AND COALESCE(has_photos,0) = 1)  AS inv_pending,
+        COUNT(*) FILTER (WHERE status != 'Delivered' AND COALESCE(has_photos,0) = 1 AND COALESCE(output_processing_catalog,1)=1)  AS inv_pending,
         COUNT(*) FILTER (WHERE COALESCE(has_photos,0) = 0)                            AS no_photos_total,
         ROUND(AVG(EXTRACT(EPOCH FROM (processed_at::timestamptz - vin_creation::timestamptz))/86400.0)
           FILTER (WHERE status='Delivered' AND vin_creation IS NOT NULL
@@ -3071,7 +3071,7 @@ async function computeGroupDailyReport(enterpriseId, yesterday, timezone = "Amer
         MAX(rd.team_name)                                                                      AS rooftop_name,
         COUNT(*) FILTER (WHERE COALESCE(v.has_photos,0)=1)                                   AS received,
         COUNT(*) FILTER (WHERE v.status = 'Delivered' AND COALESCE(v.has_photos,0)=1)        AS inv_delivered,
-        COUNT(*) FILTER (WHERE v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1)       AS inv_pending,
+        COUNT(*) FILTER (WHERE v.status != 'Delivered' AND COALESCE(v.has_photos,0)=1 AND COALESCE(v.output_processing_catalog,1)=1)       AS inv_pending,
         COUNT(*) FILTER (WHERE COALESCE(v.has_photos,0)=0)                                   AS no_photos_count,
         COUNT(*) FILTER (WHERE lower(v.condition)='new'  AND v.status='Delivered' AND COALESCE(v.has_photos,0)=1) AS new_wp,
         COUNT(*) FILTER (WHERE lower(v.condition)='new'  AND COALESCE(v.has_photos,0)=0)                          AS new_np,
@@ -3133,7 +3133,7 @@ async function computeGroupDailyReport(enterpriseId, yesterday, timezone = "Amer
            WHEN lower(condition) = 'used' THEN 'Used'
            ELSE 'Unmarked' END                                                       AS cond,
       COUNT(*) FILTER (WHERE status = 'Delivered' AND COALESCE(has_photos, 0) = 1)   AS with_photos,
-      COUNT(*) FILTER (WHERE COALESCE(has_photos, 0) = 1 AND status != 'Delivered')  AS pending,
+      COUNT(*) FILTER (WHERE COALESCE(has_photos, 0) = 1 AND status != 'Delivered' AND COALESCE(output_processing_catalog,1)=1)  AS pending,
       COUNT(*) FILTER (WHERE COALESCE(has_photos, 0) = 0)                            AS no_photos
     FROM vins
     WHERE enterprise_id = $1
